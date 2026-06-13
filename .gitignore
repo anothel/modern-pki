@@ -1,6 +1,9 @@
 build/
+build-*/
 cmake-build-*/
 out/
+
+docs/
 
 .vs/
 .vscode/
@@ -21,3 +24,6 @@ out/
 *.dylib
 *.dSYM/
 *.log
+
+.gocache/*
+.gomodcache/*

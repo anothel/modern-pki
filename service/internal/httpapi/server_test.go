@@ -1,0 +1,603 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/modern-pki/modern-pki/service/internal/corecli"
+	"github.com/modern-pki/modern-pki/service/internal/domain"
+	"github.com/modern-pki/modern-pki/service/internal/lifecycle"
+	"github.com/modern-pki/modern-pki/service/internal/store"
+)
+
+var testNow = time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+func TestCreateIdentity(t *testing.T) {
+	api := newTestAPI(t)
+
+	var created apiIdentity
+	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type":        string(domain.IdentityMachine),
+		"name":        "edge-01",
+		"external_id": "asset-123",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" {
+		t.Fatal("created identity ID is empty")
+	}
+	if created.Type != domain.IdentityMachine {
+		t.Fatalf("created identity type = %q, want %q", created.Type, domain.IdentityMachine)
+	}
+	if created.Name != "edge-01" {
+		t.Fatalf("created identity name = %q, want %q", created.Name, "edge-01")
+	}
+	if created.Status != domain.IdentityActive {
+		t.Fatalf("created identity status = %q, want %q", created.Status, domain.IdentityActive)
+	}
+
+	var listed []apiIdentity
+	status = api.doJSON(t, http.MethodGet, "/identities", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("identity count = %d, want 1", len(listed))
+	}
+	if listed[0].ID != created.ID {
+		t.Fatalf("listed identity ID = %q, want %q", listed[0].ID, created.ID)
+	}
+
+	var got apiIdentity
+	status = api.doJSON(t, http.MethodGet, "/identities/"+created.ID, "", nil, &got)
+	assertStatus(t, status, http.StatusOK)
+	if got.ID != created.ID {
+		t.Fatalf("got identity ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestCreateIssuer(t *testing.T) {
+	api := newTestAPI(t)
+
+	var created apiIssuer
+	status := api.doJSON(t, http.MethodPost, "/issuers", "admin", map[string]any{
+		"name":            "intermediate-ca",
+		"kind":            string(domain.IssuerIntermediateCA),
+		"certificate_pem": "issuer-cert-pem",
+		"key_ref":         "issuer-key-ref",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" {
+		t.Fatal("created issuer ID is empty")
+	}
+	if created.Name != "intermediate-ca" {
+		t.Fatalf("created issuer name = %q, want %q", created.Name, "intermediate-ca")
+	}
+	if created.Kind != domain.IssuerIntermediateCA {
+		t.Fatalf("created issuer kind = %q, want %q", created.Kind, domain.IssuerIntermediateCA)
+	}
+	if created.Status != domain.IssuerActive {
+		t.Fatalf("created issuer status = %q, want %q", created.Status, domain.IssuerActive)
+	}
+}
+
+func TestCreateCertificateProfile(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var created apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"description":             "Machine TLS server profile",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"subject_template":        "CN={{identity.name}}",
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"key_usage": map[string]any{
+			"critical": true,
+			"values":   []string{"digital_signature", "key_encipherment"},
+		},
+		"extended_key_usage": map[string]any{
+			"critical": false,
+			"values":   []string{"server_auth"},
+		},
+		"basic_constraints": map[string]any{
+			"critical": true,
+			"ca":       false,
+		},
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" {
+		t.Fatal("created profile ID is empty")
+	}
+	if created.IssuerID != issuer.ID {
+		t.Fatalf("created profile issuer ID = %q, want %q", created.IssuerID, issuer.ID)
+	}
+	if !created.KeyUsage.Critical || len(created.KeyUsage.Values) != 2 {
+		t.Fatalf("created profile key usage = %#v", created.KeyUsage)
+	}
+
+	var listed []apiCertificateProfile
+	status = api.doJSON(t, http.MethodGet, "/certificate-profiles", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("profile count = %d, want 1", len(listed))
+	}
+
+	var got apiCertificateProfile
+	status = api.doJSON(t, http.MethodGet, "/certificate-profiles/"+created.ID, "", nil, &got)
+	assertStatus(t, status, http.StatusOK)
+	if got.ID != created.ID {
+		t.Fatalf("got profile ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestCreateEnrollment(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	requestedNotAfter := testNow.Add(24 * time.Hour)
+
+	var created apiEnrollment
+	status := api.doJSON(t, http.MethodPost, "/enrollments", "operator", map[string]any{
+		"identity_id":            identity.ID,
+		"issuer_id":              issuer.ID,
+		"csr_pem":                "csr-pem",
+		"requested_subject":      "CN=edge-01",
+		"requested_dns_names":    []string{"edge-01.example.test"},
+		"requested_ip_addresses": []string{"127.0.0.1"},
+		"requested_not_after":    requestedNotAfter,
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.Status != domain.EnrollmentPending {
+		t.Fatalf("created enrollment status = %q, want %q", created.Status, domain.EnrollmentPending)
+	}
+	if created.IdentityID != identity.ID {
+		t.Fatalf("created enrollment identity ID = %q, want %q", created.IdentityID, identity.ID)
+	}
+	if len(created.RequestedDNSNames) != 1 || created.RequestedDNSNames[0] != "edge-01.example.test" {
+		t.Fatalf("created enrollment DNS names = %#v, want edge-01.example.test", created.RequestedDNSNames)
+	}
+	if len(created.CSRDNSNames) != 1 || created.CSRDNSNames[0] != "edge-01.example.test" {
+		t.Fatalf("created enrollment CSR DNS names = %#v, want edge-01.example.test", created.CSRDNSNames)
+	}
+
+	var listed []apiEnrollment
+	status = api.doJSON(t, http.MethodGet, "/enrollments", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("enrollment count = %d, want 1", len(listed))
+	}
+
+	var got apiEnrollment
+	status = api.doJSON(t, http.MethodGet, "/enrollments/"+created.ID, "", nil, &got)
+	assertStatus(t, status, http.StatusOK)
+	if got.ID != created.ID {
+		t.Fatalf("got enrollment ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestApproveEnrollment(t *testing.T) {
+	api := newTestAPI(t)
+	enrollment := api.createPendingEnrollment(t)
+
+	var approved apiEnrollment
+	status := api.doJSON(t, http.MethodPost, "/enrollments/"+enrollment.ID+"/approve", "approver", nil, &approved)
+	assertStatus(t, status, http.StatusOK)
+	if approved.Status != domain.EnrollmentApproved {
+		t.Fatalf("approved enrollment status = %q, want %q", approved.Status, domain.EnrollmentApproved)
+	}
+	if approved.ApprovedBy != "approver" {
+		t.Fatalf("approved enrollment ApprovedBy = %q, want %q", approved.ApprovedBy, "approver")
+	}
+
+	var errorBody errorResponse
+	status = api.doJSON(t, http.MethodPost, "/enrollments/"+enrollment.ID+"/approve", "approver", nil, &errorBody)
+	assertStatus(t, status, http.StatusConflict)
+	if errorBody.Error != domain.ErrInvalidTransition.Error() {
+		t.Fatalf("error body = %q, want %q", errorBody.Error, domain.ErrInvalidTransition.Error())
+	}
+}
+
+func TestIssueCertificate(t *testing.T) {
+	api := newTestAPI(t)
+	enrollment := api.createApprovedEnrollment(t)
+
+	var issued apiCertificate
+	status := api.doJSON(t, http.MethodPost, "/certificates", "issuer", map[string]string{
+		"enrollment_id": enrollment.ID,
+	}, &issued)
+	assertStatus(t, status, http.StatusCreated)
+	if issued.Status != domain.CertificateValid {
+		t.Fatalf("issued certificate status = %q, want %q", issued.Status, domain.CertificateValid)
+	}
+	if issued.Subject != "CN=edge-01" {
+		t.Fatalf("issued certificate subject = %q, want %q", issued.Subject, "CN=edge-01")
+	}
+	if issued.CertificatePEM != "issued:csr-pem" {
+		t.Fatalf("issued certificate PEM = %q, want %q", issued.CertificatePEM, "issued:csr-pem")
+	}
+	if len(api.issuer.requests) != 1 {
+		t.Fatalf("issuer request count = %d, want 1", len(api.issuer.requests))
+	}
+
+	var listed []apiCertificate
+	status = api.doJSON(t, http.MethodGet, "/certificates", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("certificate count = %d, want 1", len(listed))
+	}
+
+	var got apiCertificate
+	status = api.doJSON(t, http.MethodGet, "/certificates/"+issued.ID, "", nil, &got)
+	assertStatus(t, status, http.StatusOK)
+	if got.ID != issued.ID {
+		t.Fatalf("got certificate ID = %q, want %q", got.ID, issued.ID)
+	}
+}
+
+func TestIssueCertificateHidesIssuerErrorCause(t *testing.T) {
+	api := newTestAPI(t)
+	api.issuer.err = errors.New("fake issuer detail")
+	enrollment := api.createApprovedEnrollment(t)
+
+	var errorBody errorResponse
+	status := api.doJSON(t, http.MethodPost, "/certificates", "issuer", map[string]string{
+		"enrollment_id": enrollment.ID,
+	}, &errorBody)
+	assertStatus(t, status, http.StatusBadGateway)
+	if errorBody.Error != domain.ErrCertificateIssuanceFailed.Error() {
+		t.Fatalf("error body = %q, want %q", errorBody.Error, domain.ErrCertificateIssuanceFailed.Error())
+	}
+}
+
+func TestRevokeCertificate(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var revoked apiCertificate
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/revoke", "operator", map[string]string{
+		"reason": string(domain.RevocationKeyCompromise),
+	}, &revoked)
+	assertStatus(t, status, http.StatusOK)
+	if revoked.Status != domain.CertificateRevoked {
+		t.Fatalf("revoked certificate status = %q, want %q", revoked.Status, domain.CertificateRevoked)
+	}
+}
+
+func TestListAuditEvents(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var identity apiIdentity
+	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, &identity)
+	assertStatus(t, status, http.StatusCreated)
+
+	var enrollment apiEnrollment
+	status = api.doJSON(t, http.MethodPost, "/enrollments", "operator", map[string]any{
+		"identity_id":            identity.ID,
+		"issuer_id":              issuer.ID,
+		"csr_pem":                "csr-pem",
+		"requested_subject":      "CN=edge-01",
+		"requested_dns_names":    []string{"edge-01.example.test"},
+		"requested_ip_addresses": []string{"127.0.0.1"},
+		"requested_not_after":    testNow.Add(24 * time.Hour),
+	}, &enrollment)
+	assertStatus(t, status, http.StatusCreated)
+
+	var rejected apiEnrollment
+	status = api.doJSON(t, http.MethodPost, "/enrollments/"+enrollment.ID+"/reject", "reviewer", nil, &rejected)
+	assertStatus(t, status, http.StatusOK)
+	if rejected.Status != domain.EnrollmentRejected {
+		t.Fatalf("rejected enrollment status = %q, want %q", rejected.Status, domain.EnrollmentRejected)
+	}
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+
+	wantActions := []string{
+		"issuer.created",
+		"identity.created",
+		"enrollment.created",
+		"enrollment.rejected",
+	}
+	if len(events) != len(wantActions) {
+		t.Fatalf("audit event count = %d, want %d", len(events), len(wantActions))
+	}
+	for i, want := range wantActions {
+		if events[i].Action != want {
+			t.Fatalf("audit event %d action = %q, want %q", i, events[i].Action, want)
+		}
+	}
+	if events[1].Actor != "admin" {
+		t.Fatalf("identity actor = %q, want %q", events[1].Actor, "admin")
+	}
+	if events[2].Actor != "operator" {
+		t.Fatalf("enrollment actor = %q, want %q", events[2].Actor, "operator")
+	}
+	if events[3].Actor != "reviewer" {
+		t.Fatalf("reject actor = %q, want %q", events[3].Actor, "reviewer")
+	}
+}
+
+type testAPI struct {
+	ctx     context.Context
+	client  *http.Client
+	url     string
+	service *lifecycle.Service
+	issuer  *fakeIssuer
+}
+
+func newTestAPI(t *testing.T) *testAPI {
+	t.Helper()
+
+	issuer := &fakeIssuer{}
+	service := lifecycle.New(
+		store.NewMemoryStore(),
+		issuer,
+		fixedClock{now: testNow},
+		&fakeIDGenerator{},
+	)
+	server := httptest.NewServer(New(service))
+	t.Cleanup(server.Close)
+
+	return &testAPI{
+		ctx:     context.Background(),
+		client:  server.Client(),
+		url:     server.URL,
+		service: service,
+		issuer:  issuer,
+	}
+}
+
+func (api *testAPI) doJSON(t *testing.T, method string, path string, actor string, body any, into any) int {
+	t.Helper()
+
+	var requestBody *bytes.Reader
+	if body == nil {
+		requestBody = bytes.NewReader(nil)
+	} else {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal request body: %v", err)
+		}
+		requestBody = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequest(method, api.url+path, requestBody)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if actor != "" {
+		req.Header.Set("X-Actor", actor)
+	}
+
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer res.Body.Close()
+
+	if into != nil {
+		if err := json.NewDecoder(res.Body).Decode(into); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+	}
+	return res.StatusCode
+}
+
+func (api *testAPI) createIdentity(t *testing.T) domain.Identity {
+	t.Helper()
+
+	identity, err := api.service.CreateIdentity(api.ctx, "admin", lifecycle.CreateIdentityRequest{
+		Type:       domain.IdentityMachine,
+		Name:       "edge-01",
+		ExternalID: "asset-123",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	return identity
+}
+
+func (api *testAPI) createIssuer(t *testing.T) domain.Issuer {
+	t.Helper()
+
+	issuer, err := api.service.CreateIssuer(api.ctx, "admin", lifecycle.CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	return issuer
+}
+
+func (api *testAPI) createPendingEnrollment(t *testing.T) domain.Enrollment {
+	t.Helper()
+
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	enrollment, err := api.service.CreateEnrollment(api.ctx, "operator", lifecycle.CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    testNow.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	return enrollment
+}
+
+func (api *testAPI) createApprovedEnrollment(t *testing.T) domain.Enrollment {
+	t.Helper()
+
+	enrollment := api.createPendingEnrollment(t)
+	approved, err := api.service.ApproveEnrollment(api.ctx, "approver", enrollment.ID)
+	if err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	return approved
+}
+
+func (api *testAPI) createCertificate(t *testing.T) domain.Certificate {
+	t.Helper()
+
+	enrollment := api.createApprovedEnrollment(t)
+	certificate, err := api.service.IssueCertificate(api.ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	return certificate
+}
+
+func assertStatus(t *testing.T, got int, want int) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+type fakeIssuer struct {
+	requests []corecli.IssueRequest
+	err      error
+}
+
+func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
+	return corecli.CSRInfo{
+		Subject:     "CN=edge-01",
+		DNSNames:    []string{"edge-01.example.test"},
+		IPAddresses: []string{"127.0.0.1"},
+	}, nil
+}
+
+func (f *fakeIssuer) Issue(ctx context.Context, req corecli.IssueRequest) (corecli.IssueResult, error) {
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return corecli.IssueResult{}, f.err
+	}
+	return corecli.IssueResult{
+		CertificatePEM: "issued:" + req.CSRPEM,
+		SerialNumber:   "serial:" + req.Subject,
+		Subject:        req.Subject,
+		NotBefore:      req.NotBefore,
+		NotAfter:       req.NotAfter,
+	}, nil
+}
+
+type fixedClock struct {
+	now time.Time
+}
+
+func (c fixedClock) Now() time.Time {
+	return c.now
+}
+
+type fakeIDGenerator struct {
+	next int
+}
+
+func (g *fakeIDGenerator) NewID() string {
+	g.next++
+	return fmt.Sprintf("id-%d", g.next)
+}
+
+type apiIdentity struct {
+	ID         string                `json:"id"`
+	Type       domain.IdentityType   `json:"type"`
+	Name       string                `json:"name"`
+	ExternalID string                `json:"external_id"`
+	Status     domain.IdentityStatus `json:"status"`
+	CreatedAt  time.Time             `json:"created_at"`
+	UpdatedAt  time.Time             `json:"updated_at"`
+}
+
+type apiIssuer struct {
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	Kind           domain.IssuerKind   `json:"kind"`
+	Status         domain.IssuerStatus `json:"status"`
+	CertificatePEM string              `json:"certificate_pem"`
+	KeyRef         string              `json:"key_ref"`
+	CreatedAt      time.Time           `json:"created_at"`
+	UpdatedAt      time.Time           `json:"updated_at"`
+}
+
+type apiCertificateProfile struct {
+	ID                    string                           `json:"id"`
+	Name                  string                           `json:"name"`
+	Description           string                           `json:"description"`
+	IssuerID              string                           `json:"issuer_id"`
+	ValidityPeriodSeconds int64                            `json:"validity_period_seconds"`
+	SubjectTemplate       string                           `json:"subject_template"`
+	AllowedDNSPatterns    []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges       []string                         `json:"allowed_ip_ranges"`
+	KeyUsage              domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage      domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints      domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	CreatedAt             time.Time                        `json:"created_at"`
+	UpdatedAt             time.Time                        `json:"updated_at"`
+}
+
+type apiEnrollment struct {
+	ID                   string                  `json:"id"`
+	IdentityID           string                  `json:"identity_id"`
+	IssuerID             string                  `json:"issuer_id"`
+	CSRPEM               string                  `json:"csr_pem"`
+	Status               domain.EnrollmentStatus `json:"status"`
+	RequestedSubject     string                  `json:"requested_subject"`
+	RequestedDNSNames    []string                `json:"requested_dns_names"`
+	RequestedIPAddresses []string                `json:"requested_ip_addresses"`
+	CSRDNSNames          []string                `json:"csr_dns_names"`
+	CSRIPAddresses       []string                `json:"csr_ip_addresses"`
+	RequestedNotAfter    time.Time               `json:"requested_not_after"`
+	ApprovedBy           string                  `json:"approved_by"`
+	ApprovedAt           time.Time               `json:"approved_at"`
+	CreatedAt            time.Time               `json:"created_at"`
+	UpdatedAt            time.Time               `json:"updated_at"`
+}
+
+type apiCertificate struct {
+	ID             string                   `json:"id"`
+	IdentityID     string                   `json:"identity_id"`
+	IssuerID       string                   `json:"issuer_id"`
+	EnrollmentID   string                   `json:"enrollment_id"`
+	SerialNumber   string                   `json:"serial_number"`
+	Subject        string                   `json:"subject"`
+	DNSNames       []string                 `json:"dns_names"`
+	IPAddresses    []string                 `json:"ip_addresses"`
+	NotBefore      time.Time                `json:"not_before"`
+	NotAfter       time.Time                `json:"not_after"`
+	Status         domain.CertificateStatus `json:"status"`
+	CertificatePEM string                   `json:"certificate_pem"`
+	CreatedAt      time.Time                `json:"created_at"`
+	UpdatedAt      time.Time                `json:"updated_at"`
+}
+
+type apiAuditEvent struct {
+	ID           string    `json:"id"`
+	Actor        string    `json:"actor"`
+	Action       string    `json:"action"`
+	ResourceType string    `json:"resource_type"`
+	ResourceID   string    `json:"resource_id"`
+	MetadataJSON string    `json:"metadata_json"`
+	CreatedAt    time.Time `json:"created_at"`
+}
