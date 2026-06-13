@@ -10,7 +10,7 @@ Certificate profiles are first-class service records at:
 - `GET /certificate-profiles`
 - `GET /certificate-profiles/{id}`
 
-Profiles currently model typed policy fields for validity, subject templates, allowed DNS/IP constraints, key usage, extended key usage, and basic constraints. Profile-driven X.509 extension emission belongs to the next core follow-up.
+Profiles currently model typed policy fields for validity, subject templates, allowed DNS/IP constraints, key usage, extended key usage, basic constraints, subject key identifiers, and authority key identifiers. Profile-driven X.509 extension emission is wired through the core CLI for basic constraints, key usage, extended key usage, subject key identifier, authority key identifier, and subject alternative name.
 
 ## Configuration
 

@@ -113,6 +113,14 @@ int main(int argc, char *argv[])
 	request.not_before = "2026-06-13T00:00:00Z";
 	request.not_after = "2026-09-11T00:00:00Z";
 	request.signature_algorithm = "rsa_with_sha256";
+	request.profile_id = "profile-1";
+	request.basic_constraints_critical = true;
+	request.basic_constraints_ca = false;
+	request.key_usage_critical = true;
+	request.key_usage = {"digital_signature", "key_encipherment"};
+	request.extended_key_usage = {"server_auth"};
+	request.subject_key_identifier = true;
+	request.authority_key_identifier = true;
 
 	assert(request.csr_pem == "csr");
 	assert(request.issuer_certificate_pem == "issuer");
@@ -123,6 +131,16 @@ int main(int argc, char *argv[])
 	assert(request.not_before == "2026-06-13T00:00:00Z");
 	assert(request.not_after == "2026-09-11T00:00:00Z");
 	assert(request.signature_algorithm == "rsa_with_sha256");
+	assert(request.profile_id == "profile-1");
+	assert(request.basic_constraints_critical);
+	assert(!request.basic_constraints_ca);
+	assert(request.key_usage_critical);
+	const std::vector<std::string> expected_key_usage{"digital_signature", "key_encipherment"};
+	const std::vector<std::string> expected_extended_key_usage{"server_auth"};
+	assert(request.key_usage == expected_key_usage);
+	assert(request.extended_key_usage == expected_extended_key_usage);
+	assert(request.subject_key_identifier);
+	assert(request.authority_key_identifier);
 
 	modern_pki::core::IssueResult result;
 	result.certificate_pem = "cert";

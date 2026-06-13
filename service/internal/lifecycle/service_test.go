@@ -189,6 +189,170 @@ func TestIssueRequiresApprovedEnrollment(t *testing.T) {
 	}
 }
 
+func TestIssueCertificateUsesEnrollmentProfile(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityMachine,
+		Name: "edge-01",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	profile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "machine-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		KeyUsage: domain.StringListExtensionPolicy{
+			Critical: true,
+			Values:   []string{"digital_signature", "key_encipherment"},
+		},
+		ExtendedKeyUsage: domain.StringListExtensionPolicy{
+			Values: []string{"server_auth"},
+		},
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			Critical: true,
+			CA:       false,
+		},
+		SubjectKeyIdentifier:   true,
+		AuthorityKeyIdentifier: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    time.Date(2026, time.January, 3, 3, 4, 5, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	_, err = service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count = %d, want 1", len(issuerClient.requests))
+	}
+	req := issuerClient.requests[0]
+	if req.ProfileID != profile.ID {
+		t.Fatalf("IssueRequest ProfileID = %q, want %q", req.ProfileID, profile.ID)
+	}
+	if !req.BasicConstraintsCritical || req.BasicConstraintsCA {
+		t.Fatalf("IssueRequest basic constraints = critical:%t ca:%t", req.BasicConstraintsCritical, req.BasicConstraintsCA)
+	}
+	if !req.KeyUsageCritical || !reflect.DeepEqual(req.KeyUsage, []string{"digital_signature", "key_encipherment"}) {
+		t.Fatalf("IssueRequest key usage = critical:%t values:%#v", req.KeyUsageCritical, req.KeyUsage)
+	}
+	if !reflect.DeepEqual(req.ExtendedKeyUsage, []string{"server_auth"}) {
+		t.Fatalf("IssueRequest extended key usage = %#v", req.ExtendedKeyUsage)
+	}
+	if !req.SubjectKeyIdentifier || !req.AuthorityKeyIdentifier {
+		t.Fatalf("IssueRequest key identifiers = ski:%t aki:%t", req.SubjectKeyIdentifier, req.AuthorityKeyIdentifier)
+	}
+}
+
+func TestIssueCertificatePreservesZeroProfilePathLen(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{csrInfo: corecli.CSRInfo{
+		Subject:     "CN=edge-ca",
+		DNSNames:    []string{"edge-ca.example.test"},
+		IPAddresses: []string{"127.0.0.1"},
+	}}
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityMachine,
+		Name: "edge-ca",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "root-ca",
+		Kind:           domain.IssuerRootCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	maxPathLen := 0
+	profile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "intermediate-ca",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			Critical:   true,
+			CA:         true,
+			MaxPathLen: &maxPathLen,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-ca",
+		RequestedDNSNames:    []string{"edge-ca.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    time.Date(2026, time.January, 3, 3, 4, 5, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	if _, err := service.IssueCertificate(ctx, "issuer", enrollment.ID); err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count = %d, want 1", len(issuerClient.requests))
+	}
+	got := issuerClient.requests[0].BasicConstraintsMaxPathLen
+	if got == nil || *got != 0 {
+		t.Fatalf("IssueRequest BasicConstraintsMaxPathLen = %#v, want pointer to 0", got)
+	}
+}
+
 func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -364,6 +528,34 @@ func TestCreateCertificateProfileRejectsInvalidRequest(t *testing.T) {
 	})
 	if !errors.Is(err, domain.ErrInvalidRequest) {
 		t.Fatalf("invalid profile error = %v, want ErrInvalidRequest", err)
+	}
+
+	negativePathLen := -1
+	_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "bad-ca-profile",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64(time.Hour.Seconds()),
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			CA:         true,
+			MaxPathLen: &negativePathLen,
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("negative max path len error = %v, want ErrInvalidRequest", err)
+	}
+
+	zeroPathLen := 0
+	_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "bad-leaf-profile",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64(time.Hour.Seconds()),
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			CA:         false,
+			MaxPathLen: &zeroPathLen,
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("leaf max path len error = %v, want ErrInvalidRequest", err)
 	}
 }
 

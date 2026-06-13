@@ -16,11 +16,13 @@
 #include <ctime>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace modern_pki::core
 {
@@ -590,6 +592,140 @@ void append_alt_name(std::string &alt_names, std::string_view prefix, std::strin
 	alt_names.append(value);
 }
 
+X509ExtensionPtr make_extension(X509 *certificate, X509 *issuer_certificate, int nid, const std::string &value)
+{
+	X509V3_CTX context{};
+	X509V3_set_ctx_nodb(&context);
+	X509V3_set_ctx(&context, issuer_certificate, certificate, nullptr, nullptr, 0);
+
+	X509ExtensionPtr extension{X509V3_EXT_conf_nid(nullptr, &context, nid, value.c_str())};
+	if (!extension)
+	{
+		throw_error(kCertificateCreateFailed);
+	}
+	return extension;
+}
+
+void add_extension(X509 *certificate, X509 *issuer_certificate, int nid, const std::string &value)
+{
+	X509ExtensionPtr extension = make_extension(certificate, issuer_certificate, nid, value);
+	if (X509_add_ext(certificate, extension.get(), -1) != 1)
+	{
+		throw_error(kCertificateCreateFailed);
+	}
+}
+
+std::string with_critical(bool critical, std::string value)
+{
+	if (!critical)
+	{
+		return value;
+	}
+	return "critical," + value;
+}
+
+std::string mapped_value(const std::map<std::string, std::string> &mapping, const std::string &value)
+{
+	const auto found = mapping.find(value);
+	if (found == mapping.end())
+	{
+		throw_error(kCertificateCreateFailed);
+	}
+	return found->second;
+}
+
+std::string join_mapped_values(const std::vector<std::string> &values, const std::map<std::string, std::string> &mapping)
+{
+	std::string result;
+	for (const std::string &value : values)
+	{
+		if (!result.empty())
+		{
+			result.push_back(',');
+		}
+		result += mapped_value(mapping, value);
+	}
+	return result;
+}
+
+void add_basic_constraints(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	if (!request.basic_constraints_critical && !request.basic_constraints_ca && request.basic_constraints_max_path_len < 0)
+	{
+		return;
+	}
+	if (!request.basic_constraints_ca && request.basic_constraints_max_path_len >= 0)
+	{
+		throw_error(kCertificateCreateFailed);
+	}
+
+	std::string value = request.basic_constraints_ca ? "CA:TRUE" : "CA:FALSE";
+	if (request.basic_constraints_max_path_len >= 0)
+	{
+		value += ",pathlen:" + std::to_string(request.basic_constraints_max_path_len);
+	}
+	add_extension(certificate, issuer_certificate, NID_basic_constraints, with_critical(request.basic_constraints_critical, value));
+}
+
+void add_key_usage(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	if (request.key_usage.empty())
+	{
+		return;
+	}
+	const std::map<std::string, std::string> mapping{
+	    {"digital_signature", "digitalSignature"},
+	    {"non_repudiation", "nonRepudiation"},
+	    {"key_encipherment", "keyEncipherment"},
+	    {"data_encipherment", "dataEncipherment"},
+	    {"key_agreement", "keyAgreement"},
+	    {"key_cert_sign", "keyCertSign"},
+	    {"crl_sign", "cRLSign"},
+	    {"encipher_only", "encipherOnly"},
+	    {"decipher_only", "decipherOnly"},
+	};
+	add_extension(certificate, issuer_certificate, NID_key_usage,
+	    with_critical(request.key_usage_critical, join_mapped_values(request.key_usage, mapping)));
+}
+
+void add_extended_key_usage(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	if (request.extended_key_usage.empty())
+	{
+		return;
+	}
+	const std::map<std::string, std::string> mapping{
+	    {"server_auth", "serverAuth"},
+	    {"client_auth", "clientAuth"},
+	    {"code_signing", "codeSigning"},
+	    {"email_protection", "emailProtection"},
+	    {"time_stamping", "timeStamping"},
+	    {"ocsp_signing", "OCSPSigning"},
+	};
+	add_extension(certificate, issuer_certificate, NID_ext_key_usage,
+	    with_critical(request.extended_key_usage_critical, join_mapped_values(request.extended_key_usage, mapping)));
+}
+
+void add_key_identifiers(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	if (request.subject_key_identifier)
+	{
+		add_extension(certificate, issuer_certificate, NID_subject_key_identifier, "hash");
+	}
+	if (request.authority_key_identifier)
+	{
+		add_extension(certificate, issuer_certificate, NID_authority_key_identifier, "keyid,issuer");
+	}
+}
+
+void add_profile_extensions(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	add_basic_constraints(certificate, issuer_certificate, request);
+	add_key_usage(certificate, issuer_certificate, request);
+	add_extended_key_usage(certificate, issuer_certificate, request);
+	add_key_identifiers(certificate, issuer_certificate, request);
+}
+
 void add_subject_alt_names(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
 {
 	std::string alt_names;
@@ -606,16 +742,7 @@ void add_subject_alt_names(X509 *certificate, X509 *issuer_certificate, const Is
 		return;
 	}
 
-	X509V3_CTX context{};
-	X509V3_set_ctx_nodb(&context);
-	X509V3_set_ctx(&context, issuer_certificate, certificate, nullptr, nullptr, 0);
-
-	X509ExtensionPtr extension{
-	    X509V3_EXT_conf_nid(nullptr, &context, NID_subject_alt_name, alt_names.c_str())};
-	if (!extension || X509_add_ext(certificate, extension.get(), -1) != 1)
-	{
-		throw_error(kCertificateCreateFailed);
-	}
+	add_extension(certificate, issuer_certificate, NID_subject_alt_name, alt_names);
 }
 
 std::string certificate_to_pem(X509 *certificate)
@@ -713,6 +840,7 @@ IssueResult issue_certificate(const IssueRequest &request)
 		throw_error(kCertificateCreateFailed);
 	}
 
+	add_profile_extensions(certificate.get(), issuer_certificate.get(), request);
 	add_subject_alt_names(certificate.get(), issuer_certificate.get(), request);
 
 	if (X509_sign(certificate.get(), issuer_key.get(), EVP_sha256()) <= 0)

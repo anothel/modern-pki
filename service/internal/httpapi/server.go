@@ -119,16 +119,18 @@ func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request
 	}
 
 	profile, err := s.service.CreateCertificateProfile(r.Context(), requestActor(r), lifecycle.CreateCertificateProfileRequest{
-		Name:                  req.Name,
-		Description:           req.Description,
-		IssuerID:              req.IssuerID,
-		ValidityPeriodSeconds: req.ValidityPeriodSeconds,
-		SubjectTemplate:       req.SubjectTemplate,
-		AllowedDNSPatterns:    req.AllowedDNSPatterns,
-		AllowedIPRanges:       req.AllowedIPRanges,
-		KeyUsage:              req.KeyUsage,
-		ExtendedKeyUsage:      req.ExtendedKeyUsage,
-		BasicConstraints:      req.BasicConstraints,
+		Name:                   req.Name,
+		Description:            req.Description,
+		IssuerID:               req.IssuerID,
+		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
+		SubjectTemplate:        req.SubjectTemplate,
+		AllowedDNSPatterns:     req.AllowedDNSPatterns,
+		AllowedIPRanges:        req.AllowedIPRanges,
+		KeyUsage:               req.KeyUsage,
+		ExtendedKeyUsage:       req.ExtendedKeyUsage,
+		BasicConstraints:       req.BasicConstraints,
+		SubjectKeyIdentifier:   req.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier: req.AuthorityKeyIdentifier,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -165,6 +167,7 @@ func (s *Server) createEnrollment(w http.ResponseWriter, r *http.Request) {
 	enrollment, err := s.service.CreateEnrollment(r.Context(), requestActor(r), lifecycle.CreateEnrollmentRequest{
 		IdentityID:           req.IdentityID,
 		IssuerID:             req.IssuerID,
+		CertificateProfileID: req.CertificateProfileID,
 		CSRPEM:               req.CSRPEM,
 		RequestedSubject:     req.RequestedSubject,
 		RequestedDNSNames:    req.RequestedDNSNames,
@@ -365,21 +368,24 @@ type createIssuerRequest struct {
 }
 
 type createCertificateProfileRequest struct {
-	Name                  string                           `json:"name"`
-	Description           string                           `json:"description"`
-	IssuerID              string                           `json:"issuer_id"`
-	ValidityPeriodSeconds int64                            `json:"validity_period_seconds"`
-	SubjectTemplate       string                           `json:"subject_template"`
-	AllowedDNSPatterns    []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges       []string                         `json:"allowed_ip_ranges"`
-	KeyUsage              domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage      domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints      domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	Name                   string                           `json:"name"`
+	Description            string                           `json:"description"`
+	IssuerID               string                           `json:"issuer_id"`
+	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	SubjectTemplate        string                           `json:"subject_template"`
+	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
+	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
 }
 
 type createEnrollmentRequest struct {
 	IdentityID           string    `json:"identity_id"`
 	IssuerID             string    `json:"issuer_id"`
+	CertificateProfileID string    `json:"profile_id"`
 	CSRPEM               string    `json:"csr_pem"`
 	RequestedSubject     string    `json:"requested_subject"`
 	RequestedDNSNames    []string  `json:"requested_dns_names"`
@@ -421,25 +427,28 @@ type issuerResponse struct {
 }
 
 type certificateProfileResponse struct {
-	ID                    string                           `json:"id"`
-	Name                  string                           `json:"name"`
-	Description           string                           `json:"description"`
-	IssuerID              string                           `json:"issuer_id"`
-	ValidityPeriodSeconds int64                            `json:"validity_period_seconds"`
-	SubjectTemplate       string                           `json:"subject_template"`
-	AllowedDNSPatterns    []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges       []string                         `json:"allowed_ip_ranges"`
-	KeyUsage              domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage      domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints      domain.BasicConstraintsPolicy    `json:"basic_constraints"`
-	CreatedAt             time.Time                        `json:"created_at"`
-	UpdatedAt             time.Time                        `json:"updated_at"`
+	ID                     string                           `json:"id"`
+	Name                   string                           `json:"name"`
+	Description            string                           `json:"description"`
+	IssuerID               string                           `json:"issuer_id"`
+	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	SubjectTemplate        string                           `json:"subject_template"`
+	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
+	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
+	CreatedAt              time.Time                        `json:"created_at"`
+	UpdatedAt              time.Time                        `json:"updated_at"`
 }
 
 type enrollmentResponse struct {
 	ID                   string                  `json:"id"`
 	IdentityID           string                  `json:"identity_id"`
 	IssuerID             string                  `json:"issuer_id"`
+	CertificateProfileID string                  `json:"profile_id"`
 	CSRPEM               string                  `json:"csr_pem"`
 	Status               domain.EnrollmentStatus `json:"status"`
 	RequestedSubject     string                  `json:"requested_subject"`
@@ -455,20 +464,21 @@ type enrollmentResponse struct {
 }
 
 type certificateResponse struct {
-	ID             string                   `json:"id"`
-	IdentityID     string                   `json:"identity_id"`
-	IssuerID       string                   `json:"issuer_id"`
-	EnrollmentID   string                   `json:"enrollment_id"`
-	SerialNumber   string                   `json:"serial_number"`
-	Subject        string                   `json:"subject"`
-	DNSNames       []string                 `json:"dns_names"`
-	IPAddresses    []string                 `json:"ip_addresses"`
-	NotBefore      time.Time                `json:"not_before"`
-	NotAfter       time.Time                `json:"not_after"`
-	Status         domain.CertificateStatus `json:"status"`
-	CertificatePEM string                   `json:"certificate_pem"`
-	CreatedAt      time.Time                `json:"created_at"`
-	UpdatedAt      time.Time                `json:"updated_at"`
+	ID                   string                   `json:"id"`
+	IdentityID           string                   `json:"identity_id"`
+	IssuerID             string                   `json:"issuer_id"`
+	EnrollmentID         string                   `json:"enrollment_id"`
+	CertificateProfileID string                   `json:"profile_id"`
+	SerialNumber         string                   `json:"serial_number"`
+	Subject              string                   `json:"subject"`
+	DNSNames             []string                 `json:"dns_names"`
+	IPAddresses          []string                 `json:"ip_addresses"`
+	NotBefore            time.Time                `json:"not_before"`
+	NotAfter             time.Time                `json:"not_after"`
+	Status               domain.CertificateStatus `json:"status"`
+	CertificatePEM       string                   `json:"certificate_pem"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
 }
 
 type auditEventResponse struct {
@@ -516,19 +526,21 @@ func toIssuerResponse(issuer domain.Issuer) issuerResponse {
 
 func toCertificateProfileResponse(profile domain.CertificateProfile) certificateProfileResponse {
 	return certificateProfileResponse{
-		ID:                    profile.ID,
-		Name:                  profile.Name,
-		Description:           profile.Description,
-		IssuerID:              profile.IssuerID,
-		ValidityPeriodSeconds: profile.ValidityPeriodSeconds,
-		SubjectTemplate:       profile.SubjectTemplate,
-		AllowedDNSPatterns:    profile.AllowedDNSPatterns,
-		AllowedIPRanges:       profile.AllowedIPRanges,
-		KeyUsage:              profile.KeyUsage,
-		ExtendedKeyUsage:      profile.ExtendedKeyUsage,
-		BasicConstraints:      profile.BasicConstraints,
-		CreatedAt:             profile.CreatedAt,
-		UpdatedAt:             profile.UpdatedAt,
+		ID:                     profile.ID,
+		Name:                   profile.Name,
+		Description:            profile.Description,
+		IssuerID:               profile.IssuerID,
+		ValidityPeriodSeconds:  profile.ValidityPeriodSeconds,
+		SubjectTemplate:        profile.SubjectTemplate,
+		AllowedDNSPatterns:     profile.AllowedDNSPatterns,
+		AllowedIPRanges:        profile.AllowedIPRanges,
+		KeyUsage:               profile.KeyUsage,
+		ExtendedKeyUsage:       profile.ExtendedKeyUsage,
+		BasicConstraints:       profile.BasicConstraints,
+		SubjectKeyIdentifier:   profile.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier: profile.AuthorityKeyIdentifier,
+		CreatedAt:              profile.CreatedAt,
+		UpdatedAt:              profile.UpdatedAt,
 	}
 }
 
@@ -545,6 +557,7 @@ func toEnrollmentResponse(enrollment domain.Enrollment) enrollmentResponse {
 		ID:                   enrollment.ID,
 		IdentityID:           enrollment.IdentityID,
 		IssuerID:             enrollment.IssuerID,
+		CertificateProfileID: enrollment.CertificateProfileID,
 		CSRPEM:               enrollment.CSRPEM,
 		Status:               enrollment.Status,
 		RequestedSubject:     enrollment.RequestedSubject,
@@ -570,20 +583,21 @@ func toEnrollmentResponses(enrollments []domain.Enrollment) []enrollmentResponse
 
 func toCertificateResponse(certificate domain.Certificate) certificateResponse {
 	return certificateResponse{
-		ID:             certificate.ID,
-		IdentityID:     certificate.IdentityID,
-		IssuerID:       certificate.IssuerID,
-		EnrollmentID:   certificate.EnrollmentID,
-		SerialNumber:   certificate.SerialNumber,
-		Subject:        certificate.Subject,
-		DNSNames:       certificate.DNSNames,
-		IPAddresses:    certificate.IPAddresses,
-		NotBefore:      certificate.NotBefore,
-		NotAfter:       certificate.NotAfter,
-		Status:         certificate.Status,
-		CertificatePEM: certificate.CertificatePEM,
-		CreatedAt:      certificate.CreatedAt,
-		UpdatedAt:      certificate.UpdatedAt,
+		ID:                   certificate.ID,
+		IdentityID:           certificate.IdentityID,
+		IssuerID:             certificate.IssuerID,
+		EnrollmentID:         certificate.EnrollmentID,
+		CertificateProfileID: certificate.CertificateProfileID,
+		SerialNumber:         certificate.SerialNumber,
+		Subject:              certificate.Subject,
+		DNSNames:             certificate.DNSNames,
+		IPAddresses:          certificate.IPAddresses,
+		NotBefore:            certificate.NotBefore,
+		NotAfter:             certificate.NotAfter,
+		Status:               certificate.Status,
+		CertificatePEM:       certificate.CertificatePEM,
+		CreatedAt:            certificate.CreatedAt,
+		UpdatedAt:            certificate.UpdatedAt,
 	}
 }
 

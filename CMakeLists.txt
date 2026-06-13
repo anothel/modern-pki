@@ -60,4 +60,14 @@ if(BUILD_TESTING)
         NAME modern_pki.core_cli_contract
         COMMAND modern_pki_core_cli_contract_test $<TARGET_FILE:modern-pki-core> ${CMAKE_CURRENT_BINARY_DIR}
     )
+
+    add_executable(modern_pki_core_issue_profile_test
+        tests/core_issue_profile_test.cpp
+    )
+    target_link_libraries(modern_pki_core_issue_profile_test PRIVATE modern_pki::core OpenSSL::Crypto)
+    add_dependencies(modern_pki_core_issue_profile_test modern-pki-core)
+    add_test(
+        NAME modern_pki.core_issue_profile
+        COMMAND modern_pki_core_issue_profile_test $<TARGET_FILE:modern-pki-core> ${CMAKE_CURRENT_BINARY_DIR}
+    )
 endif()

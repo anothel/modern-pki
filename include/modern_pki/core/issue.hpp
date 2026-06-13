@@ -17,6 +17,16 @@ struct IssueRequest
 	std::string not_before;
 	std::string not_after;
 	std::string signature_algorithm;
+	std::string profile_id;
+	bool basic_constraints_critical = false;
+	bool basic_constraints_ca = false;
+	int basic_constraints_max_path_len = -1;
+	bool key_usage_critical = false;
+	std::vector<std::string> key_usage;
+	bool extended_key_usage_critical = false;
+	std::vector<std::string> extended_key_usage;
+	bool subject_key_identifier = false;
+	bool authority_key_identifier = false;
 };
 
 struct IssueResult

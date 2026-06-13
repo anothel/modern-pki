@@ -109,6 +109,8 @@ func TestCreateCertificateProfile(t *testing.T) {
 			"critical": true,
 			"ca":       false,
 		},
+		"subject_key_identifier":   true,
+		"authority_key_identifier": true,
 	}, &created)
 	assertStatus(t, status, http.StatusCreated)
 	if created.ID == "" {
@@ -119,6 +121,9 @@ func TestCreateCertificateProfile(t *testing.T) {
 	}
 	if !created.KeyUsage.Critical || len(created.KeyUsage.Values) != 2 {
 		t.Fatalf("created profile key usage = %#v", created.KeyUsage)
+	}
+	if !created.SubjectKeyIdentifier || !created.AuthorityKeyIdentifier {
+		t.Fatalf("created profile key identifiers = ski:%t aki:%t", created.SubjectKeyIdentifier, created.AuthorityKeyIdentifier)
 	}
 
 	var listed []apiCertificateProfile
@@ -542,25 +547,28 @@ type apiIssuer struct {
 }
 
 type apiCertificateProfile struct {
-	ID                    string                           `json:"id"`
-	Name                  string                           `json:"name"`
-	Description           string                           `json:"description"`
-	IssuerID              string                           `json:"issuer_id"`
-	ValidityPeriodSeconds int64                            `json:"validity_period_seconds"`
-	SubjectTemplate       string                           `json:"subject_template"`
-	AllowedDNSPatterns    []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges       []string                         `json:"allowed_ip_ranges"`
-	KeyUsage              domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage      domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints      domain.BasicConstraintsPolicy    `json:"basic_constraints"`
-	CreatedAt             time.Time                        `json:"created_at"`
-	UpdatedAt             time.Time                        `json:"updated_at"`
+	ID                     string                           `json:"id"`
+	Name                   string                           `json:"name"`
+	Description            string                           `json:"description"`
+	IssuerID               string                           `json:"issuer_id"`
+	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	SubjectTemplate        string                           `json:"subject_template"`
+	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
+	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
+	CreatedAt              time.Time                        `json:"created_at"`
+	UpdatedAt              time.Time                        `json:"updated_at"`
 }
 
 type apiEnrollment struct {
 	ID                   string                  `json:"id"`
 	IdentityID           string                  `json:"identity_id"`
 	IssuerID             string                  `json:"issuer_id"`
+	CertificateProfileID string                  `json:"profile_id"`
 	CSRPEM               string                  `json:"csr_pem"`
 	Status               domain.EnrollmentStatus `json:"status"`
 	RequestedSubject     string                  `json:"requested_subject"`
@@ -576,20 +584,21 @@ type apiEnrollment struct {
 }
 
 type apiCertificate struct {
-	ID             string                   `json:"id"`
-	IdentityID     string                   `json:"identity_id"`
-	IssuerID       string                   `json:"issuer_id"`
-	EnrollmentID   string                   `json:"enrollment_id"`
-	SerialNumber   string                   `json:"serial_number"`
-	Subject        string                   `json:"subject"`
-	DNSNames       []string                 `json:"dns_names"`
-	IPAddresses    []string                 `json:"ip_addresses"`
-	NotBefore      time.Time                `json:"not_before"`
-	NotAfter       time.Time                `json:"not_after"`
-	Status         domain.CertificateStatus `json:"status"`
-	CertificatePEM string                   `json:"certificate_pem"`
-	CreatedAt      time.Time                `json:"created_at"`
-	UpdatedAt      time.Time                `json:"updated_at"`
+	ID                   string                   `json:"id"`
+	IdentityID           string                   `json:"identity_id"`
+	IssuerID             string                   `json:"issuer_id"`
+	EnrollmentID         string                   `json:"enrollment_id"`
+	CertificateProfileID string                   `json:"profile_id"`
+	SerialNumber         string                   `json:"serial_number"`
+	Subject              string                   `json:"subject"`
+	DNSNames             []string                 `json:"dns_names"`
+	IPAddresses          []string                 `json:"ip_addresses"`
+	NotBefore            time.Time                `json:"not_before"`
+	NotAfter             time.Time                `json:"not_after"`
+	Status               domain.CertificateStatus `json:"status"`
+	CertificatePEM       string                   `json:"certificate_pem"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
 }
 
 type apiAuditEvent struct {

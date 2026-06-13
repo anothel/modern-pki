@@ -257,9 +257,9 @@ func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile dom
 INSERT INTO certificate_profiles (
 	id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 )`,
 		profile.ID,
 		profile.Name,
@@ -272,6 +272,8 @@ INSERT INTO certificate_profiles (
 		keyUsage,
 		extendedKeyUsage,
 		basicConstraints,
+		profile.SubjectKeyIdentifier,
+		profile.AuthorityKeyIdentifier,
 		formatSQLTime(profile.CreatedAt),
 		formatSQLTime(profile.UpdatedAt),
 	)
@@ -282,7 +284,7 @@ func (r sqlRepository) GetCertificateProfile(ctx context.Context, id string) (do
 	profile, err := scanCertificateProfile(r.exec.QueryRowContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
 FROM certificate_profiles
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -298,7 +300,7 @@ func (r sqlRepository) ListCertificateProfiles(ctx context.Context) ([]domain.Ce
 	rows, err := r.exec.QueryContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
 FROM certificate_profiles
 ORDER BY created_at, id`)
 	if err != nil {
@@ -340,15 +342,16 @@ func (r sqlRepository) CreateEnrollment(ctx context.Context, enrollment domain.E
 
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO enrollments (
-	id, identity_id, issuer_id, csr_pem, status, requested_subject,
+	id, identity_id, issuer_id, certificate_profile_id, csr_pem, status, requested_subject,
 	requested_dns_names, requested_ip_addresses, csr_dns_names, csr_ip_addresses, requested_not_after,
 	approved_by, approved_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )`,
 		enrollment.ID,
 		enrollment.IdentityID,
 		enrollment.IssuerID,
+		enrollment.CertificateProfileID,
 		enrollment.CSRPEM,
 		string(enrollment.Status),
 		enrollment.RequestedSubject,
@@ -367,7 +370,7 @@ INSERT INTO enrollments (
 
 func (r sqlRepository) GetEnrollment(ctx context.Context, id string) (domain.Enrollment, error) {
 	enrollment, err := scanEnrollment(r.exec.QueryRowContext(ctx, `
-SELECT id, identity_id, issuer_id, csr_pem, status, requested_subject,
+SELECT id, identity_id, issuer_id, certificate_profile_id, csr_pem, status, requested_subject,
 	requested_dns_names, requested_ip_addresses, csr_dns_names, csr_ip_addresses, requested_not_after,
 	approved_by, approved_at, created_at, updated_at
 FROM enrollments
@@ -383,7 +386,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListEnrollments(ctx context.Context) ([]domain.Enrollment, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, identity_id, issuer_id, csr_pem, status, requested_subject,
+SELECT id, identity_id, issuer_id, certificate_profile_id, csr_pem, status, requested_subject,
 	requested_dns_names, requested_ip_addresses, csr_dns_names, csr_ip_addresses, requested_not_after,
 	approved_by, approved_at, created_at, updated_at
 FROM enrollments
@@ -457,22 +460,24 @@ func (r sqlRepository) updateEnrollment(ctx context.Context, enrollment domain.E
 UPDATE enrollments
 SET identity_id = $1,
 	issuer_id = $2,
-	csr_pem = $3,
-	status = $4,
-	requested_subject = $5,
-	requested_dns_names = $6,
-	requested_ip_addresses = $7,
-	csr_dns_names = $8,
-	csr_ip_addresses = $9,
-	requested_not_after = $10,
-	approved_by = $11,
-	approved_at = $12,
-	created_at = $13,
-	updated_at = $14
-WHERE id = $15`
+	certificate_profile_id = $3,
+	csr_pem = $4,
+	status = $5,
+	requested_subject = $6,
+	requested_dns_names = $7,
+	requested_ip_addresses = $8,
+	csr_dns_names = $9,
+	csr_ip_addresses = $10,
+	requested_not_after = $11,
+	approved_by = $12,
+	approved_at = $13,
+	created_at = $14,
+	updated_at = $15
+WHERE id = $16`
 	args := []any{
 		enrollment.IdentityID,
 		enrollment.IssuerID,
+		enrollment.CertificateProfileID,
 		enrollment.CSRPEM,
 		string(enrollment.Status),
 		enrollment.RequestedSubject,
@@ -489,7 +494,7 @@ WHERE id = $15`
 	}
 	if requireStatus {
 		query += `
-AND status = $16`
+AND status = $17`
 		args = append(args, string(currentStatus))
 	}
 	return r.exec.ExecContext(ctx, query, args...)
@@ -507,16 +512,17 @@ func (r sqlRepository) CreateCertificate(ctx context.Context, certificate domain
 
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO certificates (
-	id, identity_id, issuer_id, enrollment_id, serial_number, subject,
+	id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
 	created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 )`,
 		certificate.ID,
 		certificate.IdentityID,
 		certificate.IssuerID,
 		certificate.EnrollmentID,
+		certificate.CertificateProfileID,
 		certificate.SerialNumber,
 		certificate.Subject,
 		dnsNames,
@@ -533,7 +539,7 @@ INSERT INTO certificates (
 
 func (r sqlRepository) GetCertificate(ctx context.Context, id string) (domain.Certificate, error) {
 	certificate, err := scanCertificate(r.exec.QueryRowContext(ctx, `
-SELECT id, identity_id, issuer_id, enrollment_id, serial_number, subject,
+SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
 	created_at, updated_at
 FROM certificates
@@ -549,7 +555,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, identity_id, issuer_id, enrollment_id, serial_number, subject,
+SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
 	created_at, updated_at
 FROM certificates
@@ -616,21 +622,23 @@ UPDATE certificates
 SET identity_id = $1,
 	issuer_id = $2,
 	enrollment_id = $3,
-	serial_number = $4,
-	subject = $5,
-	dns_names = $6,
-	ip_addresses = $7,
-	not_before = $8,
-	not_after = $9,
-	status = $10,
-	certificate_pem = $11,
-	created_at = $12,
-	updated_at = $13
-WHERE id = $14`
+	certificate_profile_id = $4,
+	serial_number = $5,
+	subject = $6,
+	dns_names = $7,
+	ip_addresses = $8,
+	not_before = $9,
+	not_after = $10,
+	status = $11,
+	certificate_pem = $12,
+	created_at = $13,
+	updated_at = $14
+WHERE id = $15`
 	args := []any{
 		certificate.IdentityID,
 		certificate.IssuerID,
 		certificate.EnrollmentID,
+		certificate.CertificateProfileID,
 		certificate.SerialNumber,
 		certificate.Subject,
 		dnsNames,
@@ -645,7 +653,7 @@ WHERE id = $14`
 	}
 	if requireStatus {
 		query += `
-AND status = $15`
+AND status = $16`
 		args = append(args, string(currentStatus))
 	}
 	return r.exec.ExecContext(ctx, query, args...)
@@ -788,6 +796,8 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 	var keyUsage string
 	var extendedKeyUsage string
 	var basicConstraints string
+	var subjectKeyIdentifier bool
+	var authorityKeyIdentifier bool
 	var createdAt any
 	var updatedAt any
 
@@ -803,6 +813,8 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 		&keyUsage,
 		&extendedKeyUsage,
 		&basicConstraints,
+		&subjectKeyIdentifier,
+		&authorityKeyIdentifier,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -823,7 +835,7 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 	if err := unmarshalJSON(extendedKeyUsage, &profile.ExtendedKeyUsage); err != nil {
 		return domain.CertificateProfile{}, err
 	}
-	if err := unmarshalJSON(basicConstraints, &profile.BasicConstraints); err != nil {
+	if err := unmarshalBasicConstraintsPolicy(basicConstraints, &profile.BasicConstraints); err != nil {
 		return domain.CertificateProfile{}, err
 	}
 	parsedCreatedAt, err := parseSQLTime(createdAt)
@@ -837,6 +849,8 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 
 	profile.AllowedDNSPatterns = parsedAllowedDNSPatterns
 	profile.AllowedIPRanges = parsedAllowedIPRanges
+	profile.SubjectKeyIdentifier = subjectKeyIdentifier
+	profile.AuthorityKeyIdentifier = authorityKeyIdentifier
 	profile.CreatedAt = parsedCreatedAt
 	profile.UpdatedAt = parsedUpdatedAt
 	return profile, nil
@@ -858,6 +872,7 @@ func scanEnrollment(scanner sqlScanner) (domain.Enrollment, error) {
 		&enrollment.ID,
 		&enrollment.IdentityID,
 		&enrollment.IssuerID,
+		&enrollment.CertificateProfileID,
 		&enrollment.CSRPEM,
 		&status,
 		&enrollment.RequestedSubject,
@@ -934,6 +949,7 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 		&certificate.IdentityID,
 		&certificate.IssuerID,
 		&certificate.EnrollmentID,
+		&certificate.CertificateProfileID,
 		&certificate.SerialNumber,
 		&certificate.Subject,
 		&dnsNames,
@@ -1029,6 +1045,19 @@ func unmarshalJSON(data string, value any) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(data), value)
+}
+
+func unmarshalBasicConstraintsPolicy(data string, value *domain.BasicConstraintsPolicy) error {
+	if data == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(data), value); err != nil {
+		return err
+	}
+	if !value.CA && value.MaxPathLen != nil && *value.MaxPathLen == 0 {
+		value.MaxPathLen = nil
+	}
+	return nil
 }
 
 func unmarshalStringSlice(data string) ([]string, error) {

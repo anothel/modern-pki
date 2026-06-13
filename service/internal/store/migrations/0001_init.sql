@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS certificate_profiles (
     key_usage TEXT NOT NULL,
     extended_key_usage TEXT NOT NULL,
     basic_constraints TEXT NOT NULL,
+    subject_key_identifier BOOLEAN NOT NULL,
+    authority_key_identifier BOOLEAN NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS enrollments (
     id TEXT PRIMARY KEY,
     identity_id TEXT NOT NULL REFERENCES identities(id),
     issuer_id TEXT NOT NULL REFERENCES issuers(id),
+    certificate_profile_id TEXT NOT NULL,
     csr_pem TEXT NOT NULL,
     status TEXT NOT NULL,
     requested_subject TEXT NOT NULL,
@@ -58,6 +61,7 @@ CREATE TABLE IF NOT EXISTS certificates (
     identity_id TEXT NOT NULL REFERENCES identities(id),
     issuer_id TEXT NOT NULL REFERENCES issuers(id),
     enrollment_id TEXT NOT NULL REFERENCES enrollments(id),
+    certificate_profile_id TEXT NOT NULL,
     serial_number TEXT NOT NULL,
     subject TEXT NOT NULL,
     dns_names TEXT NOT NULL,

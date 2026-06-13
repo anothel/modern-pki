@@ -1,6 +1,7 @@
 #include "modern_pki/core/csr.hpp"
 #include "modern_pki/core/issue.hpp"
 
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -17,8 +18,12 @@ struct JsonValue
 {
 	bool is_array = false;
 	bool is_null = false;
+	bool is_bool = false;
+	bool is_number = false;
 	std::string string_value;
 	std::vector<std::string> array_value;
+	bool bool_value = false;
+	int number_value = 0;
 };
 
 using JsonObject = std::map<std::string, JsonValue>;
@@ -134,6 +139,26 @@ private:
 			value.is_null = true;
 			return value;
 		}
+		if (consume_literal("true"))
+		{
+			JsonValue value;
+			value.is_bool = true;
+			value.bool_value = true;
+			return value;
+		}
+		if (consume_literal("false"))
+		{
+			JsonValue value;
+			value.is_bool = true;
+			return value;
+		}
+		if (input_[position_] == '-' || std::isdigit(static_cast<unsigned char>(input_[position_])))
+		{
+			JsonValue value;
+			value.is_number = true;
+			value.number_value = parse_integer();
+			return value;
+		}
 
 		throw_json_parse_failed();
 	}
@@ -169,6 +194,27 @@ private:
 			expect(',');
 		}
 		return values;
+	}
+
+	int parse_integer()
+	{
+		bool negative = false;
+		if (input_[position_] == '-')
+		{
+			negative = true;
+			++position_;
+		}
+		if (position_ >= input_.size() || !std::isdigit(static_cast<unsigned char>(input_[position_])))
+		{
+			throw_json_parse_failed();
+		}
+		int value = 0;
+		while (position_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[position_])))
+		{
+			value = (value * 10) + (input_[position_] - '0');
+			++position_;
+		}
+		return negative ? -value : value;
 	}
 
 	std::string parse_string()
@@ -326,7 +372,7 @@ std::string get_string_field(const JsonObject &object, const std::string &key)
 	{
 		return {};
 	}
-	if (found->second.is_array || found->second.is_null)
+	if (found->second.is_array || found->second.is_null || found->second.is_bool || found->second.is_number)
 	{
 		throw_json_parse_failed();
 	}
@@ -351,6 +397,34 @@ std::vector<std::string> get_string_array_field(const JsonObject &object, const 
 	return found->second.array_value;
 }
 
+bool get_bool_field(const JsonObject &object, const std::string &key)
+{
+	const auto found = object.find(key);
+	if (found == object.end() || found->second.is_null)
+	{
+		return false;
+	}
+	if (!found->second.is_bool)
+	{
+		throw_json_parse_failed();
+	}
+	return found->second.bool_value;
+}
+
+int get_int_field(const JsonObject &object, const std::string &key, int default_value)
+{
+	const auto found = object.find(key);
+	if (found == object.end() || found->second.is_null)
+	{
+		return default_value;
+	}
+	if (!found->second.is_number)
+	{
+		throw_json_parse_failed();
+	}
+	return found->second.number_value;
+}
+
 modern_pki::core::IssueRequest issue_request_from_json(std::string_view json)
 {
 	const JsonObject object = JsonParser{json}.parse_object();
@@ -365,6 +439,16 @@ modern_pki::core::IssueRequest issue_request_from_json(std::string_view json)
 	request.not_before = get_string_field(object, "not_before");
 	request.not_after = get_string_field(object, "not_after");
 	request.signature_algorithm = get_string_field(object, "signature_algorithm");
+	request.profile_id = get_string_field(object, "profile_id");
+	request.basic_constraints_critical = get_bool_field(object, "basic_constraints_critical");
+	request.basic_constraints_ca = get_bool_field(object, "basic_constraints_ca");
+	request.basic_constraints_max_path_len = get_int_field(object, "basic_constraints_max_path_len", -1);
+	request.key_usage_critical = get_bool_field(object, "key_usage_critical");
+	request.key_usage = get_string_array_field(object, "key_usage");
+	request.extended_key_usage_critical = get_bool_field(object, "extended_key_usage_critical");
+	request.extended_key_usage = get_string_array_field(object, "extended_key_usage");
+	request.subject_key_identifier = get_bool_field(object, "subject_key_identifier");
+	request.authority_key_identifier = get_bool_field(object, "authority_key_identifier");
 	return request;
 }
 

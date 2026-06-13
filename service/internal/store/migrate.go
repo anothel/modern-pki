@@ -24,6 +24,9 @@ func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error
 	if _, err := db.ExecContext(ctx, string(sqlBytes)); err != nil {
 		return fmt.Errorf("execute initial migration: %w", err)
 	}
+	if err := applyCompatibilityMigrations(ctx, db, driver); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -36,4 +39,85 @@ func initialMigrationPath(driver string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported database driver %q", driver)
 	}
+}
+
+func applyCompatibilityMigrations(ctx context.Context, db *sql.DB, driver string) error {
+	switch driver {
+	case "sqlite":
+		return applySQLiteCompatibilityMigrations(ctx, db)
+	case "pgx":
+		return applyPostgresCompatibilityMigrations(ctx, db)
+	default:
+		return fmt.Errorf("unsupported database driver %q", driver)
+	}
+}
+
+func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{table: "certificate_profiles", name: "subject_key_identifier", definition: "subject_key_identifier INTEGER NOT NULL DEFAULT 0"},
+		{table: "certificate_profiles", name: "authority_key_identifier", definition: "authority_key_identifier INTEGER NOT NULL DEFAULT 0"},
+		{table: "enrollments", name: "certificate_profile_id", definition: "certificate_profile_id TEXT NOT NULL DEFAULT ''"},
+		{table: "certificates", name: "certificate_profile_id", definition: "certificate_profile_id TEXT NOT NULL DEFAULT ''"},
+	}
+
+	for _, column := range columns {
+		exists, err := sqliteColumnExists(ctx, db, column.table, column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", column.table, column.definition)); err != nil {
+			return fmt.Errorf("add sqlite column %s.%s: %w", column.table, column.name, err)
+		}
+	}
+	return nil
+}
+
+func sqliteColumnExists(ctx context.Context, db *sql.DB, table string, name string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("inspect sqlite table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var columnName string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return false, fmt.Errorf("scan sqlite table %s: %w", table, err)
+		}
+		if columnName == name {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect sqlite table %s: %w", table, err)
+	}
+	return false, nil
+}
+
+func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS subject_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS authority_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE certificates ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
+	}
+
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("execute postgres compatibility migration: %w", err)
+		}
+	}
+	return nil
 }

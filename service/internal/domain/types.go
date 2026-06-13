@@ -92,29 +92,32 @@ type StringListExtensionPolicy struct {
 type BasicConstraintsPolicy struct {
 	Critical   bool `json:"critical"`
 	CA         bool `json:"ca"`
-	MaxPathLen int  `json:"max_path_len"`
+	MaxPathLen *int `json:"max_path_len,omitempty"`
 }
 
 type CertificateProfile struct {
-	ID                    string
-	Name                  string
-	Description           string
-	IssuerID              string
-	ValidityPeriodSeconds int64
-	SubjectTemplate       string
-	AllowedDNSPatterns    []string
-	AllowedIPRanges       []string
-	KeyUsage              StringListExtensionPolicy
-	ExtendedKeyUsage      StringListExtensionPolicy
-	BasicConstraints      BasicConstraintsPolicy
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID                     string
+	Name                   string
+	Description            string
+	IssuerID               string
+	ValidityPeriodSeconds  int64
+	SubjectTemplate        string
+	AllowedDNSPatterns     []string
+	AllowedIPRanges        []string
+	KeyUsage               StringListExtensionPolicy
+	ExtendedKeyUsage       StringListExtensionPolicy
+	BasicConstraints       BasicConstraintsPolicy
+	SubjectKeyIdentifier   bool
+	AuthorityKeyIdentifier bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type Enrollment struct {
 	ID                   string
 	IdentityID           string
 	IssuerID             string
+	CertificateProfileID string
 	CSRPEM               string
 	Status               EnrollmentStatus
 	RequestedSubject     string
@@ -130,20 +133,21 @@ type Enrollment struct {
 }
 
 type Certificate struct {
-	ID             string
-	IdentityID     string
-	IssuerID       string
-	EnrollmentID   string
-	SerialNumber   string
-	Subject        string
-	DNSNames       []string
-	IPAddresses    []string
-	NotBefore      time.Time
-	NotAfter       time.Time
-	Status         CertificateStatus
-	CertificatePEM string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                   string
+	IdentityID           string
+	IssuerID             string
+	EnrollmentID         string
+	CertificateProfileID string
+	SerialNumber         string
+	Subject              string
+	DNSNames             []string
+	IPAddresses          []string
+	NotBefore            time.Time
+	NotAfter             time.Time
+	Status               CertificateStatus
+	CertificatePEM       string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type Revocation struct {

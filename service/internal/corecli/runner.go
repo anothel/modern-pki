@@ -12,15 +12,25 @@ import (
 )
 
 type IssueRequest struct {
-	CSRPEM               string    `json:"csr_pem"`
-	IssuerCertificatePEM string    `json:"issuer_certificate_pem"`
-	IssuerKeyRef         string    `json:"issuer_key_ref"`
-	Subject              string    `json:"subject"`
-	DNSNames             []string  `json:"dns_names"`
-	IPAddresses          []string  `json:"ip_addresses"`
-	NotBefore            time.Time `json:"not_before"`
-	NotAfter             time.Time `json:"not_after"`
-	SignatureAlgorithm   string    `json:"signature_algorithm"`
+	CSRPEM                     string    `json:"csr_pem"`
+	IssuerCertificatePEM       string    `json:"issuer_certificate_pem"`
+	IssuerKeyRef               string    `json:"issuer_key_ref"`
+	Subject                    string    `json:"subject"`
+	DNSNames                   []string  `json:"dns_names"`
+	IPAddresses                []string  `json:"ip_addresses"`
+	NotBefore                  time.Time `json:"not_before"`
+	NotAfter                   time.Time `json:"not_after"`
+	SignatureAlgorithm         string    `json:"signature_algorithm"`
+	ProfileID                  string    `json:"profile_id,omitempty"`
+	BasicConstraintsCritical   bool      `json:"basic_constraints_critical,omitempty"`
+	BasicConstraintsCA         bool      `json:"basic_constraints_ca,omitempty"`
+	BasicConstraintsMaxPathLen *int      `json:"basic_constraints_max_path_len,omitempty"`
+	KeyUsageCritical           bool      `json:"key_usage_critical,omitempty"`
+	KeyUsage                   []string  `json:"key_usage,omitempty"`
+	ExtendedKeyUsageCritical   bool      `json:"extended_key_usage_critical,omitempty"`
+	ExtendedKeyUsage           []string  `json:"extended_key_usage,omitempty"`
+	SubjectKeyIdentifier       bool      `json:"subject_key_identifier,omitempty"`
+	AuthorityKeyIdentifier     bool      `json:"authority_key_identifier,omitempty"`
 }
 
 type IssueResult struct {

@@ -60,21 +60,24 @@ type CreateIssuerRequest struct {
 }
 
 type CreateCertificateProfileRequest struct {
-	Name                  string
-	Description           string
-	IssuerID              string
-	ValidityPeriodSeconds int64
-	SubjectTemplate       string
-	AllowedDNSPatterns    []string
-	AllowedIPRanges       []string
-	KeyUsage              domain.StringListExtensionPolicy
-	ExtendedKeyUsage      domain.StringListExtensionPolicy
-	BasicConstraints      domain.BasicConstraintsPolicy
+	Name                   string
+	Description            string
+	IssuerID               string
+	ValidityPeriodSeconds  int64
+	SubjectTemplate        string
+	AllowedDNSPatterns     []string
+	AllowedIPRanges        []string
+	KeyUsage               domain.StringListExtensionPolicy
+	ExtendedKeyUsage       domain.StringListExtensionPolicy
+	BasicConstraints       domain.BasicConstraintsPolicy
+	SubjectKeyIdentifier   bool
+	AuthorityKeyIdentifier bool
 }
 
 type CreateEnrollmentRequest struct {
 	IdentityID           string
 	IssuerID             string
+	CertificateProfileID string
 	CSRPEM               string
 	RequestedSubject     string
 	RequestedDNSNames    []string
@@ -153,19 +156,21 @@ func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, re
 
 	now := s.clock.Now()
 	profile := domain.CertificateProfile{
-		ID:                    s.idgen.NewID(),
-		Name:                  req.Name,
-		Description:           req.Description,
-		IssuerID:              req.IssuerID,
-		ValidityPeriodSeconds: req.ValidityPeriodSeconds,
-		SubjectTemplate:       req.SubjectTemplate,
-		AllowedDNSPatterns:    append([]string(nil), req.AllowedDNSPatterns...),
-		AllowedIPRanges:       append([]string(nil), req.AllowedIPRanges...),
-		KeyUsage:              copyStringListExtensionPolicy(req.KeyUsage),
-		ExtendedKeyUsage:      copyStringListExtensionPolicy(req.ExtendedKeyUsage),
-		BasicConstraints:      req.BasicConstraints,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		ID:                     s.idgen.NewID(),
+		Name:                   req.Name,
+		Description:            req.Description,
+		IssuerID:               req.IssuerID,
+		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
+		SubjectTemplate:        req.SubjectTemplate,
+		AllowedDNSPatterns:     append([]string(nil), req.AllowedDNSPatterns...),
+		AllowedIPRanges:        append([]string(nil), req.AllowedIPRanges...),
+		KeyUsage:               copyStringListExtensionPolicy(req.KeyUsage),
+		ExtendedKeyUsage:       copyStringListExtensionPolicy(req.ExtendedKeyUsage),
+		BasicConstraints:       req.BasicConstraints,
+		SubjectKeyIdentifier:   req.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier: req.AuthorityKeyIdentifier,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
@@ -194,6 +199,15 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 	if _, err := s.repo.GetIssuer(ctx, req.IssuerID); err != nil {
 		return domain.Enrollment{}, err
 	}
+	if req.CertificateProfileID != "" {
+		profile, err := s.repo.GetCertificateProfile(ctx, req.CertificateProfileID)
+		if err != nil {
+			return domain.Enrollment{}, err
+		}
+		if profile.IssuerID != req.IssuerID {
+			return domain.Enrollment{}, domain.ErrInvalidRequest
+		}
+	}
 
 	csrInfo, err := s.issuer.InspectCSR(ctx, req.CSRPEM)
 	if err != nil {
@@ -207,6 +221,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 		ID:                   s.idgen.NewID(),
 		IdentityID:           req.IdentityID,
 		IssuerID:             req.IssuerID,
+		CertificateProfileID: req.CertificateProfileID,
 		CSRPEM:               req.CSRPEM,
 		Status:               domain.EnrollmentPending,
 		RequestedSubject:     req.RequestedSubject,
@@ -315,19 +330,36 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err != nil {
 		return domain.Certificate{}, err
 	}
+	var profile domain.CertificateProfile
+	if enrollment.CertificateProfileID != "" {
+		profile, err = s.repo.GetCertificateProfile(ctx, enrollment.CertificateProfileID)
+		if err != nil {
+			return domain.Certificate{}, err
+		}
+	}
 
 	now := s.clock.Now()
 	// MVP limit: signing precedes DB commit; conditional finalization below prevents stale issuers from persisting duplicates.
 	result, err := s.issuer.Issue(ctx, corecli.IssueRequest{
-		CSRPEM:               enrollment.CSRPEM,
-		IssuerCertificatePEM: issuer.CertificatePEM,
-		IssuerKeyRef:         issuer.KeyRef,
-		Subject:              enrollment.RequestedSubject,
-		DNSNames:             append([]string(nil), enrollment.RequestedDNSNames...),
-		IPAddresses:          append([]string(nil), enrollment.RequestedIPAddresses...),
-		NotBefore:            now,
-		NotAfter:             enrollment.RequestedNotAfter,
-		SignatureAlgorithm:   "ecdsa_with_sha256",
+		CSRPEM:                     enrollment.CSRPEM,
+		IssuerCertificatePEM:       issuer.CertificatePEM,
+		IssuerKeyRef:               issuer.KeyRef,
+		Subject:                    enrollment.RequestedSubject,
+		DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
+		IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
+		NotBefore:                  now,
+		NotAfter:                   enrollment.RequestedNotAfter,
+		SignatureAlgorithm:         "ecdsa_with_sha256",
+		ProfileID:                  profile.ID,
+		BasicConstraintsCritical:   profile.BasicConstraints.Critical,
+		BasicConstraintsCA:         profile.BasicConstraints.CA,
+		BasicConstraintsMaxPathLen: profile.BasicConstraints.MaxPathLen,
+		KeyUsageCritical:           profile.KeyUsage.Critical,
+		KeyUsage:                   append([]string(nil), profile.KeyUsage.Values...),
+		ExtendedKeyUsageCritical:   profile.ExtendedKeyUsage.Critical,
+		ExtendedKeyUsage:           append([]string(nil), profile.ExtendedKeyUsage.Values...),
+		SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
 	})
 	if err != nil {
 		return domain.Certificate{}, mapIssueError(err)
@@ -351,20 +383,21 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		}
 
 		certificate = domain.Certificate{
-			ID:             s.idgen.NewID(),
-			IdentityID:     currentEnrollment.IdentityID,
-			IssuerID:       currentEnrollment.IssuerID,
-			EnrollmentID:   currentEnrollment.ID,
-			SerialNumber:   result.SerialNumber,
-			Subject:        result.Subject,
-			DNSNames:       append([]string(nil), currentEnrollment.RequestedDNSNames...),
-			IPAddresses:    append([]string(nil), currentEnrollment.RequestedIPAddresses...),
-			NotBefore:      result.NotBefore,
-			NotAfter:       result.NotAfter,
-			Status:         domain.CertificateValid,
-			CertificatePEM: result.CertificatePEM,
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			ID:                   s.idgen.NewID(),
+			IdentityID:           currentEnrollment.IdentityID,
+			IssuerID:             currentEnrollment.IssuerID,
+			EnrollmentID:         currentEnrollment.ID,
+			CertificateProfileID: currentEnrollment.CertificateProfileID,
+			SerialNumber:         result.SerialNumber,
+			Subject:              result.Subject,
+			DNSNames:             append([]string(nil), currentEnrollment.RequestedDNSNames...),
+			IPAddresses:          append([]string(nil), currentEnrollment.RequestedIPAddresses...),
+			NotBefore:            result.NotBefore,
+			NotAfter:             result.NotAfter,
+			Status:               domain.CertificateValid,
+			CertificatePEM:       result.CertificatePEM,
+			CreatedAt:            now,
+			UpdatedAt:            now,
 		}
 
 		if err := repo.CreateCertificate(ctx, certificate); err != nil {
@@ -485,6 +518,11 @@ func validateCreateIssuerRequest(req CreateIssuerRequest) error {
 func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest) error {
 	if isBlank(req.Name) || isBlank(req.IssuerID) || req.ValidityPeriodSeconds <= 0 {
 		return domain.ErrInvalidRequest
+	}
+	if req.BasicConstraints.MaxPathLen != nil {
+		if *req.BasicConstraints.MaxPathLen < 0 || !req.BasicConstraints.CA {
+			return domain.ErrInvalidRequest
+		}
 	}
 	return nil
 }
