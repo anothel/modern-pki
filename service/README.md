@@ -23,8 +23,10 @@ Certificate lifecycle operations include revocation, suspension, and resumption:
 - `POST /certificates/{id}/revoke`
 - `POST /certificates/{id}/suspend`
 - `POST /certificates/{id}/resume`
+- `POST /certificates/{id}/renew`
 
 Normal revocation accepts only `valid` certificates. Forced revocation accepts `valid` and `suspended` certificates by posting `{"force": true}` with the revocation reason.
+Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 
 OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service selects the responder issuer from the OCSP issuer name/key hash, maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, and delegates OCSP response signing to the core CLI. Requests for a known issuer but missing or mismatched serial return `unknown`; requests whose issuer hash is not known are rejected.
 

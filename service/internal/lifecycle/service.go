@@ -98,6 +98,11 @@ type CreateEnrollmentRequest struct {
 	RequestedNotAfter    time.Time
 }
 
+type RenewCertificateRequest struct {
+	CSRPEM            string
+	RequestedNotAfter time.Time
+}
+
 type PublishCRLRequest struct {
 	IssuerID          string
 	DistributionPoint string
@@ -282,6 +287,98 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 			"identity_id", enrollment.IdentityID,
 			"issuer_id", enrollment.IssuerID,
 			"enrollment_id", enrollment.ID,
+			"profile_id", enrollment.CertificateProfileID,
+		))
+	}); err != nil {
+		return domain.Enrollment{}, err
+	}
+	return enrollment, nil
+}
+
+func (s *Service) RenewCertificate(ctx context.Context, actor string, certificateID string, req RenewCertificateRequest) (domain.Enrollment, error) {
+	if isBlank(certificateID) {
+		return domain.Enrollment{}, domain.ErrInvalidRequest
+	}
+	certificate, err := s.repo.GetCertificate(ctx, certificateID)
+	if err != nil {
+		return domain.Enrollment{}, err
+	}
+	if certificate.Status != domain.CertificateValid {
+		return domain.Enrollment{}, domain.ErrInvalidTransition
+	}
+
+	createReq := CreateEnrollmentRequest{
+		IdentityID:           certificate.IdentityID,
+		IssuerID:             certificate.IssuerID,
+		CertificateProfileID: certificate.CertificateProfileID,
+		CSRPEM:               req.CSRPEM,
+		RequestedSubject:     certificate.Subject,
+		RequestedDNSNames:    append([]string(nil), certificate.DNSNames...),
+		RequestedIPAddresses: append([]string(nil), certificate.IPAddresses...),
+		RequestedNotAfter:    req.RequestedNotAfter,
+	}
+	now := s.clock.Now()
+	if err := validateCreateEnrollmentRequest(createReq, now); err != nil {
+		return domain.Enrollment{}, err
+	}
+
+	csrInfo, err := s.issuer.InspectCSR(ctx, createReq.CSRPEM)
+	if err != nil {
+		return domain.Enrollment{}, mapCSRInspectError(err)
+	}
+	if !sameStringSet(createReq.RequestedDNSNames, csrInfo.DNSNames) || !sameStringSet(createReq.RequestedIPAddresses, csrInfo.IPAddresses) {
+		return domain.Enrollment{}, domain.ErrInvalidRequest
+	}
+
+	enrollment := domain.Enrollment{
+		ID:                   s.idgen.NewID(),
+		IdentityID:           createReq.IdentityID,
+		IssuerID:             createReq.IssuerID,
+		CertificateProfileID: createReq.CertificateProfileID,
+		CSRPEM:               createReq.CSRPEM,
+		Status:               domain.EnrollmentPending,
+		RequestedSubject:     createReq.RequestedSubject,
+		RequestedDNSNames:    append([]string(nil), createReq.RequestedDNSNames...),
+		RequestedIPAddresses: append([]string(nil), createReq.RequestedIPAddresses...),
+		CSRDNSNames:          append([]string(nil), csrInfo.DNSNames...),
+		CSRIPAddresses:       append([]string(nil), csrInfo.IPAddresses...),
+		RequestedNotAfter:    createReq.RequestedNotAfter,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		currentCertificate, err := repo.GetCertificate(ctx, certificateID)
+		if err != nil {
+			return err
+		}
+		if currentCertificate.Status != domain.CertificateValid {
+			return domain.ErrInvalidTransition
+		}
+		if _, err := repo.GetIdentity(ctx, enrollment.IdentityID); err != nil {
+			return err
+		}
+		if _, err := repo.GetIssuer(ctx, enrollment.IssuerID); err != nil {
+			return err
+		}
+		if enrollment.CertificateProfileID != "" {
+			profile, err := repo.GetCertificateProfile(ctx, enrollment.CertificateProfileID)
+			if err != nil {
+				return err
+			}
+			if profile.IssuerID != enrollment.IssuerID {
+				return domain.ErrInvalidRequest
+			}
+		}
+		if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "certificate.renewal_requested", "enrollment", enrollment.ID, now, auditFields(
+			"identity_id", enrollment.IdentityID,
+			"issuer_id", enrollment.IssuerID,
+			"enrollment_id", enrollment.ID,
+			"certificate_id", currentCertificate.ID,
+			"serial_number", currentCertificate.SerialNumber,
 			"profile_id", enrollment.CertificateProfileID,
 		))
 	}); err != nil {

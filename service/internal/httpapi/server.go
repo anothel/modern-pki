@@ -59,6 +59,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /certificates/{id}/revoke", s.revokeCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/suspend", s.suspendCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/resume", s.resumeCertificate)
+	s.mux.HandleFunc("POST /certificates/{id}/renew", s.renewCertificate)
 
 	s.mux.HandleFunc("POST /crls", s.publishCRL)
 	s.mux.HandleFunc("GET /crls/{id}", s.getCRLPublication)
@@ -304,6 +305,24 @@ func (s *Server) resumeCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
 }
 
+func (s *Server) renewCertificate(w http.ResponseWriter, r *http.Request) {
+	var req renewCertificateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	enrollment, err := s.service.RenewCertificate(r.Context(), requestActor(r), r.PathValue("id"), lifecycle.RenewCertificateRequest{
+		CSRPEM:            req.CSRPEM,
+		RequestedNotAfter: req.RequestedNotAfter,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toEnrollmentResponse(enrollment))
+}
+
 func (s *Server) publishCRL(w http.ResponseWriter, r *http.Request) {
 	var req publishCRLRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -535,6 +554,11 @@ type issueCertificateRequest struct {
 type revokeCertificateRequest struct {
 	Reason domain.RevocationReason `json:"reason"`
 	Force  bool                    `json:"force,omitempty"`
+}
+
+type renewCertificateRequest struct {
+	CSRPEM            string    `json:"csr_pem"`
+	RequestedNotAfter time.Time `json:"requested_not_after"`
 }
 
 type publishCRLRequest struct {

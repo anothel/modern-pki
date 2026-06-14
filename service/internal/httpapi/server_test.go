@@ -307,6 +307,29 @@ func TestSuspendResumeAndForceRevokeCertificate(t *testing.T) {
 	}
 }
 
+func TestRenewCertificate(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+	requestedNotAfter := testNow.Add(90 * 24 * time.Hour)
+
+	var renewal apiEnrollment
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/renew", "operator", map[string]any{
+		"csr_pem":             "renewal-csr-pem",
+		"requested_not_after": requestedNotAfter,
+	}, &renewal)
+	assertStatus(t, status, http.StatusCreated)
+	if renewal.Status != domain.EnrollmentPending {
+		t.Fatalf("renewal status = %q, want %q", renewal.Status, domain.EnrollmentPending)
+	}
+	if renewal.IdentityID != certificate.IdentityID ||
+		renewal.IssuerID != certificate.IssuerID ||
+		renewal.CertificateProfileID != certificate.CertificateProfileID ||
+		renewal.RequestedSubject != certificate.Subject ||
+		renewal.CSRPEM != "renewal-csr-pem" {
+		t.Fatalf("renewal = %#v, certificate = %#v", renewal, certificate)
+	}
+}
+
 func TestCertificateLifecycleRejectsInvalidTransitions(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := api.createCertificate(t)

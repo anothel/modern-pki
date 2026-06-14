@@ -1325,6 +1325,92 @@ func TestOnlyValidCertificateCanBeRevoked(t *testing.T) {
 	}
 }
 
+func TestRenewCertificateCreatesPendingEnrollmentFromCertificate(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, &fakeIssuer{}, clock, &fakeIDGenerator{})
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	requestedNotAfter := clock.now.Add(90 * 24 * time.Hour)
+
+	renewal, err := service.RenewCertificate(ctx, "operator", certificate.ID, RenewCertificateRequest{
+		CSRPEM:            "renewal-csr-pem",
+		RequestedNotAfter: requestedNotAfter,
+	})
+	if err != nil {
+		t.Fatalf("RenewCertificate returned error: %v", err)
+	}
+	if renewal.Status != domain.EnrollmentPending {
+		t.Fatalf("renewal status = %q, want %q", renewal.Status, domain.EnrollmentPending)
+	}
+	if renewal.IdentityID != certificate.IdentityID ||
+		renewal.IssuerID != certificate.IssuerID ||
+		renewal.CertificateProfileID != certificate.CertificateProfileID ||
+		renewal.RequestedSubject != certificate.Subject ||
+		renewal.CSRPEM != "renewal-csr-pem" ||
+		!renewal.RequestedNotAfter.Equal(requestedNotAfter) {
+		t.Fatalf("renewal enrollment = %#v, certificate = %#v", renewal, certificate)
+	}
+	if !reflect.DeepEqual(renewal.RequestedDNSNames, certificate.DNSNames) ||
+		!reflect.DeepEqual(renewal.RequestedIPAddresses, certificate.IPAddresses) ||
+		!reflect.DeepEqual(renewal.CSRDNSNames, certificate.DNSNames) ||
+		!reflect.DeepEqual(renewal.CSRIPAddresses, certificate.IPAddresses) {
+		t.Fatalf("renewal SAN fields = %#v", renewal)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Action != "certificate.renewal_requested" {
+		t.Fatalf("last audit action = %q, want certificate.renewal_requested", last.Action)
+	}
+	metadata := auditMetadata(t, last)
+	if metadata["certificate_id"] != certificate.ID || metadata["enrollment_id"] != renewal.ID {
+		t.Fatalf("renewal audit metadata = %#v", metadata)
+	}
+}
+
+func TestOnlyValidCertificateCanBeRenewed(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	service := New(
+		repo,
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	if _, err := service.RevokeCertificate(ctx, "operator", certificate.ID, domain.RevocationSuperseded); err != nil {
+		t.Fatalf("RevokeCertificate returned error: %v", err)
+	}
+
+	_, err = service.RenewCertificate(ctx, "operator", certificate.ID, RenewCertificateRequest{
+		CSRPEM:            "renewal-csr-pem",
+		RequestedNotAfter: time.Date(2026, time.April, 2, 3, 4, 5, 0, time.UTC),
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("RenewCertificate revoked error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 func TestIssueCertificateRollsBackWhenAuditFails(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
