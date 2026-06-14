@@ -477,6 +477,23 @@ func TestPublishCRLSelectsRevokedCertificatesAndPersistsArtifact(t *testing.T) {
 	if latest.ID != publication.ID {
 		t.Fatalf("latest CRL ID = %q, want %q", latest.ID, publication.ID)
 	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Action != "crl.published" {
+		t.Fatalf("last audit action = %q, want crl.published", last.Action)
+	}
+	metadata := auditMetadata(t, last)
+	if metadata["result_code"] != "ok" ||
+		metadata["issuer_id"] != issuer.ID ||
+		metadata["crl_publication_id"] != publication.ID ||
+		metadata["distribution_point"] != publication.DistributionPoint ||
+		metadata["crl_number"].(float64) != float64(publication.CRLNumber) {
+		t.Fatalf("CRL audit metadata = %#v", metadata)
+	}
 }
 
 func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
@@ -574,6 +591,8 @@ func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
 	}
 	metadata := auditMetadata(t, last)
 	if metadata["request_type"] != "ocsp" ||
+		metadata["issuer_id"] != issuer.ID ||
+		metadata["result_code"] != "ok" ||
 		metadata["requested_cert_count"].(float64) != 3 ||
 		metadata["response_status"] != "successful" {
 		t.Fatalf("OCSP audit metadata = %#v", metadata)

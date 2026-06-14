@@ -774,9 +774,12 @@ func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRe
 		if err := repo.CreateCRLPublication(ctx, publication); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "crl.published", "crl_publication", publication.ID, now, auditFields(
-			"issuer_id", publication.IssuerID,
-		))
+		return s.createAuditEvent(ctx, repo, actor, "crl.published", "crl_publication", publication.ID, now, map[string]any{
+			"issuer_id":          publication.IssuerID,
+			"crl_publication_id": publication.ID,
+			"distribution_point": publication.DistributionPoint,
+			"crl_number":         publication.CRLNumber,
+		})
 	}); err != nil {
 		return domain.CRLPublication{}, err
 	}
@@ -823,6 +826,7 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
 		return s.createAuditEvent(ctx, repo, actor, "ocsp.requested", "ocsp", s.idgen.NewID(), now, map[string]any{
 			"request_type":             "ocsp",
+			"issuer_id":                issuerID,
 			"requested_cert_count":     len(info.Certificates),
 			"response_status":          "successful",
 			"first_serial_number":      firstOCSPSerial(info.Certificates),

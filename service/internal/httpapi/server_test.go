@@ -484,6 +484,19 @@ func TestRespondOCSPRejectsWrongContentType(t *testing.T) {
 
 	status, _, _ := api.doBinary(t, http.MethodPost, "/ocsp", "operator", "application/octet-stream", []byte("ocsp-request-der"))
 	assertStatus(t, status, http.StatusUnsupportedMediaType)
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	metadata := apiAuditMetadata(t, events[0])
+	if events[0].Action != "api.request_failed" ||
+		metadata["error_code"] != "unsupported_media_type" ||
+		metadata["http_status"] != float64(http.StatusUnsupportedMediaType) {
+		t.Fatalf("unsupported media audit = event:%#v metadata:%#v", events[0], metadata)
+	}
 }
 
 func TestListAuditEvents(t *testing.T) {
