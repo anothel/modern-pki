@@ -44,6 +44,12 @@ const (
 	CertificateExpired CertificateStatus = "expired"
 )
 
+type CRLPublicationStatus string
+
+const (
+	CRLPublicationPublished CRLPublicationStatus = "published"
+)
+
 type RevocationReason string
 
 const (
@@ -157,6 +163,26 @@ type Revocation struct {
 	RevokedBy     string
 	RevokedAt     time.Time
 	CreatedAt     time.Time
+}
+
+type RevokedCertificateEntry struct {
+	CertificateID string
+	SerialNumber  string
+	RevokedAt     time.Time
+	Reason        RevocationReason
+}
+
+type CRLPublication struct {
+	ID                string
+	IssuerID          string
+	DistributionPoint string
+	CRLNumber         int64
+	ThisUpdate        time.Time
+	NextUpdate        time.Time
+	Status            CRLPublicationStatus
+	CRLPEM            string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type AuditEvent struct {

@@ -1,9 +1,12 @@
+#include "modern_pki/core/crl.hpp"
 #include "modern_pki/core/csr.hpp"
 #include "modern_pki/core/issue.hpp"
 
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -23,7 +26,7 @@ struct JsonValue
 	std::string string_value;
 	std::vector<std::string> array_value;
 	bool bool_value = false;
-	int number_value = 0;
+	std::int64_t number_value = 0;
 };
 
 using JsonObject = std::map<std::string, JsonValue>;
@@ -196,7 +199,7 @@ private:
 		return values;
 	}
 
-	int parse_integer()
+	std::int64_t parse_integer()
 	{
 		bool negative = false;
 		if (input_[position_] == '-')
@@ -208,13 +211,26 @@ private:
 		{
 			throw_json_parse_failed();
 		}
-		int value = 0;
+		std::uint64_t value = 0;
+		const std::uint64_t max_value = negative
+		                                    ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U
+		                                    : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 		while (position_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[position_])))
 		{
-			value = (value * 10) + (input_[position_] - '0');
+			const std::uint64_t digit = static_cast<std::uint64_t>(input_[position_] - '0');
+			if (value > ((max_value - digit) / 10U))
+			{
+				throw_json_parse_failed();
+			}
+			value = (value * 10U) + digit;
 			++position_;
 		}
-		return negative ? -value : value;
+		if (negative && value == max_value)
+		{
+			return std::numeric_limits<std::int64_t>::min();
+		}
+		const auto signed_value = static_cast<std::int64_t>(value);
+		return negative ? -signed_value : signed_value;
 	}
 
 	std::string parse_string()
@@ -422,6 +438,25 @@ int get_int_field(const JsonObject &object, const std::string &key, int default_
 	{
 		throw_json_parse_failed();
 	}
+	if (found->second.number_value < std::numeric_limits<int>::min() ||
+	    found->second.number_value > std::numeric_limits<int>::max())
+	{
+		throw_json_parse_failed();
+	}
+	return static_cast<int>(found->second.number_value);
+}
+
+std::int64_t get_int64_field(const JsonObject &object, const std::string &key, std::int64_t default_value)
+{
+	const auto found = object.find(key);
+	if (found == object.end() || found->second.is_null)
+	{
+		return default_value;
+	}
+	if (!found->second.is_number)
+	{
+		throw_json_parse_failed();
+	}
 	return found->second.number_value;
 }
 
@@ -452,6 +487,31 @@ modern_pki::core::IssueRequest issue_request_from_json(std::string_view json)
 	return request;
 }
 
+modern_pki::core::GenerateCRLRequest crl_request_from_json(std::string_view json)
+{
+	const JsonObject object = JsonParser{json}.parse_object();
+
+	modern_pki::core::GenerateCRLRequest request;
+	request.issuer_certificate_pem = get_string_field(object, "issuer_certificate_pem");
+	request.issuer_key_ref = get_string_field(object, "issuer_key_ref");
+	request.crl_number = get_int64_field(object, "crl_number", 0);
+	request.this_update = get_string_field(object, "this_update");
+	request.next_update = get_string_field(object, "next_update");
+
+	const std::vector<std::string> serials = get_string_array_field(object, "revoked_serial_numbers");
+	const std::vector<std::string> revoked_at_times = get_string_array_field(object, "revoked_at_times");
+	const std::vector<std::string> reasons = get_string_array_field(object, "revocation_reasons");
+	if (serials.size() != revoked_at_times.size() || serials.size() != reasons.size())
+	{
+		throw_json_parse_failed();
+	}
+	for (std::vector<std::string>::size_type index = 0; index < serials.size(); ++index)
+	{
+		request.revoked_certificates.push_back({serials[index], revoked_at_times[index], reasons[index]});
+	}
+	return request;
+}
+
 std::string csr_info_to_json(const modern_pki::core::CsrInfo &info)
 {
 	return "{\"subject\":" + json_string(info.subject) + ",\"dns_names\":" + json_string_array(info.dns_names) + ",\"ip_addresses\":" + json_string_array(info.ip_addresses) + "}";
@@ -460,6 +520,11 @@ std::string csr_info_to_json(const modern_pki::core::CsrInfo &info)
 std::string issue_result_to_json(const modern_pki::core::IssueResult &result)
 {
 	return "{\"certificate_pem\":" + json_string(result.certificate_pem) + ",\"serial_number\":" + json_string(result.serial_number) + ",\"subject\":" + json_string(result.subject) + ",\"not_before\":" + json_string(result.not_before) + ",\"not_after\":" + json_string(result.not_after) + "}";
+}
+
+std::string crl_result_to_json(const modern_pki::core::GenerateCRLResult &result)
+{
+	return "{\"crl_pem\":" + json_string(result.crl_pem) + "}";
 }
 
 bool arg_is(char *value, std::string_view expected)
@@ -495,6 +560,20 @@ int run_cert_issue(int argc, char *argv[])
 	return 0;
 }
 
+int run_crl_generate(int argc, char *argv[])
+{
+	if (argc != 7 || !arg_is(argv[1], "crl") || !arg_is(argv[2], "generate") || !arg_is(argv[3], "--request") || !arg_is(argv[5], "--out"))
+	{
+		write_error("cli.invalid_args", "invalid arguments");
+		return 2;
+	}
+
+	const modern_pki::core::GenerateCRLRequest request = crl_request_from_json(read_file(argv[4]));
+	const modern_pki::core::GenerateCRLResult result = modern_pki::core::generate_crl(request);
+	write_file(argv[6], crl_result_to_json(result) + "\n");
+	return 0;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -508,6 +587,10 @@ int main(int argc, char *argv[])
 		if (argc >= 3 && arg_is(argv[1], "cert") && arg_is(argv[2], "issue"))
 		{
 			return run_cert_issue(argc, argv);
+		}
+		if (argc >= 3 && arg_is(argv[1], "crl") && arg_is(argv[2], "generate"))
+		{
+			return run_crl_generate(argc, argv);
 		}
 
 		write_error("cli.invalid_args", "invalid arguments");

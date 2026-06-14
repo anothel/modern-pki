@@ -17,6 +17,7 @@ import (
 type CertificateIssuer interface {
 	Issue(context.Context, corecli.IssueRequest) (corecli.IssueResult, error)
 	InspectCSR(context.Context, string) (corecli.CSRInfo, error)
+	GenerateCRL(context.Context, corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error)
 }
 
 type Clock interface {
@@ -83,6 +84,12 @@ type CreateEnrollmentRequest struct {
 	RequestedDNSNames    []string
 	RequestedIPAddresses []string
 	RequestedNotAfter    time.Time
+}
+
+type PublishCRLRequest struct {
+	IssuerID          string
+	DistributionPoint string
+	NextUpdate        time.Time
 }
 
 func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator) *Service {
@@ -453,6 +460,73 @@ func (s *Service) RevokeCertificate(ctx context.Context, actor string, certifica
 	return certificate, nil
 }
 
+func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRequest) (domain.CRLPublication, error) {
+	now := s.clock.Now()
+	if err := validatePublishCRLRequest(req, now); err != nil {
+		return domain.CRLPublication{}, err
+	}
+
+	issuer, err := s.repo.GetIssuer(ctx, req.IssuerID)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	revokedEntries, err := s.repo.ListRevocationsByIssuer(ctx, req.IssuerID)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	existing, err := s.repo.ListCRLPublicationsByIssuer(ctx, req.IssuerID)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	crlNumber := nextCRLNumber(existing, req.DistributionPoint)
+
+	revokedCertificates := make([]corecli.RevokedCertificate, 0, len(revokedEntries))
+	for _, entry := range revokedEntries {
+		revokedCertificates = append(revokedCertificates, corecli.RevokedCertificate{
+			SerialNumber: entry.SerialNumber,
+			RevokedAt:    entry.RevokedAt,
+			Reason:       string(entry.Reason),
+		})
+	}
+	result, err := s.issuer.GenerateCRL(ctx, corecli.GenerateCRLRequest{
+		IssuerCertificatePEM: issuer.CertificatePEM,
+		IssuerKeyRef:         issuer.KeyRef,
+		CRLNumber:            crlNumber,
+		ThisUpdate:           now,
+		NextUpdate:           req.NextUpdate,
+		RevokedCertificates:  revokedCertificates,
+	})
+	if err != nil {
+		return domain.CRLPublication{}, mapCRLError(err)
+	}
+
+	publication := domain.CRLPublication{
+		ID:                s.idgen.NewID(),
+		IssuerID:          req.IssuerID,
+		DistributionPoint: req.DistributionPoint,
+		CRLNumber:         crlNumber,
+		ThisUpdate:        now,
+		NextUpdate:        req.NextUpdate,
+		Status:            domain.CRLPublicationPublished,
+		CRLPEM:            result.CRLPEM,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if _, err := repo.GetIssuer(ctx, req.IssuerID); err != nil {
+			return err
+		}
+		if err := repo.CreateCRLPublication(ctx, publication); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "crl.published", "crl_publication", publication.ID, now)
+	}); err != nil {
+		return domain.CRLPublication{}, err
+	}
+	return publication, nil
+}
+
 func (s *Service) ListIdentities(ctx context.Context) ([]domain.Identity, error) {
 	return s.repo.ListIdentities(ctx)
 }
@@ -483,6 +557,31 @@ func (s *Service) ListCertificates(ctx context.Context) ([]domain.Certificate, e
 
 func (s *Service) GetCertificate(ctx context.Context, id string) (domain.Certificate, error) {
 	return s.repo.GetCertificate(ctx, id)
+}
+
+func (s *Service) GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error) {
+	if isBlank(id) {
+		return domain.CRLPublication{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetCRLPublication(ctx, id)
+}
+
+func (s *Service) GetLatestCRLPublication(ctx context.Context, issuerID string) (domain.CRLPublication, error) {
+	if isBlank(issuerID) {
+		return domain.CRLPublication{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetLatestCRLPublicationByIssuer(ctx, issuerID)
+}
+
+func (s *Service) GetLatestCRLPublicationForDistributionPoint(ctx context.Context, issuerID string, distributionPoint string) (domain.CRLPublication, error) {
+	if isBlank(issuerID) || isBlank(distributionPoint) {
+		return domain.CRLPublication{}, domain.ErrInvalidRequest
+	}
+	publications, err := s.repo.ListCRLPublicationsByIssuer(ctx, issuerID)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	return latestCRLPublication(publications, distributionPoint)
 }
 
 func (s *Service) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error) {
@@ -537,6 +636,45 @@ func validateCreateEnrollmentRequest(req CreateEnrollmentRequest, now time.Time)
 	return nil
 }
 
+func validatePublishCRLRequest(req PublishCRLRequest, now time.Time) error {
+	if isBlank(req.IssuerID) || isBlank(req.DistributionPoint) {
+		return domain.ErrInvalidRequest
+	}
+	if !req.NextUpdate.After(now) {
+		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func nextCRLNumber(publications []domain.CRLPublication, distributionPoint string) int64 {
+	var maxNumber int64
+	for _, publication := range publications {
+		if publication.DistributionPoint == distributionPoint && publication.CRLNumber > maxNumber {
+			maxNumber = publication.CRLNumber
+		}
+	}
+	return maxNumber + 1
+}
+
+func latestCRLPublication(publications []domain.CRLPublication, distributionPoint string) (domain.CRLPublication, error) {
+	var latest domain.CRLPublication
+	found := false
+	for _, publication := range publications {
+		if publication.DistributionPoint != distributionPoint {
+			continue
+		}
+		if !found || publication.CRLNumber > latest.CRLNumber ||
+			(publication.CRLNumber == latest.CRLNumber && publication.CreatedAt.After(latest.CreatedAt)) {
+			latest = publication
+			found = true
+		}
+	}
+	if !found {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	return latest, nil
+}
+
 func isValidIdentityType(identityType domain.IdentityType) bool {
 	switch identityType {
 	case domain.IdentityUser,
@@ -584,6 +722,10 @@ func mapIssueError(err error) error {
 		return fmt.Errorf("%w: %w", domain.ErrCSRParseFailed, err)
 	}
 	return fmt.Errorf("%w: %w", domain.ErrCertificateIssuanceFailed, err)
+}
+
+func mapCRLError(err error) error {
+	return fmt.Errorf("%w: %w", domain.ErrCRLGenerationFailed, err)
 }
 
 func mapCSRInspectError(err error) error {

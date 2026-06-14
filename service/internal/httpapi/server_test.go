@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -274,6 +276,92 @@ func TestRevokeCertificate(t *testing.T) {
 	}
 }
 
+func TestPublishCRL(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var revoked apiCertificate
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/revoke", "operator", map[string]string{
+		"reason": string(domain.RevocationKeyCompromise),
+	}, &revoked)
+	assertStatus(t, status, http.StatusOK)
+
+	var created apiCRLPublication
+	nextUpdate := testNow.Add(24 * time.Hour)
+	status = api.doJSON(t, http.MethodPost, "/crls", "operator", map[string]any{
+		"issuer_id":          certificate.IssuerID,
+		"distribution_point": "https://pki.example.test/intermediate.crl",
+		"next_update":        nextUpdate,
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.IssuerID != certificate.IssuerID || created.CRLNumber != 1 || created.CRLPEM != "crl-pem" {
+		t.Fatalf("created CRL = %#v", created)
+	}
+
+	var got apiCRLPublication
+	status = api.doJSON(t, http.MethodGet, "/crls/"+created.ID, "", nil, &got)
+	assertStatus(t, status, http.StatusOK)
+	if got.ID != created.ID {
+		t.Fatalf("got CRL ID = %q, want %q", got.ID, created.ID)
+	}
+
+	status, body, contentType := api.doRaw(t, http.MethodGet, "/issuers/"+certificate.IssuerID+"/crl", "")
+	assertStatus(t, status, http.StatusOK)
+	if string(body) != "crl-pem" {
+		t.Fatalf("published CRL body = %q, want crl-pem", string(body))
+	}
+	if contentType != "application/x-pem-file" {
+		t.Fatalf("published CRL content type = %q", contentType)
+	}
+}
+
+func TestGetLatestIssuerCRLFiltersByDistributionPoint(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var revoked apiCertificate
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/revoke", "operator", map[string]string{
+		"reason": string(domain.RevocationKeyCompromise),
+	}, &revoked)
+	assertStatus(t, status, http.StatusOK)
+
+	dpA := "https://pki.example.test/a.crl"
+	dpB := "https://pki.example.test/b.crl"
+	nextUpdate := testNow.Add(24 * time.Hour)
+
+	api.issuer.crlPEM = "crl-a"
+	var crlA apiCRLPublication
+	status = api.doJSON(t, http.MethodPost, "/crls", "operator", map[string]any{
+		"issuer_id":          certificate.IssuerID,
+		"distribution_point": dpA,
+		"next_update":        nextUpdate,
+	}, &crlA)
+	assertStatus(t, status, http.StatusCreated)
+
+	api.issuer.crlPEM = "crl-b"
+	var crlB apiCRLPublication
+	status = api.doJSON(t, http.MethodPost, "/crls", "operator", map[string]any{
+		"issuer_id":          certificate.IssuerID,
+		"distribution_point": dpB,
+		"next_update":        nextUpdate,
+	}, &crlB)
+	assertStatus(t, status, http.StatusCreated)
+
+	api.issuer.crlPEM = "crl-b-newer"
+	status = api.doJSON(t, http.MethodPost, "/crls", "operator", map[string]any{
+		"issuer_id":          certificate.IssuerID,
+		"distribution_point": dpB,
+		"next_update":        nextUpdate,
+	}, &crlB)
+	assertStatus(t, status, http.StatusCreated)
+
+	status, body, _ := api.doRaw(t, http.MethodGet, "/issuers/"+certificate.IssuerID+"/crl?distribution_point="+url.QueryEscape(dpA), "")
+	assertStatus(t, status, http.StatusOK)
+	if string(body) != "crl-a" {
+		t.Fatalf("published CRL body = %q, want crl-a", string(body))
+	}
+}
+
 func TestListAuditEvents(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -402,6 +490,28 @@ func (api *testAPI) doJSON(t *testing.T, method string, path string, actor strin
 	return res.StatusCode
 }
 
+func (api *testAPI) doRaw(t *testing.T, method string, path string, actor string) (int, []byte, string) {
+	t.Helper()
+
+	req, err := http.NewRequest(method, api.url+path, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if actor != "" {
+		req.Header.Set("X-Actor", actor)
+	}
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return res.StatusCode, body, res.Header.Get("Content-Type")
+}
+
 func (api *testAPI) createIdentity(t *testing.T) domain.Identity {
 	t.Helper()
 
@@ -482,8 +592,10 @@ func assertStatus(t *testing.T, got int, want int) {
 }
 
 type fakeIssuer struct {
-	requests []corecli.IssueRequest
-	err      error
+	requests    []corecli.IssueRequest
+	crlRequests []corecli.GenerateCRLRequest
+	err         error
+	crlPEM      string
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -506,6 +618,18 @@ func (f *fakeIssuer) Issue(ctx context.Context, req corecli.IssueRequest) (corec
 		NotBefore:      req.NotBefore,
 		NotAfter:       req.NotAfter,
 	}, nil
+}
+
+func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error) {
+	f.crlRequests = append(f.crlRequests, req)
+	if f.err != nil {
+		return corecli.GenerateCRLResult{}, f.err
+	}
+	crlPEM := f.crlPEM
+	if crlPEM == "" {
+		crlPEM = "crl-pem"
+	}
+	return corecli.GenerateCRLResult{CRLPEM: crlPEM}, nil
 }
 
 type fixedClock struct {
@@ -599,6 +723,19 @@ type apiCertificate struct {
 	CertificatePEM       string                   `json:"certificate_pem"`
 	CreatedAt            time.Time                `json:"created_at"`
 	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type apiCRLPublication struct {
+	ID                string                      `json:"id"`
+	IssuerID          string                      `json:"issuer_id"`
+	DistributionPoint string                      `json:"distribution_point"`
+	CRLNumber         int64                       `json:"crl_number"`
+	ThisUpdate        time.Time                   `json:"this_update"`
+	NextUpdate        time.Time                   `json:"next_update"`
+	Status            domain.CRLPublicationStatus `json:"status"`
+	CRLPEM            string                      `json:"crl_pem"`
+	CreatedAt         time.Time                   `json:"created_at"`
+	UpdatedAt         time.Time                   `json:"updated_at"`
 }
 
 type apiAuditEvent struct {

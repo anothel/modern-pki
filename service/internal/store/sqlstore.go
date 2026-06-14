@@ -126,6 +126,26 @@ func (s *SQLStore) CreateRevocation(ctx context.Context, revocation domain.Revoc
 	return s.repository().CreateRevocation(ctx, revocation)
 }
 
+func (s *SQLStore) ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error) {
+	return s.repository().ListRevocationsByIssuer(ctx, issuerID)
+}
+
+func (s *SQLStore) CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error {
+	return s.repository().CreateCRLPublication(ctx, publication)
+}
+
+func (s *SQLStore) GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error) {
+	return s.repository().GetCRLPublication(ctx, id)
+}
+
+func (s *SQLStore) GetLatestCRLPublicationByIssuer(ctx context.Context, issuerID string) (domain.CRLPublication, error) {
+	return s.repository().GetLatestCRLPublicationByIssuer(ctx, issuerID)
+}
+
+func (s *SQLStore) ListCRLPublicationsByIssuer(ctx context.Context, issuerID string) ([]domain.CRLPublication, error) {
+	return s.repository().ListCRLPublicationsByIssuer(ctx, issuerID)
+}
+
 func (s *SQLStore) CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error {
 	return s.repository().CreateAuditEvent(ctx, event)
 }
@@ -676,6 +696,108 @@ INSERT INTO revocations (
 	return err
 }
 
+func (r sqlRepository) ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT c.id, c.serial_number, r.revoked_at, r.reason
+FROM revocations r
+JOIN certificates c ON c.id = r.certificate_id
+WHERE c.issuer_id = $1 AND c.status = $2
+ORDER BY r.revoked_at, c.serial_number`, issuerID, string(domain.CertificateRevoked))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]domain.RevokedCertificateEntry, 0)
+	for rows.Next() {
+		entry, err := scanRevokedCertificateEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (r sqlRepository) CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO crl_publications (
+	id, issuer_id, distribution_point, crl_number, this_update, next_update, status, crl_pem, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+)`,
+		publication.ID,
+		publication.IssuerID,
+		publication.DistributionPoint,
+		publication.CRLNumber,
+		formatSQLTime(publication.ThisUpdate),
+		formatSQLTime(publication.NextUpdate),
+		string(publication.Status),
+		publication.CRLPEM,
+		formatSQLTime(publication.CreatedAt),
+		formatSQLTime(publication.UpdatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error) {
+	publication, err := scanCRLPublication(r.exec.QueryRowContext(ctx, `
+SELECT id, issuer_id, distribution_point, crl_number, this_update, next_update, status, crl_pem, created_at, updated_at
+FROM crl_publications
+WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	return publication, nil
+}
+
+func (r sqlRepository) GetLatestCRLPublicationByIssuer(ctx context.Context, issuerID string) (domain.CRLPublication, error) {
+	publication, err := scanCRLPublication(r.exec.QueryRowContext(ctx, `
+SELECT id, issuer_id, distribution_point, crl_number, this_update, next_update, status, crl_pem, created_at, updated_at
+FROM crl_publications
+WHERE issuer_id = $1
+ORDER BY crl_number DESC, created_at DESC, id DESC
+LIMIT 1`, issuerID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	return publication, nil
+}
+
+func (r sqlRepository) ListCRLPublicationsByIssuer(ctx context.Context, issuerID string) ([]domain.CRLPublication, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, issuer_id, distribution_point, crl_number, this_update, next_update, status, crl_pem, created_at, updated_at
+FROM crl_publications
+WHERE issuer_id = $1
+ORDER BY crl_number, created_at, id`, issuerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	publications := make([]domain.CRLPublication, 0)
+	for rows.Next() {
+		publication, err := scanCRLPublication(rows)
+		if err != nil {
+			return nil, err
+		}
+		publications = append(publications, publication)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return publications, nil
+}
+
 func (r sqlRepository) CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error {
 	_, err := r.exec.ExecContext(ctx, `
 INSERT INTO audit_events (
@@ -1022,6 +1144,72 @@ func scanAuditEvent(scanner sqlScanner) (domain.AuditEvent, error) {
 
 	event.CreatedAt = parsedCreatedAt
 	return event, nil
+}
+
+func scanRevokedCertificateEntry(scanner sqlScanner) (domain.RevokedCertificateEntry, error) {
+	var entry domain.RevokedCertificateEntry
+	var reason string
+	var revokedAt any
+	if err := scanner.Scan(
+		&entry.CertificateID,
+		&entry.SerialNumber,
+		&revokedAt,
+		&reason,
+	); err != nil {
+		return domain.RevokedCertificateEntry{}, err
+	}
+	parsedRevokedAt, err := parseSQLTime(revokedAt)
+	if err != nil {
+		return domain.RevokedCertificateEntry{}, err
+	}
+	entry.RevokedAt = parsedRevokedAt
+	entry.Reason = domain.RevocationReason(reason)
+	return entry, nil
+}
+
+func scanCRLPublication(scanner sqlScanner) (domain.CRLPublication, error) {
+	var publication domain.CRLPublication
+	var status string
+	var thisUpdate any
+	var nextUpdate any
+	var createdAt any
+	var updatedAt any
+	if err := scanner.Scan(
+		&publication.ID,
+		&publication.IssuerID,
+		&publication.DistributionPoint,
+		&publication.CRLNumber,
+		&thisUpdate,
+		&nextUpdate,
+		&status,
+		&publication.CRLPEM,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.CRLPublication{}, err
+	}
+	parsedThisUpdate, err := parseSQLTime(thisUpdate)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	parsedNextUpdate, err := parseSQLTime(nextUpdate)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.CRLPublication{}, err
+	}
+	publication.ThisUpdate = parsedThisUpdate
+	publication.NextUpdate = parsedNextUpdate
+	publication.Status = domain.CRLPublicationStatus(status)
+	publication.CreatedAt = parsedCreatedAt
+	publication.UpdatedAt = parsedUpdatedAt
+	return publication, nil
 }
 
 func marshalStringSlice(values []string) (string, error) {

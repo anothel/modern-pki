@@ -41,6 +41,14 @@ type CertificateRepository interface {
 
 type RevocationRepository interface {
 	CreateRevocation(ctx context.Context, revocation domain.Revocation) error
+	ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error)
+}
+
+type CRLPublicationRepository interface {
+	CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error
+	GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error)
+	GetLatestCRLPublicationByIssuer(ctx context.Context, issuerID string) (domain.CRLPublication, error)
+	ListCRLPublicationsByIssuer(ctx context.Context, issuerID string) ([]domain.CRLPublication, error)
 }
 
 type AuditRepository interface {
@@ -55,6 +63,7 @@ type Repository interface {
 	EnrollmentRepository
 	CertificateRepository
 	RevocationRepository
+	CRLPublicationRepository
 	AuditRepository
 	WithinTx(ctx context.Context, fn func(Repository) error) error
 }

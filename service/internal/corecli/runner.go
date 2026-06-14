@@ -47,6 +47,25 @@ type CSRInfo struct {
 	IPAddresses []string `json:"ip_addresses"`
 }
 
+type RevokedCertificate struct {
+	SerialNumber string
+	RevokedAt    time.Time
+	Reason       string
+}
+
+type GenerateCRLRequest struct {
+	IssuerCertificatePEM string
+	IssuerKeyRef         string
+	CRLNumber            int64
+	ThisUpdate           time.Time
+	NextUpdate           time.Time
+	RevokedCertificates  []RevokedCertificate
+}
+
+type GenerateCRLResult struct {
+	CRLPEM string `json:"crl_pem"`
+}
+
 type Runner struct {
 	Bin string
 }
@@ -171,6 +190,89 @@ func (r Runner) Issue(ctx context.Context, req IssueRequest) (IssueResult, error
 		return IssueResult{}, fmt.Errorf("decode issue result: %w", err)
 	}
 	return result, nil
+}
+
+func (r Runner) GenerateCRL(ctx context.Context, req GenerateCRLRequest) (GenerateCRLResult, error) {
+	requestFile, err := os.CreateTemp("", "modern-pki-core-crl-request-*.json")
+	if err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("create crl request temp file: %w", err)
+	}
+	requestPath := requestFile.Name()
+	defer os.Remove(requestPath)
+
+	fileReq := crlFileRequest{
+		IssuerCertificatePEM: req.IssuerCertificatePEM,
+		IssuerKeyRef:         req.IssuerKeyRef,
+		CRLNumber:            req.CRLNumber,
+		ThisUpdate:           coreTime(req.ThisUpdate),
+		NextUpdate:           coreTime(req.NextUpdate),
+		RevokedSerialNumbers: make([]string, 0, len(req.RevokedCertificates)),
+		RevokedAtTimes:       make([]string, 0, len(req.RevokedCertificates)),
+		RevocationReasons:    make([]string, 0, len(req.RevokedCertificates)),
+	}
+	for _, revoked := range req.RevokedCertificates {
+		fileReq.RevokedSerialNumbers = append(fileReq.RevokedSerialNumbers, revoked.SerialNumber)
+		fileReq.RevokedAtTimes = append(fileReq.RevokedAtTimes, coreTime(revoked.RevokedAt))
+		fileReq.RevocationReasons = append(fileReq.RevocationReasons, revoked.Reason)
+	}
+	if err := json.NewEncoder(requestFile).Encode(fileReq); err != nil {
+		requestFile.Close()
+		return GenerateCRLResult{}, fmt.Errorf("write crl request: %w", err)
+	}
+	if err := requestFile.Close(); err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("close crl request: %w", err)
+	}
+
+	resultFile, err := os.CreateTemp("", "modern-pki-core-crl-result-*.json")
+	if err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("create crl result temp file: %w", err)
+	}
+	resultPath := resultFile.Name()
+	defer os.Remove(resultPath)
+
+	if err := resultFile.Close(); err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("close crl result temp file: %w", err)
+	}
+
+	bin := r.Bin
+	if bin == "" {
+		bin = "modern-pki-core"
+	}
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, "crl", "generate", "--request", requestPath, "--out", resultPath)
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return GenerateCRLResult{}, commandError(err, stderr.String())
+	}
+
+	resultFile, err = os.Open(resultPath)
+	if err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("open crl result: %w", err)
+	}
+	defer resultFile.Close()
+
+	var result GenerateCRLResult
+	if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
+		return GenerateCRLResult{}, fmt.Errorf("decode crl result: %w", err)
+	}
+	return result, nil
+}
+
+type crlFileRequest struct {
+	IssuerCertificatePEM string   `json:"issuer_certificate_pem"`
+	IssuerKeyRef         string   `json:"issuer_key_ref"`
+	CRLNumber            int64    `json:"crl_number"`
+	ThisUpdate           string   `json:"this_update"`
+	NextUpdate           string   `json:"next_update"`
+	RevokedSerialNumbers []string `json:"revoked_serial_numbers"`
+	RevokedAtTimes       []string `json:"revoked_at_times"`
+	RevocationReasons    []string `json:"revocation_reasons"`
+}
+
+func coreTime(value time.Time) string {
+	return value.UTC().Truncate(time.Second).Format(time.RFC3339)
 }
 
 type commandErrorPayload struct {

@@ -5,6 +5,7 @@ project(modern_pki VERSION 0.0.0 LANGUAGES CXX)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 add_library(modern_pki_core
+    src/core/crl.cpp
     src/core/csr.cpp
     src/core/issue.cpp
     src/version.cpp
@@ -69,5 +70,14 @@ if(BUILD_TESTING)
     add_test(
         NAME modern_pki.core_issue_profile
         COMMAND modern_pki_core_issue_profile_test $<TARGET_FILE:modern-pki-core> ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    add_executable(modern_pki_core_crl_test
+        tests/core_crl_test.cpp
+    )
+    target_link_libraries(modern_pki_core_crl_test PRIVATE modern_pki::core OpenSSL::Crypto)
+    add_test(
+        NAME modern_pki.core_crl
+        COMMAND modern_pki_core_crl_test ${CMAKE_CURRENT_BINARY_DIR}
     )
 endif()

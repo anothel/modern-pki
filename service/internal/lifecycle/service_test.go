@@ -353,6 +353,116 @@ func TestIssueCertificatePreservesZeroProfilePathLen(t *testing.T) {
 	}
 }
 
+func TestPublishCRLSelectsRevokedCertificatesAndPersistsArtifact(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{crlResult: corecli.GenerateCRLResult{CRLPEM: "crl-pem"}}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	otherIssuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "other-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "other-cert-pem",
+		KeyRef:         "other-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer other returned error: %v", err)
+	}
+
+	revokedAt := clock.now.Add(-time.Hour)
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:             "cert-1",
+		IssuerID:       issuer.ID,
+		SerialNumber:   "1234",
+		Status:         domain.CertificateRevoked,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      revokedAt,
+		UpdatedAt:      revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+	if err := repo.CreateRevocation(ctx, domain.Revocation{
+		ID:            "revocation-1",
+		CertificateID: "cert-1",
+		Reason:        domain.RevocationKeyCompromise,
+		RevokedBy:     "operator",
+		RevokedAt:     revokedAt,
+		CreatedAt:     revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateRevocation returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:             "cert-other",
+		IssuerID:       otherIssuer.ID,
+		SerialNumber:   "9999",
+		Status:         domain.CertificateRevoked,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      revokedAt,
+		UpdatedAt:      revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateCertificate other returned error: %v", err)
+	}
+	if err := repo.CreateRevocation(ctx, domain.Revocation{
+		ID:            "revocation-other",
+		CertificateID: "cert-other",
+		Reason:        domain.RevocationSuperseded,
+		RevokedBy:     "operator",
+		RevokedAt:     revokedAt,
+		CreatedAt:     revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateRevocation other returned error: %v", err)
+	}
+
+	nextUpdate := clock.now.Add(24 * time.Hour)
+	publication, err := service.PublishCRL(ctx, "operator", PublishCRLRequest{
+		IssuerID:          issuer.ID,
+		DistributionPoint: "https://pki.example.test/intermediate.crl",
+		NextUpdate:        nextUpdate,
+	})
+	if err != nil {
+		t.Fatalf("PublishCRL returned error: %v", err)
+	}
+
+	if publication.IssuerID != issuer.ID || publication.CRLNumber != 1 || publication.CRLPEM != "crl-pem" {
+		t.Fatalf("publication = %#v", publication)
+	}
+	if len(coreClient.crlRequests) != 1 {
+		t.Fatalf("CRL request count = %d, want 1", len(coreClient.crlRequests))
+	}
+	req := coreClient.crlRequests[0]
+	if req.IssuerCertificatePEM != "issuer-cert-pem" || req.IssuerKeyRef != "issuer-key-ref" {
+		t.Fatalf("CRL issuer material = %#v", req)
+	}
+	if req.CRLNumber != 1 || !req.ThisUpdate.Equal(clock.now) || !req.NextUpdate.Equal(nextUpdate) {
+		t.Fatalf("CRL timing/number = %#v", req)
+	}
+	if len(req.RevokedCertificates) != 1 {
+		t.Fatalf("revoked entry count = %d, want 1", len(req.RevokedCertificates))
+	}
+	entry := req.RevokedCertificates[0]
+	if entry.SerialNumber != "1234" || entry.Reason != string(domain.RevocationKeyCompromise) || !entry.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("revoked entry = %#v", entry)
+	}
+
+	latest, err := service.GetLatestCRLPublication(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetLatestCRLPublication returned error: %v", err)
+	}
+	if latest.ID != publication.ID {
+		t.Fatalf("latest CRL ID = %q, want %q", latest.ID, publication.ID)
+	}
+}
+
 func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -959,9 +1069,11 @@ func createPendingEnrollment(t *testing.T, ctx context.Context, service *Service
 }
 
 type fakeIssuer struct {
-	requests []corecli.IssueRequest
-	csrInfo  corecli.CSRInfo
-	err      error
+	requests    []corecli.IssueRequest
+	crlRequests []corecli.GenerateCRLRequest
+	csrInfo     corecli.CSRInfo
+	crlResult   corecli.GenerateCRLResult
+	err         error
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -987,6 +1099,14 @@ func (f *fakeIssuer) Issue(ctx context.Context, req corecli.IssueRequest) (corec
 		NotBefore:      req.NotBefore,
 		NotAfter:       req.NotAfter,
 	}, nil
+}
+
+func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error) {
+	f.crlRequests = append(f.crlRequests, req)
+	if f.err != nil {
+		return corecli.GenerateCRLResult{}, f.err
+	}
+	return f.crlResult, nil
 }
 
 type fixedClock struct {

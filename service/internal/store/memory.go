@@ -16,6 +16,7 @@ type MemoryStore struct {
 	enrollments  map[string]domain.Enrollment
 	certificates map[string]domain.Certificate
 	revocations  map[string]domain.Revocation
+	crls         map[string]domain.CRLPublication
 	auditEvents  []domain.AuditEvent
 }
 
@@ -27,6 +28,7 @@ func NewMemoryStore() *MemoryStore {
 		enrollments:  make(map[string]domain.Enrollment),
 		certificates: make(map[string]domain.Certificate),
 		revocations:  make(map[string]domain.Revocation),
+		crls:         make(map[string]domain.CRLPublication),
 		auditEvents:  make([]domain.AuditEvent, 0),
 	}
 }
@@ -42,6 +44,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		enrollments:  cloneEnrollments(s.enrollments),
 		certificates: cloneCertificates(s.certificates),
 		revocations:  cloneRevocations(s.revocations),
+		crls:         cloneCRLPublications(s.crls),
 		auditEvents:  cloneAuditEvents(s.auditEvents),
 	}
 	if err := fn(tx); err != nil {
@@ -54,6 +57,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.enrollments = tx.enrollments
 	s.certificates = tx.certificates
 	s.revocations = tx.revocations
+	s.crls = tx.crls
 	s.auditEvents = tx.auditEvents
 	return nil
 }
@@ -241,6 +245,46 @@ func (s *MemoryStore) CreateRevocation(ctx context.Context, revocation domain.Re
 	return nil
 }
 
+func (s *MemoryStore) ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listRevocationsByIssuer(s.certificates, s.revocations, issuerID), nil
+}
+
+func (s *MemoryStore) CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.crls[publication.ID] = publication
+	return nil
+}
+
+func (s *MemoryStore) GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	publication, ok := s.crls[id]
+	if !ok {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	return publication, nil
+}
+
+func (s *MemoryStore) GetLatestCRLPublicationByIssuer(ctx context.Context, issuerID string) (domain.CRLPublication, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return latestCRLPublicationByIssuer(s.crls, issuerID)
+}
+
+func (s *MemoryStore) ListCRLPublicationsByIssuer(ctx context.Context, issuerID string) ([]domain.CRLPublication, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listCRLPublicationsByIssuer(s.crls, issuerID), nil
+}
+
 func (s *MemoryStore) CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -311,6 +355,7 @@ type memoryTx struct {
 	enrollments  map[string]domain.Enrollment
 	certificates map[string]domain.Certificate
 	revocations  map[string]domain.Revocation
+	crls         map[string]domain.CRLPublication
 	auditEvents  []domain.AuditEvent
 }
 
@@ -444,6 +489,31 @@ func (tx *memoryTx) CreateRevocation(ctx context.Context, revocation domain.Revo
 	return nil
 }
 
+func (tx *memoryTx) ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error) {
+	return listRevocationsByIssuer(tx.certificates, tx.revocations, issuerID), nil
+}
+
+func (tx *memoryTx) CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error {
+	tx.crls[publication.ID] = publication
+	return nil
+}
+
+func (tx *memoryTx) GetCRLPublication(ctx context.Context, id string) (domain.CRLPublication, error) {
+	publication, ok := tx.crls[id]
+	if !ok {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	return publication, nil
+}
+
+func (tx *memoryTx) GetLatestCRLPublicationByIssuer(ctx context.Context, issuerID string) (domain.CRLPublication, error) {
+	return latestCRLPublicationByIssuer(tx.crls, issuerID)
+}
+
+func (tx *memoryTx) ListCRLPublicationsByIssuer(ctx context.Context, issuerID string) ([]domain.CRLPublication, error) {
+	return listCRLPublicationsByIssuer(tx.crls, issuerID), nil
+}
+
 func (tx *memoryTx) CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error {
 	tx.auditEvents = append(tx.auditEvents, event)
 	return nil
@@ -501,6 +571,59 @@ func cloneRevocations(src map[string]domain.Revocation) map[string]domain.Revoca
 		dst[id] = revocation
 	}
 	return dst
+}
+
+func cloneCRLPublications(src map[string]domain.CRLPublication) map[string]domain.CRLPublication {
+	dst := make(map[string]domain.CRLPublication, len(src))
+	for id, publication := range src {
+		dst[id] = publication
+	}
+	return dst
+}
+
+func listRevocationsByIssuer(certificates map[string]domain.Certificate, revocations map[string]domain.Revocation, issuerID string) []domain.RevokedCertificateEntry {
+	entries := make([]domain.RevokedCertificateEntry, 0)
+	for _, revocation := range revocations {
+		certificate, ok := certificates[revocation.CertificateID]
+		if !ok || certificate.IssuerID != issuerID || certificate.Status != domain.CertificateRevoked {
+			continue
+		}
+		entries = append(entries, domain.RevokedCertificateEntry{
+			CertificateID: certificate.ID,
+			SerialNumber:  certificate.SerialNumber,
+			RevokedAt:     revocation.RevokedAt,
+			Reason:        revocation.Reason,
+		})
+	}
+	return entries
+}
+
+func listCRLPublicationsByIssuer(publications map[string]domain.CRLPublication, issuerID string) []domain.CRLPublication {
+	result := make([]domain.CRLPublication, 0)
+	for _, publication := range publications {
+		if publication.IssuerID == issuerID {
+			result = append(result, publication)
+		}
+	}
+	return result
+}
+
+func latestCRLPublicationByIssuer(publications map[string]domain.CRLPublication, issuerID string) (domain.CRLPublication, error) {
+	var latest domain.CRLPublication
+	found := false
+	for _, publication := range publications {
+		if publication.IssuerID != issuerID {
+			continue
+		}
+		if !found || publication.CRLNumber > latest.CRLNumber || publication.CreatedAt.After(latest.CreatedAt) {
+			latest = publication
+			found = true
+		}
+	}
+	if !found {
+		return domain.CRLPublication{}, domain.ErrCRLPublicationNotFound
+	}
+	return latest, nil
 }
 
 func cloneAuditEvents(src []domain.AuditEvent) []domain.AuditEvent {

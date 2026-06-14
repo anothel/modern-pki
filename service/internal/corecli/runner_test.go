@@ -97,6 +97,48 @@ func TestRunnerMapsCSRInspectFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerGenerateCRLNormalizesTimes(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "crl-request.json")
+	bin := writeFakeCRLCommand(t, true, capturePath)
+
+	result, err := (Runner{Bin: bin}).GenerateCRL(context.Background(), GenerateCRLRequest{
+		IssuerCertificatePEM: "issuer-pem",
+		IssuerKeyRef:         "issuer-key-ref",
+		CRLNumber:            7,
+		ThisUpdate:           time.Date(2026, time.January, 2, 3, 4, 5, 123456789, time.FixedZone("KST", 9*60*60)),
+		NextUpdate:           time.Date(2026, time.January, 3, 4, 5, 6, 987654321, time.UTC),
+		RevokedCertificates: []RevokedCertificate{{
+			SerialNumber: "12345",
+			RevokedAt:    time.Date(2026, time.January, 2, 4, 4, 5, 999999999, time.FixedZone("KST", 9*60*60)),
+			Reason:       "key_compromise",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCRL returned error: %v", err)
+	}
+	if result.CRLPEM != "crl-pem" {
+		t.Fatalf("CRLPEM = %q, want crl-pem", result.CRLPEM)
+	}
+
+	payload, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+	body := string(payload)
+	for _, want := range []string{
+		`"this_update":"2026-01-01T18:04:05Z"`,
+		`"next_update":"2026-01-03T04:05:06Z"`,
+		`"revoked_at_times":["2026-01-01T19:04:05Z"]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("captured request = %s, want it to contain %s", body, want)
+		}
+	}
+	if strings.Contains(body, ".123") || strings.Contains(body, ".987") || strings.Contains(body, ".999") {
+		t.Fatalf("captured request contains fractional seconds: %s", body)
+	}
+}
+
 func TestCommandErrorPreservesPayloadCode(t *testing.T) {
 	err := commandError(errors.New("exit status 1"), `{"code":"issue.csr_parse_failed","message":"bad csr"}`)
 
@@ -150,6 +192,25 @@ func writeFakeIssueCommand(t *testing.T, success bool) string {
 	return path
 }
 
+func writeFakeCRLCommand(t *testing.T, success bool, capturePath string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsCRLScript(success, capturePath)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixCRLScript(success, capturePath)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
 func windowsIssueScript(success bool) string {
 	if !success {
 		return strings.Join([]string{
@@ -177,6 +238,47 @@ func windowsIssueScript(success bool) string {
 		":done",
 		"if \"%OUT%\"==\"\" exit /b 2",
 		"> \"%OUT%\" echo {^\"certificate_pem^\":^\"cert-pem^\",^\"serial_number^\":^\"12345^\",^\"subject^\":^\"CN=leaf^\",^\"not_before^\":^\"2026-01-02T03:04:05Z^\",^\"not_after^\":^\"2026-01-03T04:05:06Z^\"}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
+func windowsCRLScript(success bool, capturePath string) string {
+	if !success {
+		return strings.Join([]string{
+			"@echo off",
+			"echo {^\"code^\":^\"crl.create_failed^\",^\"message^\":^\"bad crl request^\"} 1>&2",
+			"exit /b 7",
+			"",
+		}, "\r\n")
+	}
+
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"REQ=\"",
+		"set \"OUT=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"--request\" (",
+		"  set \"REQ=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%REQ%\"==\"\" exit /b 2",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"copy /Y \"%REQ%\" \"" + capturePath + "\" >NUL",
+		"> \"%OUT%\" echo {^\"crl_pem^\":^\"crl-pem^\"}",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -223,6 +325,40 @@ if [ -z "$out" ]; then
 fi
 cat > "$out" <<'JSON'
 {"certificate_pem":"cert-pem","serial_number":"12345","subject":"CN=leaf","not_before":"2026-01-02T03:04:05Z","not_after":"2026-01-03T04:05:06Z"}
+JSON
+exit 0
+`
+}
+
+func unixCRLScript(success bool, capturePath string) string {
+	if !success {
+		return `#!/bin/sh
+printf '%s\n' '{"code":"crl.create_failed","message":"bad crl request"}' >&2
+exit 7
+`
+	}
+
+	escapedCapturePath := strings.ReplaceAll(capturePath, "'", "'\"'\"'")
+	return `#!/bin/sh
+req=""
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--request" ]; then
+		req="$2"
+		shift 2
+	elif [ "$1" = "--out" ]; then
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$req" ] || [ -z "$out" ]; then
+	exit 2
+fi
+cp "$req" '` + escapedCapturePath + `'
+cat > "$out" <<'JSON'
+{"crl_pem":"crl-pem"}
 JSON
 exit 0
 `

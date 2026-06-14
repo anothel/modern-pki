@@ -83,6 +83,19 @@ CREATE TABLE IF NOT EXISTS revocations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS crl_publications (
+    id TEXT PRIMARY KEY,
+    issuer_id TEXT NOT NULL REFERENCES issuers(id),
+    distribution_point TEXT NOT NULL,
+    crl_number INTEGER NOT NULL,
+    this_update TEXT NOT NULL,
+    next_update TEXT NOT NULL,
+    status TEXT NOT NULL,
+    crl_pem TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,

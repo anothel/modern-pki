@@ -51,6 +51,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /certificates/{id}", s.getCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/revoke", s.revokeCertificate)
 
+	s.mux.HandleFunc("POST /crls", s.publishCRL)
+	s.mux.HandleFunc("GET /crls/{id}", s.getCRLPublication)
+	s.mux.HandleFunc("GET /issuers/{id}/crl", s.getLatestIssuerCRL)
+
 	s.mux.HandleFunc("GET /audit-events", s.listAuditEvents)
 }
 
@@ -265,6 +269,52 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
 }
 
+func (s *Server) publishCRL(w http.ResponseWriter, r *http.Request) {
+	var req publishCRLRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	publication, err := s.service.PublishCRL(r.Context(), requestActor(r), lifecycle.PublishCRLRequest{
+		IssuerID:          req.IssuerID,
+		DistributionPoint: req.DistributionPoint,
+		NextUpdate:        req.NextUpdate,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toCRLPublicationResponse(publication))
+}
+
+func (s *Server) getCRLPublication(w http.ResponseWriter, r *http.Request) {
+	publication, err := s.service.GetCRLPublication(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCRLPublicationResponse(publication))
+}
+
+func (s *Server) getLatestIssuerCRL(w http.ResponseWriter, r *http.Request) {
+	distributionPoint := r.URL.Query().Get("distribution_point")
+	var publication domain.CRLPublication
+	var err error
+	if distributionPoint == "" {
+		publication, err = s.service.GetLatestCRLPublication(r.Context(), r.PathValue("id"))
+	} else {
+		publication, err = s.service.GetLatestCRLPublicationForDistributionPoint(r.Context(), r.PathValue("id"), distributionPoint)
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(publication.CRLPEM))
+}
+
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.service.ListAuditEvents(r.Context())
 	if err != nil {
@@ -320,10 +370,14 @@ func publicErrorMessage(err error) string {
 		return domain.ErrEnrollmentNotFound.Error()
 	case errors.Is(err, domain.ErrCertificateNotFound):
 		return domain.ErrCertificateNotFound.Error()
+	case errors.Is(err, domain.ErrCRLPublicationNotFound):
+		return domain.ErrCRLPublicationNotFound.Error()
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return domain.ErrCSRParseFailed.Error()
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
 		return domain.ErrCertificateIssuanceFailed.Error()
+	case errors.Is(err, domain.ErrCRLGenerationFailed):
+		return domain.ErrCRLGenerationFailed.Error()
 	case errors.Is(err, domain.ErrStorageFailure):
 		return domain.ErrStorageFailure.Error()
 	default:
@@ -341,11 +395,14 @@ func statusForError(err error) int {
 		errors.Is(err, domain.ErrIssuerNotFound),
 		errors.Is(err, domain.ErrCertificateProfileNotFound),
 		errors.Is(err, domain.ErrEnrollmentNotFound),
-		errors.Is(err, domain.ErrCertificateNotFound):
+		errors.Is(err, domain.ErrCertificateNotFound),
+		errors.Is(err, domain.ErrCRLPublicationNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
+		return http.StatusBadGateway
+	case errors.Is(err, domain.ErrCRLGenerationFailed):
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrStorageFailure):
 		return http.StatusInternalServerError
@@ -399,6 +456,12 @@ type issueCertificateRequest struct {
 
 type revokeCertificateRequest struct {
 	Reason domain.RevocationReason `json:"reason"`
+}
+
+type publishCRLRequest struct {
+	IssuerID          string    `json:"issuer_id"`
+	DistributionPoint string    `json:"distribution_point"`
+	NextUpdate        time.Time `json:"next_update"`
 }
 
 type errorResponse struct {
@@ -479,6 +542,19 @@ type certificateResponse struct {
 	CertificatePEM       string                   `json:"certificate_pem"`
 	CreatedAt            time.Time                `json:"created_at"`
 	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type crlPublicationResponse struct {
+	ID                string                      `json:"id"`
+	IssuerID          string                      `json:"issuer_id"`
+	DistributionPoint string                      `json:"distribution_point"`
+	CRLNumber         int64                       `json:"crl_number"`
+	ThisUpdate        time.Time                   `json:"this_update"`
+	NextUpdate        time.Time                   `json:"next_update"`
+	Status            domain.CRLPublicationStatus `json:"status"`
+	CRLPEM            string                      `json:"crl_pem"`
+	CreatedAt         time.Time                   `json:"created_at"`
+	UpdatedAt         time.Time                   `json:"updated_at"`
 }
 
 type auditEventResponse struct {
@@ -607,6 +683,21 @@ func toCertificateResponses(certificates []domain.Certificate) []certificateResp
 		responses = append(responses, toCertificateResponse(certificate))
 	}
 	return responses
+}
+
+func toCRLPublicationResponse(publication domain.CRLPublication) crlPublicationResponse {
+	return crlPublicationResponse{
+		ID:                publication.ID,
+		IssuerID:          publication.IssuerID,
+		DistributionPoint: publication.DistributionPoint,
+		CRLNumber:         publication.CRLNumber,
+		ThisUpdate:        publication.ThisUpdate,
+		NextUpdate:        publication.NextUpdate,
+		Status:            publication.Status,
+		CRLPEM:            publication.CRLPEM,
+		CreatedAt:         publication.CreatedAt,
+		UpdatedAt:         publication.UpdatedAt,
+	}
 }
 
 func toAuditEventResponse(event domain.AuditEvent) auditEventResponse {

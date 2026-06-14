@@ -1,6 +1,6 @@
 # modern-pki service
 
-Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoints for identities, certificate profiles, enrollments, certificate issuance, revocation, and audit events, backed by the SQL store and the `modern-pki-core` CLI for CSR inspection and certificate issuance.
+Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoints for identities, certificate profiles, enrollments, certificate issuance, revocation, CRL publication, and audit events, backed by the SQL store and the `modern-pki-core` CLI for CSR inspection, certificate issuance, and CRL generation.
 
 Enrollment creation inspects the CSR and stores CSR SANs separately from requested SANs. The current policy requires requested DNS/IP SANs to exactly match CSR DNS/IP SANs, ignoring order.
 
@@ -11,6 +11,12 @@ Certificate profiles are first-class service records at:
 - `GET /certificate-profiles/{id}`
 
 Profiles currently model typed policy fields for validity, subject templates, allowed DNS/IP constraints, key usage, extended key usage, basic constraints, subject key identifiers, and authority key identifiers. Profile-driven X.509 extension emission is wired through the core CLI for basic constraints, key usage, extended key usage, subject key identifier, authority key identifier, and subject alternative name.
+
+CRL publications are service-owned artifacts generated from certificate inventory and revocation records. The service selects revoked certificates for an issuer, assigns the next CRL number, calls the core CLI to build and sign the CRL, stores the PEM artifact, and publishes the latest issuer CRL over HTTP.
+
+- `POST /crls`
+- `GET /crls/{id}`
+- `GET /issuers/{id}/crl`
 
 ## Configuration
 
