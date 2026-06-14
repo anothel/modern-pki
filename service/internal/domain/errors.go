@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrInvalidRequest             = errors.New("invalid request")
+	ErrUnsupportedMediaType       = errors.New("unsupported media type")
 	ErrIdentityNotFound           = errors.New("identity not found")
 	ErrIssuerNotFound             = errors.New("issuer not found")
 	ErrCertificateProfileNotFound = errors.New("certificate profile not found")

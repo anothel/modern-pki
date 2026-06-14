@@ -74,7 +74,7 @@ func (s *Server) registerRoutes() {
 func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 	var req createIdentityRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -84,7 +84,7 @@ func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 		ExternalID: req.ExternalID,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toIdentityResponse(identity))
@@ -93,7 +93,7 @@ func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
 	identities, err := s.service.ListIdentities(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toIdentityResponses(identities))
@@ -102,7 +102,7 @@ func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getIdentity(w http.ResponseWriter, r *http.Request) {
 	identity, err := s.service.GetIdentity(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toIdentityResponse(identity))
@@ -111,7 +111,7 @@ func (s *Server) getIdentity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createIssuer(w http.ResponseWriter, r *http.Request) {
 	var req createIssuerRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -122,7 +122,7 @@ func (s *Server) createIssuer(w http.ResponseWriter, r *http.Request) {
 		KeyRef:         req.KeyRef,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toIssuerResponse(issuer))
@@ -131,7 +131,7 @@ func (s *Server) createIssuer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
 	var req createCertificateProfileRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -150,7 +150,7 @@ func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request
 		AuthorityKeyIdentifier: req.AuthorityKeyIdentifier,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toCertificateProfileResponse(profile))
@@ -159,7 +159,7 @@ func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request
 func (s *Server) listCertificateProfiles(w http.ResponseWriter, r *http.Request) {
 	profiles, err := s.service.ListCertificateProfiles(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateProfileResponses(profiles))
@@ -168,7 +168,7 @@ func (s *Server) listCertificateProfiles(w http.ResponseWriter, r *http.Request)
 func (s *Server) getCertificateProfile(w http.ResponseWriter, r *http.Request) {
 	profile, err := s.service.GetCertificateProfile(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateProfileResponse(profile))
@@ -177,7 +177,7 @@ func (s *Server) getCertificateProfile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createEnrollment(w http.ResponseWriter, r *http.Request) {
 	var req createEnrollmentRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -192,7 +192,7 @@ func (s *Server) createEnrollment(w http.ResponseWriter, r *http.Request) {
 		RequestedNotAfter:    req.RequestedNotAfter,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toEnrollmentResponse(enrollment))
@@ -201,7 +201,7 @@ func (s *Server) createEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listEnrollments(w http.ResponseWriter, r *http.Request) {
 	enrollments, err := s.service.ListEnrollments(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toEnrollmentResponses(enrollments))
@@ -210,7 +210,7 @@ func (s *Server) listEnrollments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getEnrollment(w http.ResponseWriter, r *http.Request) {
 	enrollment, err := s.service.GetEnrollment(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toEnrollmentResponse(enrollment))
@@ -219,7 +219,7 @@ func (s *Server) getEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) approveEnrollment(w http.ResponseWriter, r *http.Request) {
 	enrollment, err := s.service.ApproveEnrollment(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toEnrollmentResponse(enrollment))
@@ -228,7 +228,7 @@ func (s *Server) approveEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rejectEnrollment(w http.ResponseWriter, r *http.Request) {
 	enrollment, err := s.service.RejectEnrollment(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toEnrollmentResponse(enrollment))
@@ -237,13 +237,13 @@ func (s *Server) rejectEnrollment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 	var req issueCertificateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
 	certificate, err := s.service.IssueCertificate(r.Context(), requestActor(r), req.EnrollmentID)
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toCertificateResponse(certificate))
@@ -252,7 +252,7 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	certificates, err := s.service.ListCertificates(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponses(certificates))
@@ -261,7 +261,7 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getCertificate(w http.ResponseWriter, r *http.Request) {
 	certificate, err := s.service.GetCertificate(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
@@ -270,7 +270,7 @@ func (s *Server) getCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 	var req revokeCertificateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -282,7 +282,7 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 		certificate, err = s.service.RevokeCertificate(r.Context(), requestActor(r), r.PathValue("id"), req.Reason)
 	}
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
@@ -291,7 +291,7 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) suspendCertificate(w http.ResponseWriter, r *http.Request) {
 	certificate, err := s.service.SuspendCertificate(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
@@ -300,7 +300,7 @@ func (s *Server) suspendCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resumeCertificate(w http.ResponseWriter, r *http.Request) {
 	certificate, err := s.service.ResumeCertificate(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
@@ -309,7 +309,7 @@ func (s *Server) resumeCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renewCertificate(w http.ResponseWriter, r *http.Request) {
 	var req renewCertificateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -318,7 +318,7 @@ func (s *Server) renewCertificate(w http.ResponseWriter, r *http.Request) {
 		RequestedNotAfter: req.RequestedNotAfter,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toEnrollmentResponse(enrollment))
@@ -327,7 +327,7 @@ func (s *Server) renewCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reissueCertificate(w http.ResponseWriter, r *http.Request) {
 	var req reissueCertificateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -335,7 +335,7 @@ func (s *Server) reissueCertificate(w http.ResponseWriter, r *http.Request) {
 		CSRPEM: req.CSRPEM,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toEnrollmentResponse(enrollment))
@@ -344,7 +344,7 @@ func (s *Server) reissueCertificate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) publishCRL(w http.ResponseWriter, r *http.Request) {
 	var req publishCRLRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 
@@ -354,7 +354,7 @@ func (s *Server) publishCRL(w http.ResponseWriter, r *http.Request) {
 		NextUpdate:        req.NextUpdate,
 	})
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toCRLPublicationResponse(publication))
@@ -363,7 +363,7 @@ func (s *Server) publishCRL(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getCRLPublication(w http.ResponseWriter, r *http.Request) {
 	publication, err := s.service.GetCRLPublication(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCRLPublicationResponse(publication))
@@ -379,7 +379,7 @@ func (s *Server) getLatestIssuerCRL(w http.ResponseWriter, r *http.Request) {
 		publication, err = s.service.GetLatestCRLPublicationForDistributionPoint(r.Context(), r.PathValue("id"), distributionPoint)
 	}
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
@@ -389,17 +389,17 @@ func (s *Server) getLatestIssuerCRL(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) respondOCSP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/ocsp-request" {
-		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{Error: "unsupported media type"})
+		s.writeError(w, r, domain.ErrUnsupportedMediaType)
 		return
 	}
 	requestDER, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, domain.ErrInvalidRequest)
+		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
 	response, err := s.service.RespondOCSP(r.Context(), requestActor(r), requestDER)
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/ocsp-response")
@@ -410,7 +410,7 @@ func (s *Server) respondOCSP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.service.ListAuditEvents(r.Context())
 	if err != nil {
-		writeError(w, err)
+		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAuditEventResponses(events))
@@ -457,14 +457,23 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeError(w http.ResponseWriter, err error) {
-	writeJSON(w, statusForError(err), errorResponse{Error: publicErrorMessage(err)})
+func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	status := statusForError(err)
+	_ = s.service.RecordAPIFailure(r.Context(), requestActor(r), lifecycle.APIFailureAuditRequest{
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: status,
+		Err:        err,
+	})
+	writeJSON(w, status, errorResponse{Error: publicErrorMessage(err)})
 }
 
 func publicErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return domain.ErrInvalidRequest.Error()
+	case errors.Is(err, domain.ErrUnsupportedMediaType):
+		return domain.ErrUnsupportedMediaType.Error()
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return domain.ErrInvalidTransition.Error()
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -500,6 +509,8 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest
+	case errors.Is(err, domain.ErrUnsupportedMediaType):
+		return http.StatusUnsupportedMediaType
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrIdentityNotFound),

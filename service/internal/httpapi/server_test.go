@@ -573,6 +573,43 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	}
 }
 
+func TestFailedRequestsCreateAuditEvents(t *testing.T) {
+	api := newTestAPI(t)
+
+	var errorBody errorResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+	}, map[string]string{
+		"X-Request-ID":    "req-failed",
+		"X-Forwarded-For": "198.51.100.10",
+	}, &errorBody)
+	assertStatus(t, status, http.StatusBadRequest)
+	if errorBody.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", errorBody.Error, domain.ErrInvalidRequest.Error())
+	}
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Action != "api.request_failed" || event.Actor != "admin" || event.ResourceType != "api" {
+		t.Fatalf("failure audit event = %#v", event)
+	}
+	metadata := apiAuditMetadata(t, event)
+	if metadata["result_code"] != "error" ||
+		metadata["error_code"] != "invalid_request" ||
+		metadata["request_id"] != "req-failed" ||
+		metadata["client_ip"] != "198.51.100.10" ||
+		metadata["http_method"] != http.MethodPost ||
+		metadata["http_path"] != "/identities" ||
+		metadata["http_status"] != float64(http.StatusBadRequest) {
+		t.Fatalf("failure audit metadata = %#v", metadata)
+	}
+}
+
 type testAPI struct {
 	ctx     context.Context
 	client  *http.Client

@@ -57,6 +57,13 @@ type AuditRequestMetadata struct {
 	StartedAt time.Time
 }
 
+type APIFailureAuditRequest struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Err        error
+}
+
 type auditRequestMetadataContextKey struct{}
 
 type CreateIdentityRequest struct {
@@ -890,14 +897,33 @@ func (s *Service) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, err
 	return s.repo.ListAuditEvents(ctx)
 }
 
+func (s *Service) RecordAPIFailure(ctx context.Context, actor string, req APIFailureAuditRequest) error {
+	if isBlank(actor) {
+		actor = "anonymous"
+	}
+	now := s.clock.Now()
+	fields := map[string]any{
+		"http_method": req.Method,
+		"http_path":   req.Path,
+		"http_status": req.StatusCode,
+	}
+	return s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		return s.createAuditEventWithResult(ctx, repo, actor, "api.request_failed", "api", s.idgen.NewID(), now, fields, "error", auditErrorCode(req.Err))
+	})
+}
+
 func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time, fields map[string]any) error {
+	return s.createAuditEventWithResult(ctx, repo, actor, action, resourceType, resourceID, createdAt, fields, "ok", "")
+}
+
+func (s *Service) createAuditEventWithResult(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time, fields map[string]any, resultCode string, errorCode string) error {
 	return repo.CreateAuditEvent(ctx, domain.AuditEvent{
 		ID:           s.idgen.NewID(),
 		Actor:        actor,
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
-		MetadataJSON: auditMetadataJSON(ctx, fields),
+		MetadataJSON: auditMetadataJSON(ctx, fields, resultCode, errorCode),
 		CreatedAt:    createdAt,
 	})
 }
@@ -934,12 +960,15 @@ func auditFields(pairs ...string) map[string]any {
 	return fields
 }
 
-func auditMetadataJSON(ctx context.Context, fields map[string]any) string {
+func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode string, errorCode string) string {
 	metadata := make(map[string]any, len(fields)+4)
 	for key, value := range fields {
 		metadata[key] = value
 	}
-	metadata["result_code"] = "ok"
+	metadata["result_code"] = resultCode
+	if errorCode != "" {
+		metadata["error_code"] = errorCode
+	}
 	if requestMetadata, ok := ctx.Value(auditRequestMetadataContextKey{}).(AuditRequestMetadata); ok {
 		if requestMetadata.RequestID != "" {
 			metadata["request_id"] = requestMetadata.RequestID
@@ -956,6 +985,43 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any) string {
 		return "{}"
 	}
 	return string(encoded)
+}
+
+func auditErrorCode(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrInvalidRequest):
+		return "invalid_request"
+	case errors.Is(err, domain.ErrUnsupportedMediaType):
+		return "unsupported_media_type"
+	case errors.Is(err, domain.ErrInvalidTransition):
+		return "invalid_lifecycle_transition"
+	case errors.Is(err, domain.ErrIdentityNotFound):
+		return "identity_not_found"
+	case errors.Is(err, domain.ErrIssuerNotFound):
+		return "issuer_not_found"
+	case errors.Is(err, domain.ErrCertificateProfileNotFound):
+		return "certificate_profile_not_found"
+	case errors.Is(err, domain.ErrEnrollmentNotFound):
+		return "enrollment_not_found"
+	case errors.Is(err, domain.ErrCertificateNotFound):
+		return "certificate_not_found"
+	case errors.Is(err, domain.ErrCRLPublicationNotFound):
+		return "crl_publication_not_found"
+	case errors.Is(err, domain.ErrCSRParseFailed):
+		return "csr_parse_failed"
+	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
+		return "certificate_issuance_failed"
+	case errors.Is(err, domain.ErrCRLGenerationFailed):
+		return "crl_generation_failed"
+	case errors.Is(err, domain.ErrOCSPDecodeFailed):
+		return "ocsp_decode_failed"
+	case errors.Is(err, domain.ErrOCSPResponseFailed):
+		return "ocsp_response_failed"
+	case errors.Is(err, domain.ErrStorageFailure):
+		return "storage_failure"
+	default:
+		return "internal"
+	}
 }
 
 func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCSPCertificateID) ([]corecli.OCSPCertificateStatus, string, error) {
