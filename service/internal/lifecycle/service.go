@@ -19,7 +19,7 @@ type CertificateIssuer interface {
 	Issue(context.Context, corecli.IssueRequest) (corecli.IssueResult, error)
 	InspectCSR(context.Context, string) (corecli.CSRInfo, error)
 	GenerateCRL(context.Context, corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error)
-	InspectOCSPIssuer(context.Context, string) (corecli.OCSPIssuerInfo, error)
+	InspectOCSPIssuer(context.Context, string, string) (corecli.OCSPIssuerInfo, error)
 	InspectOCSP(context.Context, []byte) (corecli.OCSPRequestInfo, error)
 	GenerateOCSPResponse(context.Context, corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error)
 }
@@ -1031,7 +1031,7 @@ func auditErrorCode(err error) string {
 }
 
 func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCSPCertificateID) ([]corecli.OCSPCertificateStatus, string, error) {
-	issuersByHash, err := s.ocspIssuersByHash(ctx)
+	issuersByHash, err := s.ocspIssuersByHash(ctx, ids)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1051,9 +1051,9 @@ func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCS
 	issuerID := ""
 	revocationsByIssuer := make(map[string][]domain.RevokedCertificateEntry)
 	for _, id := range ids {
-		issuer, issuerFound := issuersByHash[ocspIssuerHashKey(id.IssuerNameHash, id.IssuerKeyHash)]
+		issuer, issuerFound := issuersByHash[ocspIssuerHashKey(id.HashAlgorithm, id.IssuerNameHash, id.IssuerKeyHash)]
 		if !issuerFound {
-			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: id.SerialNumber, Status: "unknown"})
+			statuses = append(statuses, unknownOCSPStatus(id))
 			continue
 		}
 		if issuerID == "" {
@@ -1064,12 +1064,12 @@ func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCS
 		}
 		certificate, found := byIssuerSerial[ocspIssuerSerialKey(issuer.ID, id.SerialNumber)]
 		if !found {
-			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: id.SerialNumber, Status: "unknown"})
+			statuses = append(statuses, unknownOCSPStatus(id))
 			continue
 		}
 		switch certificate.Status {
 		case domain.CertificateValid:
-			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "good"})
+			statuses = append(statuses, ocspStatusForID(id, "good"))
 		case domain.CertificateRevoked:
 			revocations, ok := revocationsByIssuer[certificate.IssuerID]
 			if !ok {
@@ -1079,43 +1079,60 @@ func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCS
 				}
 				revocationsByIssuer[certificate.IssuerID] = revocations
 			}
-			statuses = append(statuses, revokedOCSPStatus(certificate, revocations))
+			statuses = append(statuses, revokedOCSPStatus(id, certificate, revocations))
 		default:
-			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "unknown"})
+			statuses = append(statuses, unknownOCSPStatus(id))
 		}
 	}
 	return statuses, issuerID, nil
 }
 
-func (s *Service) ocspIssuersByHash(ctx context.Context) (map[string]domain.Issuer, error) {
+func (s *Service) ocspIssuersByHash(ctx context.Context, ids []corecli.OCSPCertificateID) (map[string]domain.Issuer, error) {
 	issuers, err := s.repo.ListIssuers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byHash := make(map[string]domain.Issuer, len(issuers))
+	hashAlgorithms := ocspHashAlgorithms(ids)
+	byHash := make(map[string]domain.Issuer, len(issuers)*len(hashAlgorithms))
 	for _, issuer := range issuers {
 		if issuer.Status != domain.IssuerActive {
 			continue
 		}
-		info, err := s.issuer.InspectOCSPIssuer(ctx, issuer.CertificatePEM)
-		if err != nil {
-			return nil, mapOCSPDecodeError(err)
+		for _, hashAlgorithm := range hashAlgorithms {
+			info, err := s.issuer.InspectOCSPIssuer(ctx, issuer.CertificatePEM, hashAlgorithm)
+			if err != nil {
+				return nil, mapOCSPDecodeError(err)
+			}
+			byHash[ocspIssuerHashKey(hashAlgorithm, info.IssuerNameHash, info.IssuerKeyHash)] = issuer
 		}
-		byHash[ocspIssuerHashKey(info.IssuerNameHash, info.IssuerKeyHash)] = issuer
 	}
 	return byHash, nil
 }
 
-func ocspIssuerHashKey(nameHash string, keyHash string) string {
-	return nameHash + "\x00" + keyHash
+func ocspIssuerHashKey(hashAlgorithm string, nameHash string, keyHash string) string {
+	return normalizeOCSPHashAlgorithm(hashAlgorithm) + "\x00" + nameHash + "\x00" + keyHash
 }
 
 func ocspIssuerSerialKey(issuerID string, serialNumber string) string {
 	return issuerID + "\x00" + serialNumber
 }
 
-func revokedOCSPStatus(certificate domain.Certificate, revocations []domain.RevokedCertificateEntry) corecli.OCSPCertificateStatus {
-	status := corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "revoked"}
+func unknownOCSPStatus(id corecli.OCSPCertificateID) corecli.OCSPCertificateStatus {
+	return ocspStatusForID(id, "unknown")
+}
+
+func ocspStatusForID(id corecli.OCSPCertificateID, status string) corecli.OCSPCertificateStatus {
+	return corecli.OCSPCertificateStatus{
+		SerialNumber:   id.SerialNumber,
+		Status:         status,
+		HashAlgorithm:  normalizeOCSPHashAlgorithm(id.HashAlgorithm),
+		IssuerNameHash: id.IssuerNameHash,
+		IssuerKeyHash:  id.IssuerKeyHash,
+	}
+}
+
+func revokedOCSPStatus(id corecli.OCSPCertificateID, certificate domain.Certificate, revocations []domain.RevokedCertificateEntry) corecli.OCSPCertificateStatus {
+	status := ocspStatusForID(id, "revoked")
 	for _, revocation := range revocations {
 		if revocation.SerialNumber == certificate.SerialNumber {
 			status.RevokedAt = revocation.RevokedAt
@@ -1124,6 +1141,30 @@ func revokedOCSPStatus(certificate domain.Certificate, revocations []domain.Revo
 		}
 	}
 	return status
+}
+
+func ocspHashAlgorithms(ids []corecli.OCSPCertificateID) []string {
+	seen := make(map[string]bool)
+	algorithms := make([]string, 0, len(ids))
+	for _, id := range ids {
+		algorithm := normalizeOCSPHashAlgorithm(id.HashAlgorithm)
+		if !seen[algorithm] {
+			seen[algorithm] = true
+			algorithms = append(algorithms, algorithm)
+		}
+	}
+	if len(algorithms) == 0 {
+		return []string{"sha1"}
+	}
+	return algorithms
+}
+
+func normalizeOCSPHashAlgorithm(hashAlgorithm string) string {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(hashAlgorithm, "-", ""), "_", ""))
+	if normalized == "" {
+		return "sha1"
+	}
+	return normalized
 }
 
 func firstOCSPSerial(ids []corecli.OCSPCertificateID) string {
@@ -1147,6 +1188,7 @@ func ocspAuditCertificates(ids []corecli.OCSPCertificateID, statuses []corecli.O
 			"serial_number":    id.SerialNumber,
 			"issuer_name_hash": id.IssuerNameHash,
 			"issuer_key_hash":  id.IssuerKeyHash,
+			"hash_algorithm":   normalizeOCSPHashAlgorithm(id.HashAlgorithm),
 		}
 		if i < len(statuses) {
 			status := statuses[i]

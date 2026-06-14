@@ -529,15 +529,41 @@ modern_pki::core::GenerateOCSPResponseRequest ocsp_response_request_from_json(
 
 	const std::vector<std::string> serials = get_string_array_field(object, "serial_numbers");
 	const std::vector<std::string> statuses = get_string_array_field(object, "statuses");
+	const std::vector<std::string> hash_algorithms = get_string_array_field(object, "hash_algorithms");
+	const std::vector<std::string> issuer_name_hashes = get_string_array_field(object, "issuer_name_hashes");
+	const std::vector<std::string> issuer_key_hashes = get_string_array_field(object, "issuer_key_hashes");
 	const std::vector<std::string> revoked_at_times = get_string_array_field(object, "revoked_at_times");
 	const std::vector<std::string> reasons = get_string_array_field(object, "revocation_reasons");
 	if (serials.size() != statuses.size() || serials.size() != revoked_at_times.size() || serials.size() != reasons.size())
 	{
 		throw_json_parse_failed();
 	}
+	if ((!hash_algorithms.empty() && hash_algorithms.size() != serials.size()) ||
+	    (!issuer_name_hashes.empty() && issuer_name_hashes.size() != serials.size()) ||
+	    (!issuer_key_hashes.empty() && issuer_key_hashes.size() != serials.size()))
+	{
+		throw_json_parse_failed();
+	}
 	for (std::vector<std::string>::size_type index = 0; index < serials.size(); ++index)
 	{
-		request.certificates.push_back({serials[index], statuses[index], revoked_at_times[index], reasons[index]});
+		modern_pki::core::OCSPCertificateStatus status;
+		status.serial_number = serials[index];
+		status.status = statuses[index];
+		status.revoked_at = revoked_at_times[index];
+		status.revocation_reason = reasons[index];
+		if (!hash_algorithms.empty())
+		{
+			status.hash_algorithm = hash_algorithms[index];
+		}
+		if (!issuer_name_hashes.empty())
+		{
+			status.issuer_name_hash = issuer_name_hashes[index];
+		}
+		if (!issuer_key_hashes.empty())
+		{
+			status.issuer_key_hash = issuer_key_hashes[index];
+		}
+		request.certificates.push_back(status);
 	}
 	return request;
 }
@@ -569,7 +595,8 @@ std::string ocsp_info_to_json(const modern_pki::core::OCSPRequestInfo &info)
 		const modern_pki::core::OCSPCertificateID &certificate = info.certificates[index];
 		output += "{\"serial_number\":" + json_string(certificate.serial_number) +
 		          ",\"issuer_name_hash\":" + json_string(certificate.issuer_name_hash) +
-		          ",\"issuer_key_hash\":" + json_string(certificate.issuer_key_hash) + "}";
+		          ",\"issuer_key_hash\":" + json_string(certificate.issuer_key_hash) +
+		          ",\"hash_algorithm\":" + json_string(certificate.hash_algorithm) + "}";
 	}
 	output += "]}";
 	return output;
@@ -578,7 +605,8 @@ std::string ocsp_info_to_json(const modern_pki::core::OCSPRequestInfo &info)
 std::string ocsp_issuer_info_to_json(const modern_pki::core::OCSPIssuerInfo &info)
 {
 	return "{\"issuer_name_hash\":" + json_string(info.issuer_name_hash) +
-	       ",\"issuer_key_hash\":" + json_string(info.issuer_key_hash) + "}";
+	       ",\"issuer_key_hash\":" + json_string(info.issuer_key_hash) +
+	       ",\"hash_algorithm\":" + json_string(info.hash_algorithm) + "}";
 }
 
 bool arg_is(char *value, std::string_view expected)
@@ -643,14 +671,24 @@ int run_ocsp_inspect(int argc, char *argv[])
 
 int run_ocsp_inspect_issuer(int argc, char *argv[])
 {
-	if (argc != 7 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "inspect-issuer") ||
+	if ((argc != 7 && argc != 9) || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "inspect-issuer") ||
 	    !arg_is(argv[3], "--issuer") || !arg_is(argv[5], "--out"))
 	{
 		write_error("cli.invalid_args", "invalid arguments");
 		return 2;
 	}
 
-	const modern_pki::core::OCSPIssuerInfo info = modern_pki::core::inspect_ocsp_issuer_pem(read_file(argv[4]));
+	std::string hash_algorithm = "sha1";
+	if (argc == 9)
+	{
+		if (!arg_is(argv[7], "--hash"))
+		{
+			write_error("cli.invalid_args", "invalid arguments");
+			return 2;
+		}
+		hash_algorithm = argv[8];
+	}
+	const modern_pki::core::OCSPIssuerInfo info = modern_pki::core::inspect_ocsp_issuer_pem(read_file(argv[4]), hash_algorithm);
 	write_file(argv[6], ocsp_issuer_info_to_json(info) + "\n");
 	return 0;
 }

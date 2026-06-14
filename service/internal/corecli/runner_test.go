@@ -143,7 +143,7 @@ func TestRunnerGenerateCRLNormalizesTimes(t *testing.T) {
 func TestRunnerMapsOCSPIssuerInfoJSON(t *testing.T) {
 	bin := writeFakeOCSPIssuerInspectCommand(t, true)
 
-	info, err := (Runner{Bin: bin}).InspectOCSPIssuer(context.Background(), "issuer-pem")
+	info, err := (Runner{Bin: bin}).InspectOCSPIssuer(context.Background(), "issuer-pem", "sha256")
 	if err != nil {
 		t.Fatalf("InspectOCSPIssuer returned error: %v", err)
 	}
@@ -153,6 +153,9 @@ func TestRunnerMapsOCSPIssuerInfoJSON(t *testing.T) {
 	}
 	if info.IssuerKeyHash != "key-hash" {
 		t.Fatalf("IssuerKeyHash = %q, want key-hash", info.IssuerKeyHash)
+	}
+	if info.HashAlgorithm != "sha256" {
+		t.Fatalf("HashAlgorithm = %q, want sha256", info.HashAlgorithm)
 	}
 }
 
@@ -179,6 +182,9 @@ func TestRunnerInspectOCSPPreservesDERAndMapsJSON(t *testing.T) {
 	if certificate.IssuerKeyHash != "key-hash" {
 		t.Fatalf("IssuerKeyHash = %q, want key-hash", certificate.IssuerKeyHash)
 	}
+	if certificate.HashAlgorithm != "sha256" {
+		t.Fatalf("HashAlgorithm = %q, want sha256", certificate.HashAlgorithm)
+	}
 
 	capturedDER, err := os.ReadFile(capturePath)
 	if err != nil {
@@ -186,6 +192,53 @@ func TestRunnerInspectOCSPPreservesDERAndMapsJSON(t *testing.T) {
 	}
 	if !bytes.Equal(capturedDER, requestDER) {
 		t.Fatalf("captured DER = %#v, want %#v", capturedDER, requestDER)
+	}
+}
+
+func TestRunnerGenerateOCSPResponseWritesHashAwareStatusRequest(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "ocsp-response-request.json")
+	bin := writeFakeOCSPResponseCommand(t, true, capturePath)
+
+	result, err := (Runner{Bin: bin}).GenerateOCSPResponse(context.Background(), GenerateOCSPResponseRequest{
+		RequestDER:           []byte("ocsp-request-der"),
+		IssuerCertificatePEM: "issuer-pem",
+		IssuerKeyRef:         "issuer-key-ref",
+		ThisUpdate:           time.Date(2026, time.January, 2, 3, 4, 5, 123456789, time.FixedZone("KST", 9*60*60)),
+		NextUpdate:           time.Date(2026, time.January, 3, 4, 5, 6, 987654321, time.UTC),
+		Certificates: []OCSPCertificateStatus{{
+			SerialNumber:     "1001",
+			HashAlgorithm:    "sha256",
+			IssuerNameHash:   "name-hash",
+			IssuerKeyHash:    "key-hash",
+			Status:           "revoked",
+			RevokedAt:        time.Date(2026, time.January, 2, 4, 4, 5, 999999999, time.FixedZone("KST", 9*60*60)),
+			RevocationReason: "key_compromise",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateOCSPResponse returned error: %v", err)
+	}
+	if string(result.ResponseDER) != "ocsp-response-der" {
+		t.Fatalf("ResponseDER = %q, want ocsp-response-der", string(result.ResponseDER))
+	}
+
+	payload, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+	body := string(payload)
+	for _, want := range []string{
+		`"this_update":"2026-01-01T18:04:05Z"`,
+		`"next_update":"2026-01-03T04:05:06Z"`,
+		`"serial_numbers":["1001"]`,
+		`"hash_algorithms":["sha256"]`,
+		`"issuer_name_hashes":["name-hash"]`,
+		`"issuer_key_hashes":["key-hash"]`,
+		`"revoked_at_times":["2026-01-01T19:04:05Z"]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("captured request = %s, want it to contain %s", body, want)
+		}
 	}
 }
 
@@ -299,6 +352,25 @@ func writeFakeOCSPInspectCommand(t *testing.T, success bool, capturePath string)
 	return path
 }
 
+func writeFakeOCSPResponseCommand(t *testing.T, success bool, capturePath string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsOCSPResponseScript(success, capturePath)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixOCSPResponseScript(success, capturePath)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
 func windowsIssueScript(success bool) string {
 	if !success {
 		return strings.Join([]string{
@@ -385,6 +457,10 @@ func windowsOCSPIssuerInspectScript(success bool) string {
 	return strings.Join([]string{
 		"@echo off",
 		"setlocal",
+		"if not \"%~1\"==\"ocsp\" exit /b 3",
+		"if not \"%~2\"==\"inspect-issuer\" exit /b 3",
+		"if not \"%~7\"==\"--hash\" exit /b 3",
+		"if not \"%~8\"==\"sha256\" exit /b 3",
 		"set \"OUT=\"",
 		":loop",
 		"if \"%~1\"==\"\" goto done",
@@ -398,7 +474,7 @@ func windowsOCSPIssuerInspectScript(success bool) string {
 		"goto loop",
 		":done",
 		"if \"%OUT%\"==\"\" exit /b 2",
-		"> \"%OUT%\" echo {^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\"}",
+		"> \"%OUT%\" echo {^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\",^\"hash_algorithm^\":^\"sha256^\"}",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -441,7 +517,48 @@ func windowsOCSPInspectScript(success bool, capturePath string) string {
 		"if \"%IN%\"==\"\" exit /b 2",
 		"if \"%OUT%\"==\"\" exit /b 2",
 		"copy /Y \"%IN%\" \"" + capturePath + "\" >NUL",
-		"> \"%OUT%\" echo {^\"certificates^\": [{^\"serial_number^\":^\"1001^\",^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\"}]}",
+		"> \"%OUT%\" echo {^\"certificates^\": [{^\"serial_number^\":^\"1001^\",^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\",^\"hash_algorithm^\":^\"sha256^\"}]}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
+func windowsOCSPResponseScript(success bool, capturePath string) string {
+	if !success {
+		return strings.Join([]string{
+			"@echo off",
+			"echo {^\"code^\":^\"ocsp.create_failed^\",^\"message^\":^\"bad response^\"} 1>&2",
+			"exit /b 7",
+			"",
+		}, "\r\n")
+	}
+
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"REQ=\"",
+		"set \"OUT=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"--request\" (",
+		"  set \"REQ=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%REQ%\"==\"\" exit /b 2",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"copy /Y \"%REQ%\" \"" + capturePath + "\" >NUL",
+		"<nul set /p \"=ocsp-response-der\" > \"%OUT%\"",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -536,6 +653,9 @@ exit 7
 	}
 
 	return `#!/bin/sh
+if [ "$1" != "ocsp" ] || [ "$2" != "inspect-issuer" ] || [ "$7" != "--hash" ] || [ "$8" != "sha256" ]; then
+	exit 3
+fi
 out=""
 while [ "$#" -gt 0 ]; do
 	if [ "$1" = "--out" ]; then
@@ -549,7 +669,7 @@ if [ -z "$out" ]; then
 	exit 2
 fi
 cat > "$out" <<'JSON'
-{"issuer_name_hash":"name-hash","issuer_key_hash":"key-hash"}
+{"issuer_name_hash":"name-hash","issuer_key_hash":"key-hash","hash_algorithm":"sha256"}
 JSON
 exit 0
 `
@@ -586,8 +706,40 @@ if [ -z "$input" ] || [ -z "$out" ]; then
 fi
 cp "$input" '` + escapedCapturePath + `'
 cat > "$out" <<'JSON'
-{"certificates":[{"serial_number":"1001","issuer_name_hash":"name-hash","issuer_key_hash":"key-hash"}]}
+{"certificates":[{"serial_number":"1001","issuer_name_hash":"name-hash","issuer_key_hash":"key-hash","hash_algorithm":"sha256"}]}
 JSON
+exit 0
+`
+}
+
+func unixOCSPResponseScript(success bool, capturePath string) string {
+	if !success {
+		return `#!/bin/sh
+printf '%s\n' '{"code":"ocsp.create_failed","message":"bad response"}' >&2
+exit 7
+`
+	}
+
+	escapedCapturePath := strings.ReplaceAll(capturePath, "'", "'\"'\"'")
+	return `#!/bin/sh
+request=""
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--request" ]; then
+		request="$2"
+		shift 2
+	elif [ "$1" = "--out" ]; then
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$request" ] || [ -z "$out" ]; then
+	exit 2
+fi
+cp "$request" '` + escapedCapturePath + `'
+printf '%s' 'ocsp-response-der' > "$out"
 exit 0
 `
 }

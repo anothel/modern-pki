@@ -159,12 +159,83 @@ std::string serial_to_decimal(const ASN1_INTEGER *serial)
 	return decimal;
 }
 
+std::string normalize_hash_algorithm(std::string_view value)
+{
+	std::string normalized;
+	normalized.reserve(value.size());
+	for (char ch : value)
+	{
+		if (ch != '-' && ch != '_')
+		{
+			normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+		}
+	}
+	if (normalized.empty())
+	{
+		return "sha1";
+	}
+	if (normalized == "sha1" || normalized == "sha256" || normalized == "sha384" || normalized == "sha512")
+	{
+		return normalized;
+	}
+	throw_error(kOCSPCreateFailed);
+}
+
+const EVP_MD *message_digest(std::string_view hash_algorithm)
+{
+	const std::string normalized = normalize_hash_algorithm(hash_algorithm);
+	if (normalized == "sha1")
+	{
+		return EVP_sha1();
+	}
+	if (normalized == "sha256")
+	{
+		return EVP_sha256();
+	}
+	if (normalized == "sha384")
+	{
+		return EVP_sha384();
+	}
+	if (normalized == "sha512")
+	{
+		return EVP_sha512();
+	}
+	throw_error(kOCSPCreateFailed);
+}
+
+std::string hash_algorithm_name(const ASN1_OBJECT *algorithm)
+{
+	if (algorithm == nullptr)
+	{
+		throw_error(kOCSPParseFailed);
+	}
+	const int nid = OBJ_obj2nid(algorithm);
+	if (nid == NID_sha1)
+	{
+		return "sha1";
+	}
+	if (nid == NID_sha256)
+	{
+		return "sha256";
+	}
+	if (nid == NID_sha384)
+	{
+		return "sha384";
+	}
+	if (nid == NID_sha512)
+	{
+		return "sha512";
+	}
+	throw_error(kOCSPParseFailed);
+}
+
 OCSPCertificateID certificate_id(OCSP_CERTID *id)
 {
 	ASN1_OCTET_STRING *issuer_name_hash = nullptr;
+	ASN1_OBJECT *hash_algorithm = nullptr;
 	ASN1_OCTET_STRING *issuer_key_hash = nullptr;
 	ASN1_INTEGER *serial = nullptr;
-	if (OCSP_id_get0_info(&issuer_name_hash, nullptr, &issuer_key_hash, &serial, id) != 1)
+	if (OCSP_id_get0_info(&issuer_name_hash, &hash_algorithm, &issuer_key_hash, &serial, id) != 1)
 	{
 		throw_error(kOCSPParseFailed);
 	}
@@ -172,6 +243,7 @@ OCSPCertificateID certificate_id(OCSP_CERTID *id)
 	    serial_to_decimal(serial),
 	    octets_to_hex(issuer_name_hash),
 	    octets_to_hex(issuer_key_hash),
+	    hash_algorithm_name(hash_algorithm),
 	};
 }
 
@@ -247,14 +319,29 @@ int ocsp_revocation_reason(std::string_view reason)
 	return OCSP_REVOKED_STATUS_UNSPECIFIED;
 }
 
-std::map<std::string, OCSPCertificateStatus> statuses_by_serial(const std::vector<OCSPCertificateStatus> &statuses)
+std::string status_key(
+    std::string_view serial_number,
+    std::string_view hash_algorithm,
+    std::string_view issuer_name_hash,
+    std::string_view issuer_key_hash)
 {
-	std::map<std::string, OCSPCertificateStatus> by_serial;
+	return std::string{serial_number} + "\x00" + normalize_hash_algorithm(hash_algorithm) + "\x00" +
+	       std::string{issuer_name_hash} + "\x00" + std::string{issuer_key_hash};
+}
+
+std::map<std::string, OCSPCertificateStatus> statuses_by_id(const std::vector<OCSPCertificateStatus> &statuses)
+{
+	std::map<std::string, OCSPCertificateStatus> by_id;
 	for (const OCSPCertificateStatus &status : statuses)
 	{
-		by_serial[status.serial_number] = status;
+		if (status.hash_algorithm.empty() && status.issuer_name_hash.empty() && status.issuer_key_hash.empty())
+		{
+			by_id[status.serial_number] = status;
+			continue;
+		}
+		by_id[status_key(status.serial_number, status.hash_algorithm, status.issuer_name_hash, status.issuer_key_hash)] = status;
 	}
-	return by_serial;
+	return by_id;
 }
 
 std::string response_to_der(OCSP_RESPONSE *response)
@@ -292,16 +379,17 @@ OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der)
 	return info;
 }
 
-OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem)
+OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem, const std::string &hash_algorithm)
 {
 	const X509Ptr issuer = parse_certificate(issuer_certificate_pem);
-	OCSPCertIDPtr id{OCSP_cert_to_id(EVP_sha1(), issuer.get(), issuer.get())};
+	const std::string normalized_hash_algorithm = normalize_hash_algorithm(hash_algorithm);
+	OCSPCertIDPtr id{OCSP_cert_to_id(message_digest(normalized_hash_algorithm), issuer.get(), issuer.get())};
 	if (!id)
 	{
 		throw_error(kOCSPCreateFailed);
 	}
 	const OCSPCertificateID parsed_id = certificate_id(id.get());
-	return OCSPIssuerInfo{parsed_id.issuer_name_hash, parsed_id.issuer_key_hash};
+	return OCSPIssuerInfo{parsed_id.issuer_name_hash, parsed_id.issuer_key_hash, parsed_id.hash_algorithm};
 }
 
 GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request)
@@ -311,7 +399,7 @@ GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequ
 	const EvpPkeyPtr issuer_key = parse_private_key(read_file(request.issuer_key_ref));
 	const Asn1TimePtr this_update = make_time(request.this_update);
 	const Asn1TimePtr next_update = make_time(request.next_update);
-	const std::map<std::string, OCSPCertificateStatus> statuses = statuses_by_serial(request.certificates);
+	const std::map<std::string, OCSPCertificateStatus> statuses = statuses_by_id(request.certificates);
 
 	OCSPBasicResponsePtr basic{OCSP_BASICRESP_new()};
 	if (!basic)
@@ -329,7 +417,15 @@ GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequ
 		}
 		OCSP_CERTID *id = OCSP_onereq_get0_id(one);
 		const OCSPCertificateID parsed_id = certificate_id(id);
-		const auto found = statuses.find(parsed_id.serial_number);
+		auto found = statuses.find(status_key(
+		    parsed_id.serial_number,
+		    parsed_id.hash_algorithm,
+		    parsed_id.issuer_name_hash,
+		    parsed_id.issuer_key_hash));
+		if (found == statuses.end())
+		{
+			found = statuses.find(parsed_id.serial_number);
+		}
 		const OCSPCertificateStatus status =
 		    found == statuses.end() ? OCSPCertificateStatus{parsed_id.serial_number, "unknown", {}, {}} : found->second;
 		Asn1TimePtr revoked_at;

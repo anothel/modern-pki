@@ -70,6 +70,7 @@ type OCSPCertificateID struct {
 	SerialNumber   string `json:"serial_number"`
 	IssuerNameHash string `json:"issuer_name_hash"`
 	IssuerKeyHash  string `json:"issuer_key_hash"`
+	HashAlgorithm  string `json:"hash_algorithm"`
 }
 
 type OCSPRequestInfo struct {
@@ -79,6 +80,7 @@ type OCSPRequestInfo struct {
 type OCSPIssuerInfo struct {
 	IssuerNameHash string `json:"issuer_name_hash"`
 	IssuerKeyHash  string `json:"issuer_key_hash"`
+	HashAlgorithm  string `json:"hash_algorithm"`
 }
 
 type OCSPCertificateStatus struct {
@@ -86,6 +88,9 @@ type OCSPCertificateStatus struct {
 	Status           string
 	RevokedAt        time.Time
 	RevocationReason string
+	HashAlgorithm    string
+	IssuerNameHash   string
+	IssuerKeyHash    string
 }
 
 type GenerateOCSPResponseRequest struct {
@@ -346,7 +351,7 @@ func (r Runner) InspectOCSP(ctx context.Context, requestDER []byte) (OCSPRequest
 	return result, nil
 }
 
-func (r Runner) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string) (OCSPIssuerInfo, error) {
+func (r Runner) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string, hashAlgorithm string) (OCSPIssuerInfo, error) {
 	issuerFile, err := os.CreateTemp("", "modern-pki-core-ocsp-issuer-*.pem")
 	if err != nil {
 		return OCSPIssuerInfo{}, fmt.Errorf("create ocsp issuer temp file: %w", err)
@@ -378,7 +383,10 @@ func (r Runner) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM stri
 	}
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, "ocsp", "inspect-issuer", "--issuer", issuerPath, "--out", resultPath)
+	if hashAlgorithm == "" {
+		hashAlgorithm = "sha1"
+	}
+	cmd := exec.CommandContext(ctx, bin, "ocsp", "inspect-issuer", "--issuer", issuerPath, "--out", resultPath, "--hash", hashAlgorithm)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return OCSPIssuerInfo{}, commandError(err, stderr.String())
@@ -425,12 +433,18 @@ func (r Runner) GenerateOCSPResponse(ctx context.Context, req GenerateOCSPRespon
 		ThisUpdate:           coreTime(req.ThisUpdate),
 		NextUpdate:           coreTime(req.NextUpdate),
 		SerialNumbers:        make([]string, 0, len(req.Certificates)),
+		HashAlgorithms:       make([]string, 0, len(req.Certificates)),
+		IssuerNameHashes:     make([]string, 0, len(req.Certificates)),
+		IssuerKeyHashes:      make([]string, 0, len(req.Certificates)),
 		Statuses:             make([]string, 0, len(req.Certificates)),
 		RevokedAtTimes:       make([]string, 0, len(req.Certificates)),
 		RevocationReasons:    make([]string, 0, len(req.Certificates)),
 	}
 	for _, certificate := range req.Certificates {
 		fileReq.SerialNumbers = append(fileReq.SerialNumbers, certificate.SerialNumber)
+		fileReq.HashAlgorithms = append(fileReq.HashAlgorithms, certificate.HashAlgorithm)
+		fileReq.IssuerNameHashes = append(fileReq.IssuerNameHashes, certificate.IssuerNameHash)
+		fileReq.IssuerKeyHashes = append(fileReq.IssuerKeyHashes, certificate.IssuerKeyHash)
 		fileReq.Statuses = append(fileReq.Statuses, certificate.Status)
 		fileReq.RevokedAtTimes = append(fileReq.RevokedAtTimes, coreTime(certificate.RevokedAt))
 		fileReq.RevocationReasons = append(fileReq.RevocationReasons, certificate.RevocationReason)
@@ -489,6 +503,9 @@ type ocspResponseFileRequest struct {
 	ThisUpdate           string   `json:"this_update"`
 	NextUpdate           string   `json:"next_update"`
 	SerialNumbers        []string `json:"serial_numbers"`
+	HashAlgorithms       []string `json:"hash_algorithms"`
+	IssuerNameHashes     []string `json:"issuer_name_hashes"`
+	IssuerKeyHashes      []string `json:"issuer_key_hashes"`
 	Statuses             []string `json:"statuses"`
 	RevokedAtTimes       []string `json:"revoked_at_times"`
 	RevocationReasons    []string `json:"revocation_reasons"`

@@ -136,15 +136,42 @@ std::string private_key_to_pem(EVP_PKEY *key)
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
-std::string ocsp_request_der(X509 *leaf, X509 *issuer, OCSP_CERTID **out_id)
+std::string ocsp_request_der(X509 *leaf, X509 *issuer, const EVP_MD *digest, OCSP_CERTID **out_id)
 {
 	OCSPRequestPtr request{OCSP_REQUEST_new()};
 	require(request != nullptr);
-	OCSP_CERTID *id = OCSP_cert_to_id(EVP_sha1(), leaf, issuer);
+	OCSP_CERTID *id = OCSP_cert_to_id(digest, leaf, issuer);
 	require(id != nullptr);
 	*out_id = OCSP_CERTID_dup(id);
 	require(*out_id != nullptr);
 	require(OCSP_request_add0_id(request.get(), id) != nullptr);
+	BioPtr bio{BIO_new(BIO_s_mem())};
+	require(bio != nullptr);
+	require(i2d_OCSP_REQUEST_bio(bio.get(), request.get()) == 1);
+	char *data = nullptr;
+	const long size = BIO_get_mem_data(bio.get(), &data);
+	require(size > 0 && data != nullptr);
+	return std::string{data, static_cast<std::string::size_type>(size)};
+}
+
+std::string ocsp_request_der(X509 *leaf, X509 *issuer, OCSP_CERTID **out_id)
+{
+	return ocsp_request_der(leaf, issuer, EVP_sha1(), out_id);
+}
+
+std::string ocsp_request_der(X509 *leaf, X509 *issuer, const std::vector<const EVP_MD *> &digests, std::vector<OCSPCertIDPtr> &out_ids)
+{
+	OCSPRequestPtr request{OCSP_REQUEST_new()};
+	require(request != nullptr);
+	for (const EVP_MD *digest : digests)
+	{
+		OCSP_CERTID *id = OCSP_cert_to_id(digest, leaf, issuer);
+		require(id != nullptr);
+		OCSP_CERTID *copy = OCSP_CERTID_dup(id);
+		require(copy != nullptr);
+		out_ids.push_back(OCSPCertIDPtr{copy});
+		require(OCSP_request_add0_id(request.get(), id) != nullptr);
+	}
 	BioPtr bio{BIO_new(BIO_s_mem())};
 	require(bio != nullptr);
 	require(i2d_OCSP_REQUEST_bio(bio.get(), request.get()) == 1);
@@ -242,6 +269,7 @@ void assert_curated_ocsp_request_vector(const std::filesystem::path &fixture_dir
 	require(info.certificates[0].serial_number == "1001");
 	require(info.certificates[0].issuer_name_hash == "84378ae02c8a13718b0efda0e3a283b0006a4265");
 	require(info.certificates[0].issuer_key_hash == "d5dcea91c8d109ec61e84d07bea04fab0b720ac3");
+	require(info.certificates[0].hash_algorithm == "sha1");
 }
 
 } // namespace
@@ -269,11 +297,25 @@ int main(int argc, char *argv[])
 	const modern_pki::core::OCSPRequestInfo info = modern_pki::core::inspect_ocsp_request_der(request_der);
 	require(info.certificates.size() == 1);
 	require(info.certificates[0].serial_number == "1001");
+	require(info.certificates[0].hash_algorithm == "sha1");
 	require(!info.certificates[0].issuer_name_hash.empty());
 	require(!info.certificates[0].issuer_key_hash.empty());
-	const modern_pki::core::OCSPIssuerInfo issuer_info = modern_pki::core::inspect_ocsp_issuer_pem(certificate_to_pem(issuer.get()));
+	const modern_pki::core::OCSPIssuerInfo issuer_info = modern_pki::core::inspect_ocsp_issuer_pem(certificate_to_pem(issuer.get()), "sha1");
+	require(issuer_info.hash_algorithm == "sha1");
 	require(issuer_info.issuer_name_hash == info.certificates[0].issuer_name_hash);
 	require(issuer_info.issuer_key_hash == info.certificates[0].issuer_key_hash);
+
+	OCSP_CERTID *sha256_raw_id = nullptr;
+	const std::string sha256_request_der = ocsp_request_der(leaf.get(), issuer.get(), EVP_sha256(), &sha256_raw_id);
+	OCSPCertIDPtr sha256_id{sha256_raw_id};
+	const modern_pki::core::OCSPRequestInfo sha256_info = modern_pki::core::inspect_ocsp_request_der(sha256_request_der);
+	require(sha256_info.certificates.size() == 1);
+	require(sha256_info.certificates[0].serial_number == "1001");
+	require(sha256_info.certificates[0].hash_algorithm == "sha256");
+	const modern_pki::core::OCSPIssuerInfo sha256_issuer_info = modern_pki::core::inspect_ocsp_issuer_pem(certificate_to_pem(issuer.get()), "sha256");
+	require(sha256_issuer_info.hash_algorithm == "sha256");
+	require(sha256_issuer_info.issuer_name_hash == sha256_info.certificates[0].issuer_name_hash);
+	require(sha256_issuer_info.issuer_key_hash == sha256_info.certificates[0].issuer_key_hash);
 
 	modern_pki::core::GenerateOCSPResponseRequest response_request;
 	response_request.request_der = request_der;
@@ -281,7 +323,15 @@ int main(int argc, char *argv[])
 	response_request.issuer_key_ref = issuer_key_path.string();
 	response_request.this_update = "2026-06-13T00:00:00Z";
 	response_request.next_update = "2026-06-14T00:00:00Z";
-	response_request.certificates.push_back({"1001", "revoked", "2026-06-13T01:00:00Z", "key_compromise"});
+	modern_pki::core::OCSPCertificateStatus revoked_status;
+	revoked_status.serial_number = "1001";
+	revoked_status.status = "revoked";
+	revoked_status.revoked_at = "2026-06-13T01:00:00Z";
+	revoked_status.revocation_reason = "key_compromise";
+	revoked_status.hash_algorithm = info.certificates[0].hash_algorithm;
+	revoked_status.issuer_name_hash = info.certificates[0].issuer_name_hash;
+	revoked_status.issuer_key_hash = info.certificates[0].issuer_key_hash;
+	response_request.certificates.push_back(revoked_status);
 
 	const modern_pki::core::GenerateOCSPResponseResult response_result = modern_pki::core::generate_ocsp_response(response_request);
 	const OCSPResponsePtr response = ocsp_response_from_der(response_result.response_der);
@@ -296,6 +346,50 @@ int main(int argc, char *argv[])
 	require(OCSP_resp_find_status(basic.get(), id.get(), &status, &reason, &revocation_time, &this_update, &next_update) == 1);
 	require(status == V_OCSP_CERTSTATUS_REVOKED);
 	require(reason == OCSP_REVOKED_STATUS_KEYCOMPROMISE);
+
+	std::vector<OCSPCertIDPtr> mixed_ids;
+	const std::string mixed_request_der = ocsp_request_der(leaf.get(), issuer.get(), {EVP_sha1(), EVP_sha256()}, mixed_ids);
+	const modern_pki::core::OCSPRequestInfo mixed_info = modern_pki::core::inspect_ocsp_request_der(mixed_request_der);
+	require(mixed_info.certificates.size() == 2);
+	require(mixed_info.certificates[0].serial_number == mixed_info.certificates[1].serial_number);
+	require(mixed_info.certificates[0].hash_algorithm == "sha1");
+	require(mixed_info.certificates[1].hash_algorithm == "sha256");
+
+	modern_pki::core::GenerateOCSPResponseRequest mixed_response_request;
+	mixed_response_request.request_der = mixed_request_der;
+	mixed_response_request.issuer_certificate_pem = certificate_to_pem(issuer.get());
+	mixed_response_request.issuer_key_ref = issuer_key_path.string();
+	mixed_response_request.this_update = "2026-06-13T00:00:00Z";
+	mixed_response_request.next_update = "2026-06-14T00:00:00Z";
+	modern_pki::core::OCSPCertificateStatus good_sha1;
+	good_sha1.serial_number = mixed_info.certificates[0].serial_number;
+	good_sha1.status = "good";
+	good_sha1.hash_algorithm = mixed_info.certificates[0].hash_algorithm;
+	good_sha1.issuer_name_hash = mixed_info.certificates[0].issuer_name_hash;
+	good_sha1.issuer_key_hash = mixed_info.certificates[0].issuer_key_hash;
+	modern_pki::core::OCSPCertificateStatus revoked_sha256;
+	revoked_sha256.serial_number = mixed_info.certificates[1].serial_number;
+	revoked_sha256.status = "revoked";
+	revoked_sha256.revoked_at = "2026-06-13T01:00:00Z";
+	revoked_sha256.revocation_reason = "key_compromise";
+	revoked_sha256.hash_algorithm = mixed_info.certificates[1].hash_algorithm;
+	revoked_sha256.issuer_name_hash = mixed_info.certificates[1].issuer_name_hash;
+	revoked_sha256.issuer_key_hash = mixed_info.certificates[1].issuer_key_hash;
+	mixed_response_request.certificates = {good_sha1, revoked_sha256};
+
+	const modern_pki::core::GenerateOCSPResponseResult mixed_response_result = modern_pki::core::generate_ocsp_response(mixed_response_request);
+	const OCSPResponsePtr mixed_response = ocsp_response_from_der(mixed_response_result.response_der);
+	OCSPBasicResponsePtr mixed_basic{OCSP_response_get1_basic(mixed_response.get())};
+	require(mixed_basic != nullptr);
+	int sha1_status = -1;
+	int sha1_reason = -1;
+	int sha256_status = -1;
+	int sha256_reason = -1;
+	require(OCSP_resp_find_status(mixed_basic.get(), mixed_ids[0].get(), &sha1_status, &sha1_reason, nullptr, nullptr, nullptr) == 1);
+	require(OCSP_resp_find_status(mixed_basic.get(), mixed_ids[1].get(), &sha256_status, &sha256_reason, nullptr, nullptr, nullptr) == 1);
+	require(sha1_status == V_OCSP_CERTSTATUS_GOOD);
+	require(sha256_status == V_OCSP_CERTSTATUS_REVOKED);
+	require(sha256_reason == OCSP_REVOKED_STATUS_KEYCOMPROMISE);
 	assert_curated_ocsp_request_vector(fixture_dir);
 	return 0;
 }

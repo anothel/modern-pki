@@ -11,6 +11,7 @@ struct OCSPCertificateID
 	std::string serial_number;
 	std::string issuer_name_hash;
 	std::string issuer_key_hash;
+	std::string hash_algorithm;
 };
 
 struct OCSPRequestInfo
@@ -22,6 +23,7 @@ struct OCSPIssuerInfo
 {
 	std::string issuer_name_hash;
 	std::string issuer_key_hash;
+	std::string hash_algorithm;
 };
 
 struct OCSPCertificateStatus
@@ -30,6 +32,9 @@ struct OCSPCertificateStatus
 	std::string status;
 	std::string revoked_at;
 	std::string revocation_reason;
+	std::string hash_algorithm;
+	std::string issuer_name_hash;
+	std::string issuer_key_hash;
 };
 
 struct GenerateOCSPResponseRequest
@@ -48,7 +53,7 @@ struct GenerateOCSPResponseResult
 };
 
 [[nodiscard]] OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der);
-[[nodiscard]] OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem);
+[[nodiscard]] OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem, const std::string &hash_algorithm);
 [[nodiscard]] GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request);
 
 } // namespace modern_pki::core

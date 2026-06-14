@@ -210,6 +210,7 @@ void assert_cli_ocsp_fixture_inspect(
 	        "\"serial_number\":\"1001\"",
 	        "\"issuer_name_hash\":\"84378ae02c8a13718b0efda0e3a283b0006a4265\"",
 	        "\"issuer_key_hash\":\"d5dcea91c8d109ec61e84d07bea04fab0b720ac3\"",
+	        "\"hash_algorithm\":\"sha1\"",
 	    });
 }
 

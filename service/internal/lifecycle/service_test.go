@@ -897,6 +897,89 @@ func TestRespondOCSPTreatsSuspendedCertificateAsUnknown(t *testing.T) {
 	}
 }
 
+func TestRespondOCSPMatchesIssuerAndStatusByHashAlgorithm(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		issuerOCSPInfos: map[string]corecli.OCSPIssuerInfo{
+			"issuer-cert-pem": {
+				IssuerNameHash: "sha256-name-hash",
+				IssuerKeyHash:  "sha256-key-hash",
+				HashAlgorithm:  "sha256",
+			},
+		},
+		ocspInfo: corecli.OCSPRequestInfo{
+			Certificates: []corecli.OCSPCertificateID{
+				{
+					SerialNumber:   "1001",
+					IssuerNameHash: "sha256-name-hash",
+					IssuerKeyHash:  "sha256-key-hash",
+					HashAlgorithm:  "sha256",
+				},
+			},
+		},
+		ocspResponseDER: []byte("ocsp-response-der"),
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:           "cert-valid",
+		IssuerID:     issuer.ID,
+		SerialNumber: "1001",
+		Status:       domain.CertificateValid,
+		CreatedAt:    clock.now,
+		UpdatedAt:    clock.now,
+	}); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+
+	if _, err := service.RespondOCSP(ctx, "ocsp-client", []byte("ocsp-request-der")); err != nil {
+		t.Fatalf("RespondOCSP returned error: %v", err)
+	}
+	if len(coreClient.ocspResponses) != 1 {
+		t.Fatalf("OCSP response request count = %d, want 1", len(coreClient.ocspResponses))
+	}
+	statuses := coreClient.ocspResponses[0].Certificates
+	if len(statuses) != 1 {
+		t.Fatalf("OCSP statuses = %#v, want 1 status", statuses)
+	}
+	status := statuses[0]
+	if status.SerialNumber != "1001" ||
+		status.Status != "good" ||
+		status.HashAlgorithm != "sha256" ||
+		status.IssuerNameHash != "sha256-name-hash" ||
+		status.IssuerKeyHash != "sha256-key-hash" {
+		t.Fatalf("OCSP status = %#v, want hash-aware good status", status)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	metadata := auditMetadata(t, events[len(events)-1])
+	auditCertificates, ok := metadata["certificates"].([]any)
+	if !ok || len(auditCertificates) != 1 {
+		t.Fatalf("OCSP audit certificates = %#v", metadata["certificates"])
+	}
+	entry, ok := auditCertificates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("OCSP audit entry = %#v", auditCertificates[0])
+	}
+	if entry["hash_algorithm"] != "sha256" {
+		t.Fatalf("OCSP audit entry = %#v, want hash_algorithm sha256", entry)
+	}
+}
+
 func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -1772,17 +1855,25 @@ func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLReq
 	return f.crlResult, nil
 }
 
-func (f *fakeIssuer) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string) (corecli.OCSPIssuerInfo, error) {
+func (f *fakeIssuer) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string, hashAlgorithm string) (corecli.OCSPIssuerInfo, error) {
 	if f.err != nil {
 		return corecli.OCSPIssuerInfo{}, f.err
 	}
 	if f.issuerOCSPInfos != nil {
-		return f.issuerOCSPInfos[issuerCertificatePEM], nil
+		info := f.issuerOCSPInfos[issuerCertificatePEM]
+		if info.HashAlgorithm == "" {
+			info.HashAlgorithm = hashAlgorithm
+		}
+		return info, nil
 	}
 	if f.issuerOCSPInfo.IssuerNameHash == "" && f.issuerOCSPInfo.IssuerKeyHash == "" {
-		return corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"}, nil
+		return corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash", HashAlgorithm: hashAlgorithm}, nil
 	}
-	return f.issuerOCSPInfo, nil
+	info := f.issuerOCSPInfo
+	if info.HashAlgorithm == "" {
+		info.HashAlgorithm = hashAlgorithm
+	}
+	return info, nil
 }
 
 func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
