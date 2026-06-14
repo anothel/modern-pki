@@ -392,14 +392,18 @@ func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, ac
 		if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, action, "enrollment", enrollment.ID, now, auditFields(
+		fields := auditFields(
 			"identity_id", enrollment.IdentityID,
 			"issuer_id", enrollment.IssuerID,
 			"enrollment_id", enrollment.ID,
 			"certificate_id", currentCertificate.ID,
 			"serial_number", currentCertificate.SerialNumber,
 			"profile_id", enrollment.CertificateProfileID,
-		))
+		)
+		if err := s.createAuditEvent(ctx, repo, actor, action, "enrollment", enrollment.ID, now, fields); err != nil {
+			return err
+		}
+		return s.createOutboxMessage(ctx, repo, action, now, fields)
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -645,13 +649,17 @@ func (s *Service) revokeCertificate(ctx context.Context, actor string, certifica
 		if force {
 			action = "certificate.force_revoked"
 		}
-		return s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, auditFields(
+		fields := auditFields(
 			"identity_id", certificate.IdentityID,
 			"issuer_id", certificate.IssuerID,
 			"enrollment_id", certificate.EnrollmentID,
 			"certificate_id", certificate.ID,
 			"serial_number", certificate.SerialNumber,
-		))
+		)
+		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
+			return err
+		}
+		return s.createOutboxMessage(ctx, repo, action, now, fields)
 	}); err != nil {
 		return domain.Certificate{}, err
 	}
@@ -675,13 +683,17 @@ func (s *Service) transitionCertificateStatus(ctx context.Context, actor string,
 		if err := repo.UpdateCertificateIfStatus(ctx, certificate, currentStatus); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, auditFields(
+		fields := auditFields(
 			"identity_id", certificate.IdentityID,
 			"issuer_id", certificate.IssuerID,
 			"enrollment_id", certificate.EnrollmentID,
 			"certificate_id", certificate.ID,
 			"serial_number", certificate.SerialNumber,
-		))
+		)
+		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
+			return err
+		}
+		return s.createOutboxMessage(ctx, repo, action, now, fields)
 	}); err != nil {
 		return domain.Certificate{}, err
 	}
@@ -887,6 +899,28 @@ func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, a
 		ResourceID:   resourceID,
 		MetadataJSON: auditMetadataJSON(ctx, fields),
 		CreatedAt:    createdAt,
+	})
+}
+
+func (s *Service) createOutboxMessage(ctx context.Context, repo store.Repository, messageType string, createdAt time.Time, fields map[string]any) error {
+	payload := make(map[string]any, len(fields)+1)
+	for key, value := range fields {
+		payload[key] = value
+	}
+	payload["event_type"] = messageType
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return repo.CreateOutboxMessage(ctx, domain.OutboxMessage{
+		ID:          s.idgen.NewID(),
+		Type:        messageType,
+		PayloadJSON: string(encoded),
+		Status:      domain.OutboxPending,
+		AvailableAt: createdAt,
+		CreatedAt:   createdAt,
+		UpdatedAt:   createdAt,
 	})
 }
 
