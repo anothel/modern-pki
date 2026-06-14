@@ -662,6 +662,7 @@ func (s *Service) revokeCertificate(ctx context.Context, actor string, certifica
 			"enrollment_id", certificate.EnrollmentID,
 			"certificate_id", certificate.ID,
 			"serial_number", certificate.SerialNumber,
+			"profile_id", certificate.CertificateProfileID,
 		)
 		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
 			return err
@@ -696,6 +697,7 @@ func (s *Service) transitionCertificateStatus(ctx context.Context, actor string,
 			"enrollment_id", certificate.EnrollmentID,
 			"certificate_id", certificate.ID,
 			"serial_number", certificate.SerialNumber,
+			"profile_id", certificate.CertificateProfileID,
 		)
 		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
 			return err

@@ -369,6 +369,148 @@ func TestIssueCertificatePreservesZeroProfilePathLen(t *testing.T) {
 	}
 }
 
+func TestAuditMetadataContractForProfileCertificateLifecycle(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityMachine,
+		Name: "edge-01",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	profile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "machine-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    clock.now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	if _, err := service.SuspendCertificate(ctx, "operator", certificate.ID); err != nil {
+		t.Fatalf("SuspendCertificate returned error: %v", err)
+	}
+	if _, err := service.ResumeCertificate(ctx, "operator", certificate.ID); err != nil {
+		t.Fatalf("ResumeCertificate returned error: %v", err)
+	}
+	if _, err := service.RevokeCertificate(ctx, "operator", certificate.ID, domain.RevocationSuperseded); err != nil {
+		t.Fatalf("RevokeCertificate returned error: %v", err)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	for _, event := range events {
+		metadata := auditMetadata(t, event)
+		if metadata["result_code"] != "ok" {
+			t.Fatalf("%s result_code = %#v, want ok", event.Action, metadata["result_code"])
+		}
+		if _, ok := metadata["error_code"]; ok {
+			t.Fatalf("%s has unexpected error_code: %#v", event.Action, metadata)
+		}
+	}
+
+	required := map[string]map[string]string{
+		"identity.created": {
+			"identity_id": identity.ID,
+		},
+		"issuer.created": {
+			"issuer_id": issuer.ID,
+		},
+		"certificate_profile.created": {
+			"issuer_id":  issuer.ID,
+			"profile_id": profile.ID,
+		},
+		"enrollment.created": {
+			"identity_id":   identity.ID,
+			"issuer_id":     issuer.ID,
+			"enrollment_id": enrollment.ID,
+			"profile_id":    profile.ID,
+		},
+		"enrollment.approved": {
+			"identity_id":   identity.ID,
+			"issuer_id":     issuer.ID,
+			"enrollment_id": enrollment.ID,
+			"profile_id":    profile.ID,
+		},
+		"certificate.issued": {
+			"identity_id":    identity.ID,
+			"issuer_id":      issuer.ID,
+			"enrollment_id":  enrollment.ID,
+			"certificate_id": certificate.ID,
+			"serial_number":  certificate.SerialNumber,
+			"profile_id":     profile.ID,
+		},
+		"certificate.suspended": {
+			"identity_id":    identity.ID,
+			"issuer_id":      issuer.ID,
+			"enrollment_id":  enrollment.ID,
+			"certificate_id": certificate.ID,
+			"serial_number":  certificate.SerialNumber,
+			"profile_id":     profile.ID,
+		},
+		"certificate.resumed": {
+			"identity_id":    identity.ID,
+			"issuer_id":      issuer.ID,
+			"enrollment_id":  enrollment.ID,
+			"certificate_id": certificate.ID,
+			"serial_number":  certificate.SerialNumber,
+			"profile_id":     profile.ID,
+		},
+		"certificate.revoked": {
+			"identity_id":    identity.ID,
+			"issuer_id":      issuer.ID,
+			"enrollment_id":  enrollment.ID,
+			"certificate_id": certificate.ID,
+			"serial_number":  certificate.SerialNumber,
+			"profile_id":     profile.ID,
+		},
+	}
+	for action, fields := range required {
+		event := findAuditEvent(t, events, action)
+		metadata := auditMetadata(t, event)
+		for key, want := range fields {
+			if metadata[key] != want {
+				t.Fatalf("%s metadata[%s] = %#v, want %q; metadata=%#v", action, key, metadata[key], want, metadata)
+			}
+		}
+	}
+}
+
 func TestPublishCRLSelectsRevokedCertificatesAndPersistsArtifact(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -1770,4 +1912,16 @@ func auditMetadata(t *testing.T, event domain.AuditEvent) map[string]any {
 		t.Fatalf("unmarshal audit metadata for %s: %v", event.Action, err)
 	}
 	return metadata
+}
+
+func findAuditEvent(t *testing.T, events []domain.AuditEvent, action string) domain.AuditEvent {
+	t.Helper()
+
+	for _, event := range events {
+		if event.Action == action {
+			return event
+		}
+	}
+	t.Fatalf("audit event %q not found in %#v", action, events)
+	return domain.AuditEvent{}
 }
