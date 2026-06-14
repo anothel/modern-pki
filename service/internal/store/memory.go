@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 )
@@ -18,6 +20,8 @@ type MemoryStore struct {
 	revocations  map[string]domain.Revocation
 	crls         map[string]domain.CRLPublication
 	auditEvents  []domain.AuditEvent
+	outbox       map[string]domain.OutboxMessage
+	jobAttempts  map[string]domain.JobAttempt
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -30,6 +34,8 @@ func NewMemoryStore() *MemoryStore {
 		revocations:  make(map[string]domain.Revocation),
 		crls:         make(map[string]domain.CRLPublication),
 		auditEvents:  make([]domain.AuditEvent, 0),
+		outbox:       make(map[string]domain.OutboxMessage),
+		jobAttempts:  make(map[string]domain.JobAttempt),
 	}
 }
 
@@ -46,6 +52,8 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		revocations:  cloneRevocations(s.revocations),
 		crls:         cloneCRLPublications(s.crls),
 		auditEvents:  cloneAuditEvents(s.auditEvents),
+		outbox:       cloneOutboxMessages(s.outbox),
+		jobAttempts:  cloneJobAttempts(s.jobAttempts),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -59,6 +67,8 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.revocations = tx.revocations
 	s.crls = tx.crls
 	s.auditEvents = tx.auditEvents
+	s.outbox = tx.outbox
+	s.jobAttempts = tx.jobAttempts
 	return nil
 }
 
@@ -313,6 +323,43 @@ func (s *MemoryStore) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent,
 	return events, nil
 }
 
+func (s *MemoryStore) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.outbox[message.ID] = message
+	return nil
+}
+
+func (s *MemoryStore) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listDueOutboxMessages(s.outbox, now, limit), nil
+}
+
+func (s *MemoryStore) UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateOutboxMessageStatusIfStatus(s.outbox, message, currentStatus)
+}
+
+func (s *MemoryStore) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.jobAttempts[attempt.ID] = attempt
+	return nil
+}
+
+func (s *MemoryStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listJobAttemptsByOutboxMessage(s.jobAttempts, outboxMessageID), nil
+}
+
 func copyEnrollment(enrollment domain.Enrollment) domain.Enrollment {
 	enrollment.RequestedDNSNames = append([]string(nil), enrollment.RequestedDNSNames...)
 	enrollment.RequestedIPAddresses = append([]string(nil), enrollment.RequestedIPAddresses...)
@@ -359,6 +406,61 @@ func updateCertificateIfStatus(certificates map[string]domain.Certificate, certi
 	return nil
 }
 
+func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Time, limit int) []domain.OutboxMessage {
+	if limit <= 0 {
+		return nil
+	}
+
+	due := make([]domain.OutboxMessage, 0)
+	for _, message := range messages {
+		if message.Status != domain.OutboxPending || message.AvailableAt.After(now) {
+			continue
+		}
+		due = append(due, message)
+	}
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].AvailableAt.Equal(due[j].AvailableAt) {
+			return due[i].AvailableAt.Before(due[j].AvailableAt)
+		}
+		if !due[i].CreatedAt.Equal(due[j].CreatedAt) {
+			return due[i].CreatedAt.Before(due[j].CreatedAt)
+		}
+		return due[i].ID < due[j].ID
+	})
+	if len(due) > limit {
+		due = due[:limit]
+	}
+	return due
+}
+
+func updateOutboxMessageStatusIfStatus(messages map[string]domain.OutboxMessage, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
+	current, ok := messages[message.ID]
+	if !ok {
+		return domain.ErrOutboxMessageNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	messages[message.ID] = message
+	return nil
+}
+
+func listJobAttemptsByOutboxMessage(attempts map[string]domain.JobAttempt, outboxMessageID string) []domain.JobAttempt {
+	result := make([]domain.JobAttempt, 0)
+	for _, attempt := range attempts {
+		if attempt.OutboxMessageID == outboxMessageID {
+			result = append(result, attempt)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
 type memoryTx struct {
 	identities   map[string]domain.Identity
 	issuers      map[string]domain.Issuer
@@ -368,6 +470,8 @@ type memoryTx struct {
 	revocations  map[string]domain.Revocation
 	crls         map[string]domain.CRLPublication
 	auditEvents  []domain.AuditEvent
+	outbox       map[string]domain.OutboxMessage
+	jobAttempts  map[string]domain.JobAttempt
 }
 
 func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) error {
@@ -544,6 +648,28 @@ func (tx *memoryTx) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, e
 	return events, nil
 }
 
+func (tx *memoryTx) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
+	tx.outbox[message.ID] = message
+	return nil
+}
+
+func (tx *memoryTx) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
+	return listDueOutboxMessages(tx.outbox, now, limit), nil
+}
+
+func (tx *memoryTx) UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
+	return updateOutboxMessageStatusIfStatus(tx.outbox, message, currentStatus)
+}
+
+func (tx *memoryTx) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {
+	tx.jobAttempts[attempt.ID] = attempt
+	return nil
+}
+
+func (tx *memoryTx) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error) {
+	return listJobAttemptsByOutboxMessage(tx.jobAttempts, outboxMessageID), nil
+}
+
 func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity {
 	dst := make(map[string]domain.Identity, len(src))
 	for id, identity := range src {
@@ -648,5 +774,21 @@ func latestCRLPublicationByIssuer(publications map[string]domain.CRLPublication,
 func cloneAuditEvents(src []domain.AuditEvent) []domain.AuditEvent {
 	dst := make([]domain.AuditEvent, len(src))
 	copy(dst, src)
+	return dst
+}
+
+func cloneOutboxMessages(src map[string]domain.OutboxMessage) map[string]domain.OutboxMessage {
+	dst := make(map[string]domain.OutboxMessage, len(src))
+	for id, message := range src {
+		dst[id] = message
+	}
+	return dst
+}
+
+func cloneJobAttempts(src map[string]domain.JobAttempt) map[string]domain.JobAttempt {
+	dst := make(map[string]domain.JobAttempt, len(src))
+	for id, attempt := range src {
+		dst[id] = attempt
+	}
 	return dst
 }

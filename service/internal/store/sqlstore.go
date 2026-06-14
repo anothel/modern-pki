@@ -158,6 +158,26 @@ func (s *SQLStore) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, er
 	return s.repository().ListAuditEvents(ctx)
 }
 
+func (s *SQLStore) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
+	return s.repository().CreateOutboxMessage(ctx, message)
+}
+
+func (s *SQLStore) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
+	return s.repository().ListDueOutboxMessages(ctx, now, limit)
+}
+
+func (s *SQLStore) UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
+	return s.repository().UpdateOutboxMessageStatusIfStatus(ctx, message, currentStatus)
+}
+
+func (s *SQLStore) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {
+	return s.repository().CreateJobAttempt(ctx, attempt)
+}
+
+func (s *SQLStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error) {
+	return s.repository().ListJobAttemptsByOutboxMessage(ctx, outboxMessageID)
+}
+
 func (s *SQLStore) repository() sqlRepository {
 	return sqlRepository{exec: s.db}
 }
@@ -868,6 +888,137 @@ ORDER BY created_at, id`)
 	return events, nil
 }
 
+func (r sqlRepository) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO outbox_messages (
+	id, type, payload_json, status, available_at, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7
+)`,
+		message.ID,
+		message.Type,
+		message.PayloadJSON,
+		string(message.Status),
+		formatSQLTime(message.AvailableAt),
+		formatSQLTime(message.CreatedAt),
+		formatSQLTime(message.UpdatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, type, payload_json, status, available_at, created_at, updated_at
+FROM outbox_messages
+WHERE status = $1 AND available_at <= $2
+ORDER BY available_at, created_at, id
+LIMIT $3`, string(domain.OutboxPending), formatSQLTime(now), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := make([]domain.OutboxMessage, 0)
+	for rows.Next() {
+		message, err := scanOutboxMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (r sqlRepository) UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE outbox_messages
+SET type = $1,
+	payload_json = $2,
+	status = $3,
+	available_at = $4,
+	created_at = $5,
+	updated_at = $6
+WHERE id = $7 AND status = $8`,
+		message.Type,
+		message.PayloadJSON,
+		string(message.Status),
+		formatSQLTime(message.AvailableAt),
+		formatSQLTime(message.CreatedAt),
+		formatSQLTime(message.UpdatedAt),
+		message.ID,
+		string(currentStatus),
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := affectedRows(result)
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 0 {
+		return nil
+	}
+	if _, err := scanOutboxMessage(r.exec.QueryRowContext(ctx, `
+SELECT id, type, payload_json, status, available_at, created_at, updated_at
+FROM outbox_messages
+WHERE id = $1`, message.ID)); errors.Is(err, sql.ErrNoRows) {
+		return domain.ErrOutboxMessageNotFound
+	} else if err != nil {
+		return err
+	}
+	return domain.ErrInvalidTransition
+}
+
+func (r sqlRepository) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO job_attempts (
+	id, outbox_message_id, status, error, started_at, finished_at, created_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7
+)`,
+		attempt.ID,
+		attempt.OutboxMessageID,
+		string(attempt.Status),
+		attempt.Error,
+		formatSQLTime(attempt.StartedAt),
+		formatSQLTime(attempt.FinishedAt),
+		formatSQLTime(attempt.CreatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, outbox_message_id, status, error, started_at, finished_at, created_at
+FROM job_attempts
+WHERE outbox_message_id = $1
+ORDER BY created_at, id`, outboxMessageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	attempts := make([]domain.JobAttempt, 0)
+	for rows.Next() {
+		attempt, err := scanJobAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return attempts, nil
+}
+
 func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 	var identity domain.Identity
 	var identityType string
@@ -1172,6 +1323,84 @@ func scanAuditEvent(scanner sqlScanner) (domain.AuditEvent, error) {
 
 	event.CreatedAt = parsedCreatedAt
 	return event, nil
+}
+
+func scanOutboxMessage(scanner sqlScanner) (domain.OutboxMessage, error) {
+	var message domain.OutboxMessage
+	var status string
+	var availableAt any
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&message.ID,
+		&message.Type,
+		&message.PayloadJSON,
+		&status,
+		&availableAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.OutboxMessage{}, err
+	}
+
+	parsedAvailableAt, err := parseSQLTime(availableAt)
+	if err != nil {
+		return domain.OutboxMessage{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.OutboxMessage{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.OutboxMessage{}, err
+	}
+
+	message.Status = domain.OutboxMessageStatus(status)
+	message.AvailableAt = parsedAvailableAt
+	message.CreatedAt = parsedCreatedAt
+	message.UpdatedAt = parsedUpdatedAt
+	return message, nil
+}
+
+func scanJobAttempt(scanner sqlScanner) (domain.JobAttempt, error) {
+	var attempt domain.JobAttempt
+	var status string
+	var startedAt any
+	var finishedAt any
+	var createdAt any
+
+	if err := scanner.Scan(
+		&attempt.ID,
+		&attempt.OutboxMessageID,
+		&status,
+		&attempt.Error,
+		&startedAt,
+		&finishedAt,
+		&createdAt,
+	); err != nil {
+		return domain.JobAttempt{}, err
+	}
+
+	parsedStartedAt, err := parseSQLTime(startedAt)
+	if err != nil {
+		return domain.JobAttempt{}, err
+	}
+	parsedFinishedAt, err := parseSQLTime(finishedAt)
+	if err != nil {
+		return domain.JobAttempt{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.JobAttempt{}, err
+	}
+
+	attempt.Status = domain.JobAttemptStatus(status)
+	attempt.StartedAt = parsedStartedAt
+	attempt.FinishedAt = parsedFinishedAt
+	attempt.CreatedAt = parsedCreatedAt
+	return attempt, nil
 }
 
 func scanRevokedCertificateEntry(scanner sqlScanner) (domain.RevokedCertificateEntry, error) {

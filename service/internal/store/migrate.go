@@ -76,6 +76,35 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("add sqlite column %s.%s: %w", column.table, column.name, err)
 		}
 	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS outbox_messages (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			available_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
+			ON outbox_messages(status, available_at, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS job_attempts (
+			id TEXT PRIMARY KEY,
+			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
+			status TEXT NOT NULL,
+			error TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			finished_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
+			ON job_attempts(outbox_message_id, created_at, id)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("execute sqlite compatibility migration: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -112,6 +141,28 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS authority_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE certificates ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
+		`CREATE TABLE IF NOT EXISTS outbox_messages (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			available_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
+			ON outbox_messages(status, available_at, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS job_attempts (
+			id TEXT PRIMARY KEY,
+			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
+			status TEXT NOT NULL,
+			error TEXT NOT NULL,
+			started_at TIMESTAMPTZ NOT NULL,
+			finished_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
+			ON job_attempts(outbox_message_id, created_at, id)`,
 	}
 
 	for _, statement := range statements {

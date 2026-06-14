@@ -105,3 +105,29 @@ CREATE TABLE IF NOT EXISTS audit_events (
     metadata_json TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS outbox_messages (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    available_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
+    ON outbox_messages(status, available_at, created_at, id);
+
+CREATE TABLE IF NOT EXISTS job_attempts (
+    id TEXT PRIMARY KEY,
+    outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
+    status TEXT NOT NULL,
+    error TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
+    ON job_attempts(outbox_message_id, created_at, id);

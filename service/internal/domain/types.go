@@ -51,6 +51,22 @@ const (
 	CRLPublicationPublished CRLPublicationStatus = "published"
 )
 
+type OutboxMessageStatus string
+
+const (
+	OutboxPending    OutboxMessageStatus = "pending"
+	OutboxProcessing OutboxMessageStatus = "processing"
+	OutboxCompleted  OutboxMessageStatus = "completed"
+	OutboxFailed     OutboxMessageStatus = "failed"
+)
+
+type JobAttemptStatus string
+
+const (
+	JobAttemptSucceeded JobAttemptStatus = "succeeded"
+	JobAttemptFailed    JobAttemptStatus = "failed"
+)
+
 type RevocationReason string
 
 const (
@@ -194,4 +210,24 @@ type AuditEvent struct {
 	ResourceID   string
 	MetadataJSON string
 	CreatedAt    time.Time
+}
+
+type OutboxMessage struct {
+	ID          string
+	Type        string
+	PayloadJSON string
+	Status      OutboxMessageStatus
+	AvailableAt time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type JobAttempt struct {
+	ID              string
+	OutboxMessageID string
+	Status          JobAttemptStatus
+	Error           string
+	StartedAt       time.Time
+	FinishedAt      time.Time
+	CreatedAt       time.Time
 }

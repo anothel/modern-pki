@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
@@ -87,6 +88,11 @@ CREATE TABLE certificates (
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)
 		}
 	}
+	for _, table := range []string{"outbox_messages", "job_attempts"} {
+		if !testSQLiteTableExists(t, db, table) {
+			t.Fatalf("table %s does not exist after migration", table)
+		}
+	}
 }
 
 func TestUnmarshalBasicConstraintsPolicyNormalizesLegacyLeafPathLen(t *testing.T) {
@@ -134,4 +140,18 @@ func testSQLiteColumnExists(t *testing.T, db *sql.DB, table string, name string)
 		t.Fatalf("iterate PRAGMA table_info(%s): %v", table, err)
 	}
 	return false
+}
+
+func testSQLiteTableExists(t *testing.T, db *sql.DB, table string) bool {
+	t.Helper()
+
+	var name string
+	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("query sqlite_master for %s: %v", table, err)
+	}
+	return name == table
 }

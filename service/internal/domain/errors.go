@@ -10,6 +10,7 @@ var (
 	ErrEnrollmentNotFound         = errors.New("enrollment not found")
 	ErrCertificateNotFound        = errors.New("certificate not found")
 	ErrCRLPublicationNotFound     = errors.New("crl publication not found")
+	ErrOutboxMessageNotFound      = errors.New("outbox message not found")
 	ErrInvalidTransition          = errors.New("invalid lifecycle transition")
 	ErrCSRParseFailed             = errors.New("csr parse failed")
 	ErrCertificateIssuanceFailed  = errors.New("certificate issuance failed")
