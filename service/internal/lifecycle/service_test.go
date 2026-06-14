@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -161,9 +162,24 @@ func TestManualEnrollmentLifecycle(t *testing.T) {
 		if events[i].Action != want {
 			t.Fatalf("audit event %d action = %q, want %q", i, events[i].Action, want)
 		}
-		if events[i].MetadataJSON != "{}" {
-			t.Fatalf("audit event %d metadata = %q, want {}", i, events[i].MetadataJSON)
-		}
+	}
+	identityMetadata := auditMetadata(t, events[0])
+	if identityMetadata["identity_id"] != identity.ID || identityMetadata["result_code"] != "ok" {
+		t.Fatalf("identity audit metadata = %#v", identityMetadata)
+	}
+	enrollmentMetadata := auditMetadata(t, events[2])
+	if enrollmentMetadata["identity_id"] != identity.ID ||
+		enrollmentMetadata["issuer_id"] != issuer.ID ||
+		enrollmentMetadata["enrollment_id"] != enrollment.ID {
+		t.Fatalf("enrollment audit metadata = %#v", enrollmentMetadata)
+	}
+	certificateMetadata := auditMetadata(t, events[4])
+	if certificateMetadata["identity_id"] != identity.ID ||
+		certificateMetadata["issuer_id"] != issuer.ID ||
+		certificateMetadata["enrollment_id"] != enrollment.ID ||
+		certificateMetadata["certificate_id"] != certificate.ID ||
+		certificateMetadata["serial_number"] != certificate.SerialNumber {
+		t.Fatalf("certificate audit metadata = %#v", certificateMetadata)
 	}
 }
 
@@ -1211,4 +1227,14 @@ func (tx *staleRevocationTx) UpdateCertificateIfStatus(ctx context.Context, cert
 func (tx *staleRevocationTx) CreateRevocation(ctx context.Context, revocation domain.Revocation) error {
 	tx.parent.createRevocationCalled = true
 	return errors.New("CreateRevocation should not be called")
+}
+
+func auditMetadata(t *testing.T, event domain.AuditEvent) map[string]any {
+	t.Helper()
+
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("unmarshal audit metadata for %s: %v", event.Action, err)
+	}
+	return metadata
 }

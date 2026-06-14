@@ -18,6 +18,8 @@ CRL publications are service-owned artifacts generated from certificate inventor
 - `GET /crls/{id}`
 - `GET /issuers/{id}/crl`
 
+Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.
+
 ## Configuration
 
 Environment variables:

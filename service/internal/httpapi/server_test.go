@@ -421,6 +421,34 @@ func TestListAuditEvents(t *testing.T) {
 	}
 }
 
+func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
+	api := newTestAPI(t)
+
+	var identity apiIdentity
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, map[string]string{
+		"X-Request-ID":    "req-123",
+		"X-Forwarded-For": "203.0.113.10, 10.0.0.1",
+	}, &identity)
+	assertStatus(t, status, http.StatusCreated)
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	metadata := apiAuditMetadata(t, events[0])
+	if metadata["request_id"] != "req-123" ||
+		metadata["client_ip"] != "203.0.113.10" ||
+		metadata["identity_id"] != identity.ID ||
+		metadata["result_code"] != "ok" {
+		t.Fatalf("audit metadata = %#v", metadata)
+	}
+}
+
 type testAPI struct {
 	ctx     context.Context
 	client  *http.Client
@@ -453,6 +481,11 @@ func newTestAPI(t *testing.T) *testAPI {
 
 func (api *testAPI) doJSON(t *testing.T, method string, path string, actor string, body any, into any) int {
 	t.Helper()
+	return api.doJSONWithHeaders(t, method, path, actor, body, nil, into)
+}
+
+func (api *testAPI) doJSONWithHeaders(t *testing.T, method string, path string, actor string, body any, headers map[string]string, into any) int {
+	t.Helper()
 
 	var requestBody *bytes.Reader
 	if body == nil {
@@ -474,6 +507,9 @@ func (api *testAPI) doJSON(t *testing.T, method string, path string, actor strin
 	}
 	if actor != "" {
 		req.Header.Set("X-Actor", actor)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 
 	res, err := api.client.Do(req)
@@ -746,4 +782,14 @@ type apiAuditEvent struct {
 	ResourceID   string    `json:"resource_id"`
 	MetadataJSON string    `json:"metadata_json"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+func apiAuditMetadata(t *testing.T, event apiAuditEvent) map[string]any {
+	t.Helper()
+
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("unmarshal audit metadata for %s: %v", event.Action, err)
+	}
+	return metadata
 }

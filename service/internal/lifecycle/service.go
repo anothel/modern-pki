@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -46,6 +47,14 @@ type Service struct {
 	clock  Clock
 	idgen  IDGenerator
 }
+
+type AuditRequestMetadata struct {
+	RequestID string
+	ClientIP  string
+	StartedAt time.Time
+}
+
+type auditRequestMetadataContextKey struct{}
 
 type CreateIdentityRequest struct {
 	Type       domain.IdentityType
@@ -101,6 +110,10 @@ func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDG
 	}
 }
 
+func WithAuditRequestMetadata(ctx context.Context, metadata AuditRequestMetadata) context.Context {
+	return context.WithValue(ctx, auditRequestMetadataContextKey{}, metadata)
+}
+
 func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateIdentityRequest) (domain.Identity, error) {
 	if err := validateCreateIdentityRequest(req); err != nil {
 		return domain.Identity{}, err
@@ -121,7 +134,9 @@ func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateId
 		if err := repo.CreateIdentity(ctx, identity); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "identity.created", "identity", identity.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "identity.created", "identity", identity.ID, now, auditFields(
+			"identity_id", identity.ID,
+		))
 	}); err != nil {
 		return domain.Identity{}, err
 	}
@@ -149,7 +164,9 @@ func (s *Service) CreateIssuer(ctx context.Context, actor string, req CreateIssu
 		if err := repo.CreateIssuer(ctx, issuer); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "issuer.created", "issuer", issuer.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "issuer.created", "issuer", issuer.ID, now, auditFields(
+			"issuer_id", issuer.ID,
+		))
 	}); err != nil {
 		return domain.Issuer{}, err
 	}
@@ -187,7 +204,10 @@ func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, re
 		if err := repo.CreateCertificateProfile(ctx, profile); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "certificate_profile.created", "certificate_profile", profile.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "certificate_profile.created", "certificate_profile", profile.ID, now, auditFields(
+			"issuer_id", profile.IssuerID,
+			"profile_id", profile.ID,
+		))
 	}); err != nil {
 		return domain.CertificateProfile{}, err
 	}
@@ -251,7 +271,12 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 		if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "enrollment.created", "enrollment", enrollment.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "enrollment.created", "enrollment", enrollment.ID, now, auditFields(
+			"identity_id", enrollment.IdentityID,
+			"issuer_id", enrollment.IssuerID,
+			"enrollment_id", enrollment.ID,
+			"profile_id", enrollment.CertificateProfileID,
+		))
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -283,7 +308,12 @@ func (s *Service) ApproveEnrollment(ctx context.Context, actor string, id string
 		if err := repo.UpdateEnrollmentIfStatus(ctx, enrollment, domain.EnrollmentPending); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "enrollment.approved", "enrollment", enrollment.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "enrollment.approved", "enrollment", enrollment.ID, now, auditFields(
+			"identity_id", enrollment.IdentityID,
+			"issuer_id", enrollment.IssuerID,
+			"enrollment_id", enrollment.ID,
+			"profile_id", enrollment.CertificateProfileID,
+		))
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -313,7 +343,12 @@ func (s *Service) RejectEnrollment(ctx context.Context, actor string, id string)
 		if err := repo.UpdateEnrollmentIfStatus(ctx, enrollment, domain.EnrollmentPending); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "enrollment.rejected", "enrollment", enrollment.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "enrollment.rejected", "enrollment", enrollment.ID, now, auditFields(
+			"identity_id", enrollment.IdentityID,
+			"issuer_id", enrollment.IssuerID,
+			"enrollment_id", enrollment.ID,
+			"profile_id", enrollment.CertificateProfileID,
+		))
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -411,7 +446,14 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			return err
 		}
 
-		return s.createAuditEvent(ctx, repo, actor, "certificate.issued", "certificate", certificate.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "certificate.issued", "certificate", certificate.ID, now, auditFields(
+			"identity_id", certificate.IdentityID,
+			"issuer_id", certificate.IssuerID,
+			"enrollment_id", certificate.EnrollmentID,
+			"certificate_id", certificate.ID,
+			"serial_number", certificate.SerialNumber,
+			"profile_id", certificate.CertificateProfileID,
+		))
 	}); err != nil {
 		return domain.Certificate{}, err
 	}
@@ -453,7 +495,13 @@ func (s *Service) RevokeCertificate(ctx context.Context, actor string, certifica
 			return err
 		}
 
-		return s.createAuditEvent(ctx, repo, actor, "certificate.revoked", "certificate", certificate.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "certificate.revoked", "certificate", certificate.ID, now, auditFields(
+			"identity_id", certificate.IdentityID,
+			"issuer_id", certificate.IssuerID,
+			"enrollment_id", certificate.EnrollmentID,
+			"certificate_id", certificate.ID,
+			"serial_number", certificate.SerialNumber,
+		))
 	}); err != nil {
 		return domain.Certificate{}, err
 	}
@@ -520,7 +568,9 @@ func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRe
 		if err := repo.CreateCRLPublication(ctx, publication); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "crl.published", "crl_publication", publication.ID, now)
+		return s.createAuditEvent(ctx, repo, actor, "crl.published", "crl_publication", publication.ID, now, auditFields(
+			"issuer_id", publication.IssuerID,
+		))
 	}); err != nil {
 		return domain.CRLPublication{}, err
 	}
@@ -588,16 +638,50 @@ func (s *Service) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, err
 	return s.repo.ListAuditEvents(ctx)
 }
 
-func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time) error {
+func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time, fields map[string]string) error {
 	return repo.CreateAuditEvent(ctx, domain.AuditEvent{
 		ID:           s.idgen.NewID(),
 		Actor:        actor,
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
-		MetadataJSON: "{}",
+		MetadataJSON: auditMetadataJSON(ctx, fields),
 		CreatedAt:    createdAt,
 	})
+}
+
+func auditFields(pairs ...string) map[string]string {
+	fields := make(map[string]string)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if pairs[i] != "" && pairs[i+1] != "" {
+			fields[pairs[i]] = pairs[i+1]
+		}
+	}
+	return fields
+}
+
+func auditMetadataJSON(ctx context.Context, fields map[string]string) string {
+	metadata := make(map[string]any, len(fields)+4)
+	for key, value := range fields {
+		metadata[key] = value
+	}
+	metadata["result_code"] = "ok"
+	if requestMetadata, ok := ctx.Value(auditRequestMetadataContextKey{}).(AuditRequestMetadata); ok {
+		if requestMetadata.RequestID != "" {
+			metadata["request_id"] = requestMetadata.RequestID
+		}
+		if requestMetadata.ClientIP != "" {
+			metadata["client_ip"] = requestMetadata.ClientIP
+		}
+		if !requestMetadata.StartedAt.IsZero() {
+			metadata["elapsed_ms"] = time.Since(requestMetadata.StartedAt).Milliseconds()
+		}
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func validateCreateIdentityRequest(req CreateIdentityRequest) error {

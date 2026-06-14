@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
@@ -26,7 +28,12 @@ func New(service *lifecycle.Service) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	ctx := lifecycle.WithAuditRequestMetadata(r.Context(), lifecycle.AuditRequestMetadata{
+		RequestID: r.Header.Get("X-Request-ID"),
+		ClientIP:  requestClientIP(r),
+		StartedAt: time.Now(),
+	})
+	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (s *Server) registerRoutes() {
@@ -342,6 +349,21 @@ func requestActor(r *http.Request) string {
 		return "anonymous"
 	}
 	return actor
+}
+
+func requestClientIP(r *http.Request) string {
+	forwardedFor := r.Header.Get("X-Forwarded-For")
+	if forwardedFor != "" {
+		clientIP := strings.TrimSpace(strings.Split(forwardedFor, ",")[0])
+		if clientIP != "" {
+			return clientIP
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
