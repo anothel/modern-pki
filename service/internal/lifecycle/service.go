@@ -19,6 +19,8 @@ type CertificateIssuer interface {
 	Issue(context.Context, corecli.IssueRequest) (corecli.IssueResult, error)
 	InspectCSR(context.Context, string) (corecli.CSRInfo, error)
 	GenerateCRL(context.Context, corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error)
+	InspectOCSP(context.Context, []byte) (corecli.OCSPRequestInfo, error)
+	GenerateOCSPResponse(context.Context, corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error)
 }
 
 type Clock interface {
@@ -99,6 +101,10 @@ type PublishCRLRequest struct {
 	IssuerID          string
 	DistributionPoint string
 	NextUpdate        time.Time
+}
+
+type OCSPResponse struct {
+	ResponseDER []byte
 }
 
 func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator) *Service {
@@ -577,6 +583,59 @@ func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRe
 	return publication, nil
 }
 
+func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []byte) (OCSPResponse, error) {
+	if len(requestDER) == 0 {
+		return OCSPResponse{}, domain.ErrInvalidRequest
+	}
+	now := s.clock.Now()
+	info, err := s.issuer.InspectOCSP(ctx, requestDER)
+	if err != nil {
+		return OCSPResponse{}, mapOCSPDecodeError(err)
+	}
+	if len(info.Certificates) == 0 {
+		return OCSPResponse{}, domain.ErrInvalidRequest
+	}
+
+	statuses, issuerID, err := s.ocspCertificateStatuses(ctx, info.Certificates)
+	if err != nil {
+		return OCSPResponse{}, err
+	}
+	if issuerID == "" {
+		return OCSPResponse{}, domain.ErrInvalidRequest
+	}
+	issuer, err := s.repo.GetIssuer(ctx, issuerID)
+	if err != nil {
+		return OCSPResponse{}, err
+	}
+
+	result, err := s.issuer.GenerateOCSPResponse(ctx, corecli.GenerateOCSPResponseRequest{
+		RequestDER:           append([]byte(nil), requestDER...),
+		IssuerCertificatePEM: issuer.CertificatePEM,
+		IssuerKeyRef:         issuer.KeyRef,
+		ThisUpdate:           now,
+		NextUpdate:           now.Add(time.Hour),
+		Certificates:         statuses,
+	})
+	if err != nil {
+		return OCSPResponse{}, mapOCSPResponseError(err)
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		return s.createAuditEvent(ctx, repo, actor, "ocsp.requested", "ocsp", s.idgen.NewID(), now, map[string]any{
+			"request_type":             "ocsp",
+			"requested_cert_count":     len(info.Certificates),
+			"response_status":          "successful",
+			"first_serial_number":      firstOCSPSerial(info.Certificates),
+			"first_certificate_status": firstOCSPStatus(statuses),
+			"certificates":             ocspAuditCertificates(info.Certificates, statuses),
+		})
+	}); err != nil {
+		return OCSPResponse{}, err
+	}
+
+	return OCSPResponse{ResponseDER: result.ResponseDER}, nil
+}
+
 func (s *Service) ListIdentities(ctx context.Context) ([]domain.Identity, error) {
 	return s.repo.ListIdentities(ctx)
 }
@@ -638,7 +697,7 @@ func (s *Service) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, err
 	return s.repo.ListAuditEvents(ctx)
 }
 
-func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time, fields map[string]string) error {
+func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, actor string, action string, resourceType string, resourceID string, createdAt time.Time, fields map[string]any) error {
 	return repo.CreateAuditEvent(ctx, domain.AuditEvent{
 		ID:           s.idgen.NewID(),
 		Actor:        actor,
@@ -650,8 +709,8 @@ func (s *Service) createAuditEvent(ctx context.Context, repo store.Repository, a
 	})
 }
 
-func auditFields(pairs ...string) map[string]string {
-	fields := make(map[string]string)
+func auditFields(pairs ...string) map[string]any {
+	fields := make(map[string]any)
 	for i := 0; i+1 < len(pairs); i += 2 {
 		if pairs[i] != "" && pairs[i+1] != "" {
 			fields[pairs[i]] = pairs[i+1]
@@ -660,7 +719,7 @@ func auditFields(pairs ...string) map[string]string {
 	return fields
 }
 
-func auditMetadataJSON(ctx context.Context, fields map[string]string) string {
+func auditMetadataJSON(ctx context.Context, fields map[string]any) string {
 	metadata := make(map[string]any, len(fields)+4)
 	for key, value := range fields {
 		metadata[key] = value
@@ -682,6 +741,99 @@ func auditMetadataJSON(ctx context.Context, fields map[string]string) string {
 		return "{}"
 	}
 	return string(encoded)
+}
+
+func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCSPCertificateID) ([]corecli.OCSPCertificateStatus, string, error) {
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	bySerial := make(map[string]domain.Certificate, len(certificates))
+	for _, certificate := range certificates {
+		if _, exists := bySerial[certificate.SerialNumber]; !exists {
+			bySerial[certificate.SerialNumber] = certificate
+		}
+	}
+
+	statuses := make([]corecli.OCSPCertificateStatus, 0, len(ids))
+	issuerID := ""
+	revocationsByIssuer := make(map[string][]domain.RevokedCertificateEntry)
+	for _, id := range ids {
+		certificate, found := bySerial[id.SerialNumber]
+		if !found {
+			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: id.SerialNumber, Status: "unknown"})
+			continue
+		}
+		if issuerID == "" {
+			issuerID = certificate.IssuerID
+		}
+		switch certificate.Status {
+		case domain.CertificateValid:
+			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "good"})
+		case domain.CertificateRevoked:
+			revocations, ok := revocationsByIssuer[certificate.IssuerID]
+			if !ok {
+				revocations, err = s.repo.ListRevocationsByIssuer(ctx, certificate.IssuerID)
+				if err != nil {
+					return nil, "", err
+				}
+				revocationsByIssuer[certificate.IssuerID] = revocations
+			}
+			statuses = append(statuses, revokedOCSPStatus(certificate, revocations))
+		default:
+			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "unknown"})
+		}
+	}
+	return statuses, issuerID, nil
+}
+
+func revokedOCSPStatus(certificate domain.Certificate, revocations []domain.RevokedCertificateEntry) corecli.OCSPCertificateStatus {
+	status := corecli.OCSPCertificateStatus{SerialNumber: certificate.SerialNumber, Status: "revoked"}
+	for _, revocation := range revocations {
+		if revocation.SerialNumber == certificate.SerialNumber {
+			status.RevokedAt = revocation.RevokedAt
+			status.RevocationReason = string(revocation.Reason)
+			return status
+		}
+	}
+	return status
+}
+
+func firstOCSPSerial(ids []corecli.OCSPCertificateID) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0].SerialNumber
+}
+
+func firstOCSPStatus(statuses []corecli.OCSPCertificateStatus) string {
+	if len(statuses) == 0 {
+		return ""
+	}
+	return statuses[0].Status
+}
+
+func ocspAuditCertificates(ids []corecli.OCSPCertificateID, statuses []corecli.OCSPCertificateStatus) []map[string]any {
+	entries := make([]map[string]any, 0, len(ids))
+	for i, id := range ids {
+		entry := map[string]any{
+			"serial_number":    id.SerialNumber,
+			"issuer_name_hash": id.IssuerNameHash,
+			"issuer_key_hash":  id.IssuerKeyHash,
+		}
+		if i < len(statuses) {
+			status := statuses[i]
+			entry["status"] = status.Status
+			if status.RevocationReason != "" {
+				entry["reason"] = status.RevocationReason
+			}
+			if !status.RevokedAt.IsZero() {
+				entry["revoked_at"] = status.RevokedAt.Format(time.RFC3339)
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func validateCreateIdentityRequest(req CreateIdentityRequest) error {
@@ -810,6 +962,14 @@ func mapIssueError(err error) error {
 
 func mapCRLError(err error) error {
 	return fmt.Errorf("%w: %w", domain.ErrCRLGenerationFailed, err)
+}
+
+func mapOCSPDecodeError(err error) error {
+	return fmt.Errorf("%w: %w", domain.ErrOCSPDecodeFailed, err)
+}
+
+func mapOCSPResponseError(err error) error {
+	return fmt.Errorf("%w: %w", domain.ErrOCSPResponseFailed, err)
 }
 
 func mapCSRInspectError(err error) error {

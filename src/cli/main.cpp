@@ -1,6 +1,7 @@
 #include "modern_pki/core/crl.hpp"
 #include "modern_pki/core/csr.hpp"
 #include "modern_pki/core/issue.hpp"
+#include "modern_pki/core/ocsp.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -512,6 +514,34 @@ modern_pki::core::GenerateCRLRequest crl_request_from_json(std::string_view json
 	return request;
 }
 
+modern_pki::core::GenerateOCSPResponseRequest ocsp_response_request_from_json(
+    std::string_view json,
+    std::string request_der)
+{
+	const JsonObject object = JsonParser{json}.parse_object();
+
+	modern_pki::core::GenerateOCSPResponseRequest request;
+	request.request_der = std::move(request_der);
+	request.issuer_certificate_pem = get_string_field(object, "issuer_certificate_pem");
+	request.issuer_key_ref = get_string_field(object, "issuer_key_ref");
+	request.this_update = get_string_field(object, "this_update");
+	request.next_update = get_string_field(object, "next_update");
+
+	const std::vector<std::string> serials = get_string_array_field(object, "serial_numbers");
+	const std::vector<std::string> statuses = get_string_array_field(object, "statuses");
+	const std::vector<std::string> revoked_at_times = get_string_array_field(object, "revoked_at_times");
+	const std::vector<std::string> reasons = get_string_array_field(object, "revocation_reasons");
+	if (serials.size() != statuses.size() || serials.size() != revoked_at_times.size() || serials.size() != reasons.size())
+	{
+		throw_json_parse_failed();
+	}
+	for (std::vector<std::string>::size_type index = 0; index < serials.size(); ++index)
+	{
+		request.certificates.push_back({serials[index], statuses[index], revoked_at_times[index], reasons[index]});
+	}
+	return request;
+}
+
 std::string csr_info_to_json(const modern_pki::core::CsrInfo &info)
 {
 	return "{\"subject\":" + json_string(info.subject) + ",\"dns_names\":" + json_string_array(info.dns_names) + ",\"ip_addresses\":" + json_string_array(info.ip_addresses) + "}";
@@ -525,6 +555,24 @@ std::string issue_result_to_json(const modern_pki::core::IssueResult &result)
 std::string crl_result_to_json(const modern_pki::core::GenerateCRLResult &result)
 {
 	return "{\"crl_pem\":" + json_string(result.crl_pem) + "}";
+}
+
+std::string ocsp_info_to_json(const modern_pki::core::OCSPRequestInfo &info)
+{
+	std::string output = "{\"certificates\":[";
+	for (std::vector<modern_pki::core::OCSPCertificateID>::size_type index = 0; index < info.certificates.size(); ++index)
+	{
+		if (index != 0)
+		{
+			output.push_back(',');
+		}
+		const modern_pki::core::OCSPCertificateID &certificate = info.certificates[index];
+		output += "{\"serial_number\":" + json_string(certificate.serial_number) +
+		          ",\"issuer_name_hash\":" + json_string(certificate.issuer_name_hash) +
+		          ",\"issuer_key_hash\":" + json_string(certificate.issuer_key_hash) + "}";
+	}
+	output += "]}";
+	return output;
 }
 
 bool arg_is(char *value, std::string_view expected)
@@ -574,6 +622,35 @@ int run_crl_generate(int argc, char *argv[])
 	return 0;
 }
 
+int run_ocsp_inspect(int argc, char *argv[])
+{
+	if (argc != 7 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "inspect") || !arg_is(argv[3], "--in") || !arg_is(argv[5], "--out"))
+	{
+		write_error("cli.invalid_args", "invalid arguments");
+		return 2;
+	}
+
+	const modern_pki::core::OCSPRequestInfo info = modern_pki::core::inspect_ocsp_request_der(read_file(argv[4]));
+	write_file(argv[6], ocsp_info_to_json(info) + "\n");
+	return 0;
+}
+
+int run_ocsp_respond(int argc, char *argv[])
+{
+	if (argc != 9 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "respond") || !arg_is(argv[3], "--in") ||
+	    !arg_is(argv[5], "--request") || !arg_is(argv[7], "--out"))
+	{
+		write_error("cli.invalid_args", "invalid arguments");
+		return 2;
+	}
+
+	const modern_pki::core::GenerateOCSPResponseRequest request =
+	    ocsp_response_request_from_json(read_file(argv[6]), read_file(argv[4]));
+	const modern_pki::core::GenerateOCSPResponseResult result = modern_pki::core::generate_ocsp_response(request);
+	write_file(argv[8], result.response_der);
+	return 0;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -591,6 +668,14 @@ int main(int argc, char *argv[])
 		if (argc >= 3 && arg_is(argv[1], "crl") && arg_is(argv[2], "generate"))
 		{
 			return run_crl_generate(argc, argv);
+		}
+		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "inspect"))
+		{
+			return run_ocsp_inspect(argc, argv);
+		}
+		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "respond"))
+		{
+			return run_ocsp_respond(argc, argv);
 		}
 
 		write_error("cli.invalid_args", "invalid arguments");

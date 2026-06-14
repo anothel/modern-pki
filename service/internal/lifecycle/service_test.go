@@ -479,6 +479,122 @@ func TestPublishCRLSelectsRevokedCertificatesAndPersistsArtifact(t *testing.T) {
 	}
 }
 
+func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspInfo: corecli.OCSPRequestInfo{
+			Certificates: []corecli.OCSPCertificateID{
+				{SerialNumber: "1001", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+				{SerialNumber: "1002", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+				{SerialNumber: "4040", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+			},
+		},
+		ocspResponseDER: []byte("ocsp-response-der"),
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:           "cert-valid",
+		IdentityID:   "identity-1",
+		IssuerID:     issuer.ID,
+		SerialNumber: "1001",
+		Status:       domain.CertificateValid,
+		CreatedAt:    clock.now,
+		UpdatedAt:    clock.now,
+	}); err != nil {
+		t.Fatalf("CreateCertificate valid returned error: %v", err)
+	}
+	revokedAt := clock.now.Add(-time.Hour)
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:           "cert-revoked",
+		IdentityID:   "identity-2",
+		IssuerID:     issuer.ID,
+		SerialNumber: "1002",
+		Status:       domain.CertificateRevoked,
+		CreatedAt:    revokedAt,
+		UpdatedAt:    revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateCertificate revoked returned error: %v", err)
+	}
+	if err := repo.CreateRevocation(ctx, domain.Revocation{
+		ID:            "revocation-1",
+		CertificateID: "cert-revoked",
+		Reason:        domain.RevocationKeyCompromise,
+		RevokedBy:     "operator",
+		RevokedAt:     revokedAt,
+		CreatedAt:     revokedAt,
+	}); err != nil {
+		t.Fatalf("CreateRevocation returned error: %v", err)
+	}
+
+	response, err := service.RespondOCSP(ctx, "ocsp-client", []byte("ocsp-request-der"))
+	if err != nil {
+		t.Fatalf("RespondOCSP returned error: %v", err)
+	}
+	if string(response.ResponseDER) != "ocsp-response-der" {
+		t.Fatalf("OCSP response DER = %q", string(response.ResponseDER))
+	}
+	if len(coreClient.ocspResponses) != 1 {
+		t.Fatalf("OCSP response request count = %d, want 1", len(coreClient.ocspResponses))
+	}
+	gotStatuses := coreClient.ocspResponses[0].Certificates
+	wantStatuses := []corecli.OCSPCertificateStatus{
+		{SerialNumber: "1001", Status: "good"},
+		{SerialNumber: "1002", Status: "revoked", RevokedAt: revokedAt, RevocationReason: string(domain.RevocationKeyCompromise)},
+		{SerialNumber: "4040", Status: "unknown"},
+	}
+	for i, want := range wantStatuses {
+		if gotStatuses[i].SerialNumber != want.SerialNumber ||
+			gotStatuses[i].Status != want.Status ||
+			gotStatuses[i].RevocationReason != want.RevocationReason ||
+			!gotStatuses[i].RevokedAt.Equal(want.RevokedAt) {
+			t.Fatalf("OCSP status %d = %#v, want %#v", i, gotStatuses[i], want)
+		}
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Action != "ocsp.requested" {
+		t.Fatalf("last audit action = %q, want ocsp.requested", last.Action)
+	}
+	metadata := auditMetadata(t, last)
+	if metadata["request_type"] != "ocsp" ||
+		metadata["requested_cert_count"].(float64) != 3 ||
+		metadata["response_status"] != "successful" {
+		t.Fatalf("OCSP audit metadata = %#v", metadata)
+	}
+	auditCertificates, ok := metadata["certificates"].([]any)
+	if !ok || len(auditCertificates) != 3 {
+		t.Fatalf("OCSP audit certificates = %#v", metadata["certificates"])
+	}
+	revokedAudit, ok := auditCertificates[1].(map[string]any)
+	if !ok {
+		t.Fatalf("OCSP revoked audit entry = %#v", auditCertificates[1])
+	}
+	if revokedAudit["serial_number"] != "1002" ||
+		revokedAudit["issuer_name_hash"] != "name-hash" ||
+		revokedAudit["issuer_key_hash"] != "key-hash" ||
+		revokedAudit["status"] != "revoked" ||
+		revokedAudit["reason"] != string(domain.RevocationKeyCompromise) ||
+		revokedAudit["revoked_at"] != revokedAt.Format(time.RFC3339) {
+		t.Fatalf("OCSP revoked audit entry = %#v", revokedAudit)
+	}
+}
+
 func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -1085,11 +1201,14 @@ func createPendingEnrollment(t *testing.T, ctx context.Context, service *Service
 }
 
 type fakeIssuer struct {
-	requests    []corecli.IssueRequest
-	crlRequests []corecli.GenerateCRLRequest
-	csrInfo     corecli.CSRInfo
-	crlResult   corecli.GenerateCRLResult
-	err         error
+	requests        []corecli.IssueRequest
+	crlRequests     []corecli.GenerateCRLRequest
+	ocspResponses   []corecli.GenerateOCSPResponseRequest
+	csrInfo         corecli.CSRInfo
+	crlResult       corecli.GenerateCRLResult
+	ocspInfo        corecli.OCSPRequestInfo
+	ocspResponseDER []byte
+	err             error
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -1123,6 +1242,21 @@ func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLReq
 		return corecli.GenerateCRLResult{}, f.err
 	}
 	return f.crlResult, nil
+}
+
+func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
+	if f.err != nil {
+		return corecli.OCSPRequestInfo{}, f.err
+	}
+	return f.ocspInfo, nil
+}
+
+func (f *fakeIssuer) GenerateOCSPResponse(ctx context.Context, req corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error) {
+	f.ocspResponses = append(f.ocspResponses, req)
+	if f.err != nil {
+		return corecli.GenerateOCSPResponseResult{}, f.err
+	}
+	return corecli.GenerateOCSPResponseResult{ResponseDER: f.ocspResponseDER}, nil
 }
 
 type fixedClock struct {

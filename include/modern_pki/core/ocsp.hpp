@@ -1,0 +1,47 @@
+#pragma once
+
+#include <string>
+#include <vector>
+
+namespace modern_pki::core
+{
+
+struct OCSPCertificateID
+{
+	std::string serial_number;
+	std::string issuer_name_hash;
+	std::string issuer_key_hash;
+};
+
+struct OCSPRequestInfo
+{
+	std::vector<OCSPCertificateID> certificates;
+};
+
+struct OCSPCertificateStatus
+{
+	std::string serial_number;
+	std::string status;
+	std::string revoked_at;
+	std::string revocation_reason;
+};
+
+struct GenerateOCSPResponseRequest
+{
+	std::string request_der;
+	std::string issuer_certificate_pem;
+	std::string issuer_key_ref;
+	std::string this_update;
+	std::string next_update;
+	std::vector<OCSPCertificateStatus> certificates;
+};
+
+struct GenerateOCSPResponseResult
+{
+	std::string response_der;
+};
+
+[[nodiscard]] OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der);
+[[nodiscard]] GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request);
+
+} // namespace modern_pki::core

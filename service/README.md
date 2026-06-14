@@ -1,6 +1,6 @@
 # modern-pki service
 
-Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoints for identities, certificate profiles, enrollments, certificate issuance, revocation, CRL publication, and audit events, backed by the SQL store and the `modern-pki-core` CLI for CSR inspection, certificate issuance, and CRL generation.
+Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoints for identities, certificate profiles, enrollments, certificate issuance, revocation, CRL publication, OCSP response, and audit events, backed by the SQL store and the `modern-pki-core` CLI for CSR inspection, certificate issuance, CRL generation, and OCSP DER processing.
 
 Enrollment creation inspects the CSR and stores CSR SANs separately from requested SANs. The current policy requires requested DNS/IP SANs to exactly match CSR DNS/IP SANs, ignoring order.
 
@@ -17,6 +17,8 @@ CRL publications are service-owned artifacts generated from certificate inventor
 - `POST /crls`
 - `GET /crls/{id}`
 - `GET /issuers/{id}/crl`
+
+OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, then delegates OCSP response signing to the core CLI.
 
 Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.
 

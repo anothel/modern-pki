@@ -8,6 +8,7 @@ add_library(modern_pki_core
     src/core/crl.cpp
     src/core/csr.cpp
     src/core/issue.cpp
+    src/core/ocsp.cpp
     src/version.cpp
 )
 add_library(modern_pki::core ALIAS modern_pki_core)
@@ -79,5 +80,14 @@ if(BUILD_TESTING)
     add_test(
         NAME modern_pki.core_crl
         COMMAND modern_pki_core_crl_test ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    add_executable(modern_pki_core_ocsp_test
+        tests/core_ocsp_test.cpp
+    )
+    target_link_libraries(modern_pki_core_ocsp_test PRIVATE modern_pki::core OpenSSL::Crypto)
+    add_test(
+        NAME modern_pki.core_ocsp
+        COMMAND modern_pki_core_ocsp_test ${CMAKE_CURRENT_BINARY_DIR}
     )
 endif()

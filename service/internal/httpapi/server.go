@@ -62,6 +62,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /crls/{id}", s.getCRLPublication)
 	s.mux.HandleFunc("GET /issuers/{id}/crl", s.getLatestIssuerCRL)
 
+	s.mux.HandleFunc("POST /ocsp", s.respondOCSP)
+
 	s.mux.HandleFunc("GET /audit-events", s.listAuditEvents)
 }
 
@@ -322,6 +324,26 @@ func (s *Server) getLatestIssuerCRL(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(publication.CRLPEM))
 }
 
+func (s *Server) respondOCSP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Content-Type") != "application/ocsp-request" {
+		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{Error: "unsupported media type"})
+		return
+	}
+	requestDER, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, domain.ErrInvalidRequest)
+		return
+	}
+	response, err := s.service.RespondOCSP(r.Context(), requestActor(r), requestDER)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/ocsp-response")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(response.ResponseDER)
+}
+
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.service.ListAuditEvents(r.Context())
 	if err != nil {
@@ -400,6 +422,10 @@ func publicErrorMessage(err error) string {
 		return domain.ErrCertificateIssuanceFailed.Error()
 	case errors.Is(err, domain.ErrCRLGenerationFailed):
 		return domain.ErrCRLGenerationFailed.Error()
+	case errors.Is(err, domain.ErrOCSPDecodeFailed):
+		return domain.ErrOCSPDecodeFailed.Error()
+	case errors.Is(err, domain.ErrOCSPResponseFailed):
+		return domain.ErrOCSPResponseFailed.Error()
 	case errors.Is(err, domain.ErrStorageFailure):
 		return domain.ErrStorageFailure.Error()
 	default:
@@ -425,6 +451,10 @@ func statusForError(err error) int {
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrCRLGenerationFailed):
+		return http.StatusBadGateway
+	case errors.Is(err, domain.ErrOCSPDecodeFailed):
+		return http.StatusBadRequest
+	case errors.Is(err, domain.ErrOCSPResponseFailed):
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrStorageFailure):
 		return http.StatusInternalServerError

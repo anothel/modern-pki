@@ -362,6 +362,33 @@ func TestGetLatestIssuerCRLFiltersByDistributionPoint(t *testing.T) {
 	}
 }
 
+func TestRespondOCSP(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+	api.issuer.ocspInfo = corecli.OCSPRequestInfo{
+		Certificates: []corecli.OCSPCertificateID{
+			{SerialNumber: certificate.SerialNumber, IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+		},
+	}
+	api.issuer.ocspResponseDER = []byte("ocsp-response-der")
+
+	status, body, contentType := api.doBinary(t, http.MethodPost, "/ocsp", "operator", "application/ocsp-request", []byte("ocsp-request-der"))
+	assertStatus(t, status, http.StatusOK)
+	if string(body) != "ocsp-response-der" {
+		t.Fatalf("OCSP response body = %q", string(body))
+	}
+	if contentType != "application/ocsp-response" {
+		t.Fatalf("OCSP content type = %q", contentType)
+	}
+}
+
+func TestRespondOCSPRejectsWrongContentType(t *testing.T) {
+	api := newTestAPI(t)
+
+	status, _, _ := api.doBinary(t, http.MethodPost, "/ocsp", "operator", "application/octet-stream", []byte("ocsp-request-der"))
+	assertStatus(t, status, http.StatusUnsupportedMediaType)
+}
+
 func TestListAuditEvents(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -548,6 +575,29 @@ func (api *testAPI) doRaw(t *testing.T, method string, path string, actor string
 	return res.StatusCode, body, res.Header.Get("Content-Type")
 }
 
+func (api *testAPI) doBinary(t *testing.T, method string, path string, actor string, contentType string, body []byte) (int, []byte, string) {
+	t.Helper()
+
+	req, err := http.NewRequest(method, api.url+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if actor != "" {
+		req.Header.Set("X-Actor", actor)
+	}
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return res.StatusCode, responseBody, res.Header.Get("Content-Type")
+}
+
 func (api *testAPI) createIdentity(t *testing.T) domain.Identity {
 	t.Helper()
 
@@ -628,10 +678,13 @@ func assertStatus(t *testing.T, got int, want int) {
 }
 
 type fakeIssuer struct {
-	requests    []corecli.IssueRequest
-	crlRequests []corecli.GenerateCRLRequest
-	err         error
-	crlPEM      string
+	requests        []corecli.IssueRequest
+	crlRequests     []corecli.GenerateCRLRequest
+	err             error
+	crlPEM          string
+	ocspInfo        corecli.OCSPRequestInfo
+	ocspResponses   []corecli.GenerateOCSPResponseRequest
+	ocspResponseDER []byte
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -666,6 +719,21 @@ func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLReq
 		crlPEM = "crl-pem"
 	}
 	return corecli.GenerateCRLResult{CRLPEM: crlPEM}, nil
+}
+
+func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
+	if f.err != nil {
+		return corecli.OCSPRequestInfo{}, f.err
+	}
+	return f.ocspInfo, nil
+}
+
+func (f *fakeIssuer) GenerateOCSPResponse(ctx context.Context, req corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error) {
+	f.ocspResponses = append(f.ocspResponses, req)
+	if f.err != nil {
+		return corecli.GenerateOCSPResponseResult{}, f.err
+	}
+	return corecli.GenerateOCSPResponseResult{ResponseDER: f.ocspResponseDER}, nil
 }
 
 type fixedClock struct {

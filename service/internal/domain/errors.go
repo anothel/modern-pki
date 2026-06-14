@@ -14,5 +14,7 @@ var (
 	ErrCSRParseFailed             = errors.New("csr parse failed")
 	ErrCertificateIssuanceFailed  = errors.New("certificate issuance failed")
 	ErrCRLGenerationFailed        = errors.New("crl generation failed")
+	ErrOCSPDecodeFailed           = errors.New("ocsp decode failed")
+	ErrOCSPResponseFailed         = errors.New("ocsp response failed")
 	ErrStorageFailure             = errors.New("storage failure")
 )
