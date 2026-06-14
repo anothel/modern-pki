@@ -330,6 +330,28 @@ func TestRenewCertificate(t *testing.T) {
 	}
 }
 
+func TestReissueCertificate(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var reissue apiEnrollment
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/reissue", "operator", map[string]any{
+		"csr_pem": "reissue-csr-pem",
+	}, &reissue)
+	assertStatus(t, status, http.StatusCreated)
+	if reissue.Status != domain.EnrollmentPending {
+		t.Fatalf("reissue status = %q, want %q", reissue.Status, domain.EnrollmentPending)
+	}
+	if reissue.IdentityID != certificate.IdentityID ||
+		reissue.IssuerID != certificate.IssuerID ||
+		reissue.CertificateProfileID != certificate.CertificateProfileID ||
+		reissue.RequestedSubject != certificate.Subject ||
+		reissue.CSRPEM != "reissue-csr-pem" ||
+		!reissue.RequestedNotAfter.Equal(certificate.NotAfter) {
+		t.Fatalf("reissue = %#v, certificate = %#v", reissue, certificate)
+	}
+}
+
 func TestCertificateLifecycleRejectsInvalidTransitions(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := api.createCertificate(t)

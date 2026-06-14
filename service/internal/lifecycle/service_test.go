@@ -1411,6 +1411,53 @@ func TestOnlyValidCertificateCanBeRenewed(t *testing.T) {
 	}
 }
 
+func TestReissueCertificateCreatesPendingEnrollmentWithOriginalNotAfter(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	service := New(
+		repo,
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+
+	reissue, err := service.ReissueCertificate(ctx, "operator", certificate.ID, ReissueCertificateRequest{
+		CSRPEM: "reissue-csr-pem",
+	})
+	if err != nil {
+		t.Fatalf("ReissueCertificate returned error: %v", err)
+	}
+	if reissue.Status != domain.EnrollmentPending {
+		t.Fatalf("reissue status = %q, want %q", reissue.Status, domain.EnrollmentPending)
+	}
+	if reissue.IdentityID != certificate.IdentityID ||
+		reissue.IssuerID != certificate.IssuerID ||
+		reissue.CertificateProfileID != certificate.CertificateProfileID ||
+		reissue.RequestedSubject != certificate.Subject ||
+		reissue.CSRPEM != "reissue-csr-pem" ||
+		!reissue.RequestedNotAfter.Equal(certificate.NotAfter) {
+		t.Fatalf("reissue enrollment = %#v, certificate = %#v", reissue, certificate)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Action != "certificate.reissue_requested" {
+		t.Fatalf("last audit action = %q, want certificate.reissue_requested", last.Action)
+	}
+}
+
 func TestIssueCertificateRollsBackWhenAuditFails(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()

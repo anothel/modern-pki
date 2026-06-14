@@ -103,6 +103,10 @@ type RenewCertificateRequest struct {
 	RequestedNotAfter time.Time
 }
 
+type ReissueCertificateRequest struct {
+	CSRPEM string
+}
+
 type PublishCRLRequest struct {
 	IssuerID          string
 	DistributionPoint string
@@ -296,6 +300,21 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 }
 
 func (s *Service) RenewCertificate(ctx context.Context, actor string, certificateID string, req RenewCertificateRequest) (domain.Enrollment, error) {
+	return s.createCertificateReplacementEnrollment(ctx, actor, certificateID, req.CSRPEM, req.RequestedNotAfter, "certificate.renewal_requested")
+}
+
+func (s *Service) ReissueCertificate(ctx context.Context, actor string, certificateID string, req ReissueCertificateRequest) (domain.Enrollment, error) {
+	if isBlank(certificateID) {
+		return domain.Enrollment{}, domain.ErrInvalidRequest
+	}
+	certificate, err := s.repo.GetCertificate(ctx, certificateID)
+	if err != nil {
+		return domain.Enrollment{}, err
+	}
+	return s.createCertificateReplacementEnrollment(ctx, actor, certificateID, req.CSRPEM, certificate.NotAfter, "certificate.reissue_requested")
+}
+
+func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, actor string, certificateID string, csrPEM string, requestedNotAfter time.Time, action string) (domain.Enrollment, error) {
 	if isBlank(certificateID) {
 		return domain.Enrollment{}, domain.ErrInvalidRequest
 	}
@@ -311,11 +330,11 @@ func (s *Service) RenewCertificate(ctx context.Context, actor string, certificat
 		IdentityID:           certificate.IdentityID,
 		IssuerID:             certificate.IssuerID,
 		CertificateProfileID: certificate.CertificateProfileID,
-		CSRPEM:               req.CSRPEM,
+		CSRPEM:               csrPEM,
 		RequestedSubject:     certificate.Subject,
 		RequestedDNSNames:    append([]string(nil), certificate.DNSNames...),
 		RequestedIPAddresses: append([]string(nil), certificate.IPAddresses...),
-		RequestedNotAfter:    req.RequestedNotAfter,
+		RequestedNotAfter:    requestedNotAfter,
 	}
 	now := s.clock.Now()
 	if err := validateCreateEnrollmentRequest(createReq, now); err != nil {
@@ -373,7 +392,7 @@ func (s *Service) RenewCertificate(ctx context.Context, actor string, certificat
 		if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "certificate.renewal_requested", "enrollment", enrollment.ID, now, auditFields(
+		return s.createAuditEvent(ctx, repo, actor, action, "enrollment", enrollment.ID, now, auditFields(
 			"identity_id", enrollment.IdentityID,
 			"issuer_id", enrollment.IssuerID,
 			"enrollment_id", enrollment.ID,
