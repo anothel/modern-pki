@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -16,6 +18,11 @@ namespace
 std::string read_file(const std::filesystem::path &path)
 {
 	std::ifstream input{path, std::ios::binary};
+	if (!input.good())
+	{
+		std::cerr << "failed to open file: " << path << "\n";
+		std::exit(1);
+	}
 	std::ostringstream contents;
 	contents << input.rdbuf();
 	return contents.str();
@@ -78,6 +85,92 @@ void assert_cli_failure_contains(
 	}
 }
 
+void assert_cli_success_contains(
+    const std::filesystem::path &cli_path,
+    const std::filesystem::path &stdout_path,
+    const std::filesystem::path &stderr_path,
+    const std::string &args,
+    const std::filesystem::path &output_path,
+    const std::vector<std::string> &expected_fragments)
+{
+#if defined(_WIN32)
+	const std::string command_prefix = "call ";
+#else
+	const std::string command_prefix;
+#endif
+	const std::string command = command_prefix + shell_quote(cli_path) + " " + args + " > " + shell_quote(stdout_path) + " 2> " + shell_quote(stderr_path);
+	std::filesystem::remove(output_path);
+	const int exit_code = std::system(command.c_str());
+	const std::string stderr_output = read_file(stderr_path);
+	const std::string output = read_file(output_path);
+
+	for (const std::string &fragment : expected_fragments)
+	{
+		if (exit_code != 0 || output.find(fragment) == std::string::npos)
+		{
+			std::cerr << "CLI success contract mismatch\n"
+			          << "command: " << command << "\n"
+			          << "exit_code: " << exit_code << "\n"
+			          << "expected_fragment: " << fragment << "\n"
+			          << "stderr: " << stderr_output << "\n"
+			          << "output: " << output << "\n";
+			std::exit(1);
+		}
+	}
+}
+
+std::optional<unsigned char> base64_value(char value)
+{
+	if (value >= 'A' && value <= 'Z')
+	{
+		return static_cast<unsigned char>(value - 'A');
+	}
+	if (value >= 'a' && value <= 'z')
+	{
+		return static_cast<unsigned char>(value - 'a' + 26);
+	}
+	if (value >= '0' && value <= '9')
+	{
+		return static_cast<unsigned char>(value - '0' + 52);
+	}
+	if (value == '+')
+	{
+		return 62;
+	}
+	if (value == '/')
+	{
+		return 63;
+	}
+	return std::nullopt;
+}
+
+std::string decode_base64(std::string_view input)
+{
+	std::string output;
+	unsigned int accumulator = 0;
+	int bits = -8;
+	for (char ch : input)
+	{
+		if (ch == '=')
+		{
+			break;
+		}
+		const std::optional<unsigned char> value = base64_value(ch);
+		if (!value.has_value())
+		{
+			continue;
+		}
+		accumulator = ((accumulator << 6) | *value) & 0xffffff;
+		bits += 6;
+		if (bits >= 0)
+		{
+			output.push_back(static_cast<char>((accumulator >> bits) & 0xff));
+			bits -= 8;
+		}
+	}
+	return output;
+}
+
 void assert_cli_error_contract(const std::filesystem::path &cli_path, const std::filesystem::path &work_dir)
 {
 	const std::filesystem::path stdout_path = work_dir / "core_cli_contract_stdout.txt";
@@ -96,12 +189,37 @@ void assert_cli_error_contract(const std::filesystem::path &cli_path, const std:
 	    "\"code\":\"cli.json_parse_failed\"");
 }
 
+void assert_cli_ocsp_fixture_inspect(
+    const std::filesystem::path &cli_path,
+    const std::filesystem::path &work_dir,
+    const std::filesystem::path &fixture_dir)
+{
+	const std::filesystem::path stdout_path = work_dir / "core_cli_contract_ocsp_stdout.txt";
+	const std::filesystem::path stderr_path = work_dir / "core_cli_contract_ocsp_stderr.txt";
+	const std::filesystem::path request_path = work_dir / "core_cli_contract_ocsp_request.der";
+	const std::filesystem::path result_path = work_dir / "core_cli_contract_ocsp_result.json";
+
+	write_file(request_path, decode_base64(read_file(fixture_dir / "curated-single-request.der.b64")));
+	assert_cli_success_contains(
+	    cli_path,
+	    stdout_path,
+	    stderr_path,
+	    "ocsp inspect --in " + shell_quote(request_path) + " --out " + shell_quote(result_path),
+	    result_path,
+	    {
+	        "\"serial_number\":\"1001\"",
+	        "\"issuer_name_hash\":\"84378ae02c8a13718b0efda0e3a283b0006a4265\"",
+	        "\"issuer_key_hash\":\"d5dcea91c8d109ec61e84d07bea04fab0b720ac3\"",
+	    });
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
 {
-	assert(argc == 3);
+	assert(argc == 4);
 	assert_cli_error_contract(argv[1], argv[2]);
+	assert_cli_ocsp_fixture_inspect(argv[1], argv[2], argv[3]);
 
 	modern_pki::core::IssueRequest request;
 	request.csr_pem = "csr";

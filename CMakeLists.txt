@@ -60,7 +60,7 @@ if(BUILD_TESTING)
     add_dependencies(modern_pki_core_cli_contract_test modern-pki-core)
     add_test(
         NAME modern_pki.core_cli_contract
-        COMMAND modern_pki_core_cli_contract_test $<TARGET_FILE:modern-pki-core> ${CMAKE_CURRENT_BINARY_DIR}
+        COMMAND modern_pki_core_cli_contract_test $<TARGET_FILE:modern-pki-core> ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ocsp
     )
 
     add_executable(modern_pki_core_issue_profile_test
@@ -88,6 +88,6 @@ if(BUILD_TESTING)
     target_link_libraries(modern_pki_core_ocsp_test PRIVATE modern_pki::core OpenSSL::Crypto)
     add_test(
         NAME modern_pki.core_ocsp
-        COMMAND modern_pki_core_ocsp_test ${CMAKE_CURRENT_BINARY_DIR}
+        COMMAND modern_pki_core_ocsp_test ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ocsp
     )
 endif()

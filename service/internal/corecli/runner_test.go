@@ -1,6 +1,7 @@
 package corecli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -155,6 +156,39 @@ func TestRunnerMapsOCSPIssuerInfoJSON(t *testing.T) {
 	}
 }
 
+func TestRunnerInspectOCSPPreservesDERAndMapsJSON(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "ocsp-request.der")
+	bin := writeFakeOCSPInspectCommand(t, true, capturePath)
+	requestDER := []byte{0x30, 0x03, 0x00, 0xff}
+
+	info, err := (Runner{Bin: bin}).InspectOCSP(context.Background(), requestDER)
+	if err != nil {
+		t.Fatalf("InspectOCSP returned error: %v", err)
+	}
+
+	if len(info.Certificates) != 1 {
+		t.Fatalf("certificate count = %d, want 1", len(info.Certificates))
+	}
+	certificate := info.Certificates[0]
+	if certificate.SerialNumber != "1001" {
+		t.Fatalf("SerialNumber = %q, want 1001", certificate.SerialNumber)
+	}
+	if certificate.IssuerNameHash != "name-hash" {
+		t.Fatalf("IssuerNameHash = %q, want name-hash", certificate.IssuerNameHash)
+	}
+	if certificate.IssuerKeyHash != "key-hash" {
+		t.Fatalf("IssuerKeyHash = %q, want key-hash", certificate.IssuerKeyHash)
+	}
+
+	capturedDER, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured DER: %v", err)
+	}
+	if !bytes.Equal(capturedDER, requestDER) {
+		t.Fatalf("captured DER = %#v, want %#v", capturedDER, requestDER)
+	}
+}
+
 func TestCommandErrorPreservesPayloadCode(t *testing.T) {
 	err := commandError(errors.New("exit status 1"), `{"code":"issue.csr_parse_failed","message":"bad csr"}`)
 
@@ -241,6 +275,25 @@ func writeFakeOCSPIssuerInspectCommand(t *testing.T, success bool) string {
 
 	path := filepath.Join(dir, "modern-pki-core")
 	if err := os.WriteFile(path, []byte(unixOCSPIssuerInspectScript(success)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
+func writeFakeOCSPInspectCommand(t *testing.T, success bool, capturePath string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsOCSPInspectScript(success, capturePath)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixOCSPInspectScript(success, capturePath)), 0755); err != nil {
 		t.Fatalf("write fake command: %v", err)
 	}
 	return path
@@ -351,6 +404,49 @@ func windowsOCSPIssuerInspectScript(success bool) string {
 	}, "\r\n")
 }
 
+func windowsOCSPInspectScript(success bool, capturePath string) string {
+	if !success {
+		return strings.Join([]string{
+			"@echo off",
+			"echo {^\"code^\":^\"ocsp.parse_failed^\",^\"message^\":^\"bad request^\"} 1>&2",
+			"exit /b 7",
+			"",
+		}, "\r\n")
+	}
+
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"if not \"%~1\"==\"ocsp\" exit /b 3",
+		"if not \"%~2\"==\"inspect\" exit /b 3",
+		"set \"IN=\"",
+		"set \"OUT=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"--in\" (",
+		"  set \"IN=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%IN%\"==\"\" exit /b 2",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"copy /Y \"%IN%\" \"" + capturePath + "\" >NUL",
+		"> \"%OUT%\" echo {^\"certificates^\": [{^\"serial_number^\":^\"1001^\",^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\"}]}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
 func windowsInspectScript(success bool) string {
 	if !success {
 		return strings.Join([]string{
@@ -454,6 +550,43 @@ if [ -z "$out" ]; then
 fi
 cat > "$out" <<'JSON'
 {"issuer_name_hash":"name-hash","issuer_key_hash":"key-hash"}
+JSON
+exit 0
+`
+}
+
+func unixOCSPInspectScript(success bool, capturePath string) string {
+	if !success {
+		return `#!/bin/sh
+printf '%s\n' '{"code":"ocsp.parse_failed","message":"bad request"}' >&2
+exit 7
+`
+	}
+
+	escapedCapturePath := strings.ReplaceAll(capturePath, "'", "'\"'\"'")
+	return `#!/bin/sh
+if [ "$1" != "ocsp" ] || [ "$2" != "inspect" ]; then
+	exit 3
+fi
+input=""
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--in" ]; then
+		input="$2"
+		shift 2
+	elif [ "$1" = "--out" ]; then
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$input" ] || [ -z "$out" ]; then
+	exit 2
+fi
+cp "$input" '` + escapedCapturePath + `'
+cat > "$out" <<'JSON'
+{"certificates":[{"serial_number":"1001","issuer_name_hash":"name-hash","issuer_key_hash":"key-hash"}]}
 JSON
 exit 0
 `

@@ -12,8 +12,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace
 {
@@ -149,6 +154,19 @@ std::string ocsp_request_der(X509 *leaf, X509 *issuer, OCSP_CERTID **out_id)
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
+std::string read_file(const std::filesystem::path &path)
+{
+	std::ifstream input{path, std::ios::binary};
+	if (!input.good())
+	{
+		std::cerr << "failed to open fixture: " << path << "\n";
+		std::exit(1);
+	}
+	std::ostringstream contents;
+	contents << input.rdbuf();
+	return contents.str();
+}
+
 void write_file(const std::filesystem::path &path, const std::string &contents)
 {
 	std::ofstream output{path, std::ios::binary | std::ios::trunc};
@@ -164,12 +182,79 @@ OCSPResponsePtr ocsp_response_from_der(const std::string &der)
 	return response;
 }
 
+std::optional<unsigned char> base64_value(char value)
+{
+	if (value >= 'A' && value <= 'Z')
+	{
+		return static_cast<unsigned char>(value - 'A');
+	}
+	if (value >= 'a' && value <= 'z')
+	{
+		return static_cast<unsigned char>(value - 'a' + 26);
+	}
+	if (value >= '0' && value <= '9')
+	{
+		return static_cast<unsigned char>(value - '0' + 52);
+	}
+	if (value == '+')
+	{
+		return 62;
+	}
+	if (value == '/')
+	{
+		return 63;
+	}
+	return std::nullopt;
+}
+
+std::string decode_base64(std::string_view input)
+{
+	std::string output;
+	unsigned int accumulator = 0;
+	int bits = -8;
+	for (char ch : input)
+	{
+		if (ch == '=')
+		{
+			break;
+		}
+		const std::optional<unsigned char> value = base64_value(ch);
+		if (!value.has_value())
+		{
+			continue;
+		}
+		accumulator = ((accumulator << 6) | *value) & 0xffffff;
+		bits += 6;
+		if (bits >= 0)
+		{
+			output.push_back(static_cast<char>((accumulator >> bits) & 0xff));
+			bits -= 8;
+		}
+	}
+	return output;
+}
+
+void assert_curated_ocsp_request_vector(const std::filesystem::path &fixture_dir)
+{
+	const std::string request_der = decode_base64(read_file(fixture_dir / "curated-single-request.der.b64"));
+	const modern_pki::core::OCSPRequestInfo info = modern_pki::core::inspect_ocsp_request_der(request_der);
+	require(info.certificates.size() == 1);
+	require(info.certificates[0].serial_number == "1001");
+	require(info.certificates[0].issuer_name_hash == "84378ae02c8a13718b0efda0e3a283b0006a4265");
+	require(info.certificates[0].issuer_key_hash == "d5dcea91c8d109ec61e84d07bea04fab0b720ac3");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
 {
-	require(argc == 2);
+	if (argc != 3)
+	{
+		std::cerr << "usage: modern_pki_core_ocsp_test <work-dir> <fixture-dir>\n";
+		return 2;
+	}
 	const std::filesystem::path work_dir = argv[1];
+	const std::filesystem::path fixture_dir = argv[2];
 	const EvpPkeyPtr issuer_key = make_rsa_key();
 	const X509Ptr issuer = make_certificate(issuer_key.get(), nullptr, nullptr, "Test CA", 1, true);
 	const EvpPkeyPtr leaf_key = make_rsa_key();
@@ -211,5 +296,6 @@ int main(int argc, char *argv[])
 	require(OCSP_resp_find_status(basic.get(), id.get(), &status, &reason, &revocation_time, &this_update, &next_update) == 1);
 	require(status == V_OCSP_CERTSTATUS_REVOKED);
 	require(reason == OCSP_REVOKED_STATUS_KEYCOMPROMISE);
+	assert_curated_ocsp_request_vector(fixture_dir);
 	return 0;
 }
