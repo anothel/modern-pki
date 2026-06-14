@@ -111,6 +111,17 @@ func (s *MemoryStore) GetIssuer(ctx context.Context, id string) (domain.Issuer, 
 	return issuer, nil
 }
 
+func (s *MemoryStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	issuers := make([]domain.Issuer, 0, len(s.issuers))
+	for _, issuer := range s.issuers {
+		issuers = append(issuers, issuer)
+	}
+	return issuers, nil
+}
+
 func (s *MemoryStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -395,6 +406,14 @@ func (tx *memoryTx) GetIssuer(ctx context.Context, id string) (domain.Issuer, er
 		return domain.Issuer{}, domain.ErrIssuerNotFound
 	}
 	return issuer, nil
+}
+
+func (tx *memoryTx) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
+	issuers := make([]domain.Issuer, 0, len(tx.issuers))
+	for _, issuer := range tx.issuers {
+		issuers = append(issuers, issuer)
+	}
+	return issuers, nil
 }
 
 func (tx *memoryTx) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {

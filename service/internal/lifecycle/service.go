@@ -19,6 +19,7 @@ type CertificateIssuer interface {
 	Issue(context.Context, corecli.IssueRequest) (corecli.IssueResult, error)
 	InspectCSR(context.Context, string) (corecli.CSRInfo, error)
 	GenerateCRL(context.Context, corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error)
+	InspectOCSPIssuer(context.Context, string) (corecli.OCSPIssuerInfo, error)
 	InspectOCSP(context.Context, []byte) (corecli.OCSPRequestInfo, error)
 	GenerateOCSPResponse(context.Context, corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error)
 }
@@ -744,14 +745,19 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any) string {
 }
 
 func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCSPCertificateID) ([]corecli.OCSPCertificateStatus, string, error) {
+	issuersByHash, err := s.ocspIssuersByHash(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	certificates, err := s.repo.ListCertificates(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	bySerial := make(map[string]domain.Certificate, len(certificates))
+	byIssuerSerial := make(map[string]domain.Certificate, len(certificates))
 	for _, certificate := range certificates {
-		if _, exists := bySerial[certificate.SerialNumber]; !exists {
-			bySerial[certificate.SerialNumber] = certificate
+		key := ocspIssuerSerialKey(certificate.IssuerID, certificate.SerialNumber)
+		if _, exists := byIssuerSerial[key]; !exists {
+			byIssuerSerial[key] = certificate
 		}
 	}
 
@@ -759,13 +765,21 @@ func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCS
 	issuerID := ""
 	revocationsByIssuer := make(map[string][]domain.RevokedCertificateEntry)
 	for _, id := range ids {
-		certificate, found := bySerial[id.SerialNumber]
-		if !found {
+		issuer, issuerFound := issuersByHash[ocspIssuerHashKey(id.IssuerNameHash, id.IssuerKeyHash)]
+		if !issuerFound {
 			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: id.SerialNumber, Status: "unknown"})
 			continue
 		}
 		if issuerID == "" {
-			issuerID = certificate.IssuerID
+			issuerID = issuer.ID
+		}
+		if issuerID != issuer.ID {
+			return nil, "", domain.ErrInvalidRequest
+		}
+		certificate, found := byIssuerSerial[ocspIssuerSerialKey(issuer.ID, id.SerialNumber)]
+		if !found {
+			statuses = append(statuses, corecli.OCSPCertificateStatus{SerialNumber: id.SerialNumber, Status: "unknown"})
+			continue
 		}
 		switch certificate.Status {
 		case domain.CertificateValid:
@@ -785,6 +799,33 @@ func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCS
 		}
 	}
 	return statuses, issuerID, nil
+}
+
+func (s *Service) ocspIssuersByHash(ctx context.Context) (map[string]domain.Issuer, error) {
+	issuers, err := s.repo.ListIssuers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byHash := make(map[string]domain.Issuer, len(issuers))
+	for _, issuer := range issuers {
+		if issuer.Status != domain.IssuerActive {
+			continue
+		}
+		info, err := s.issuer.InspectOCSPIssuer(ctx, issuer.CertificatePEM)
+		if err != nil {
+			return nil, mapOCSPDecodeError(err)
+		}
+		byHash[ocspIssuerHashKey(info.IssuerNameHash, info.IssuerKeyHash)] = issuer
+	}
+	return byHash, nil
+}
+
+func ocspIssuerHashKey(nameHash string, keyHash string) string {
+	return nameHash + "\x00" + keyHash
+}
+
+func ocspIssuerSerialKey(issuerID string, serialNumber string) string {
+	return issuerID + "\x00" + serialNumber
 }
 
 func revokedOCSPStatus(certificate domain.Certificate, revocations []domain.RevokedCertificateEntry) corecli.OCSPCertificateStatus {

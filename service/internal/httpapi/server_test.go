@@ -721,6 +721,13 @@ func (f *fakeIssuer) GenerateCRL(ctx context.Context, req corecli.GenerateCRLReq
 	return corecli.GenerateCRLResult{CRLPEM: crlPEM}, nil
 }
 
+func (f *fakeIssuer) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string) (corecli.OCSPIssuerInfo, error) {
+	if f.err != nil {
+		return corecli.OCSPIssuerInfo{}, f.err
+	}
+	return corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"}, nil
+}
+
 func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
 	if f.err != nil {
 		return corecli.OCSPRequestInfo{}, f.err

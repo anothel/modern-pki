@@ -76,6 +76,11 @@ type OCSPRequestInfo struct {
 	Certificates []OCSPCertificateID `json:"certificates"`
 }
 
+type OCSPIssuerInfo struct {
+	IssuerNameHash string `json:"issuer_name_hash"`
+	IssuerKeyHash  string `json:"issuer_key_hash"`
+}
+
 type OCSPCertificateStatus struct {
 	SerialNumber     string
 	Status           string
@@ -337,6 +342,57 @@ func (r Runner) InspectOCSP(ctx context.Context, requestDER []byte) (OCSPRequest
 	var result OCSPRequestInfo
 	if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
 		return OCSPRequestInfo{}, fmt.Errorf("decode ocsp info: %w", err)
+	}
+	return result, nil
+}
+
+func (r Runner) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM string) (OCSPIssuerInfo, error) {
+	issuerFile, err := os.CreateTemp("", "modern-pki-core-ocsp-issuer-*.pem")
+	if err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("create ocsp issuer temp file: %w", err)
+	}
+	issuerPath := issuerFile.Name()
+	defer os.Remove(issuerPath)
+
+	if _, err := issuerFile.WriteString(issuerCertificatePEM); err != nil {
+		issuerFile.Close()
+		return OCSPIssuerInfo{}, fmt.Errorf("write ocsp issuer: %w", err)
+	}
+	if err := issuerFile.Close(); err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("close ocsp issuer: %w", err)
+	}
+
+	resultFile, err := os.CreateTemp("", "modern-pki-core-ocsp-issuer-info-*.json")
+	if err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("create ocsp issuer info temp file: %w", err)
+	}
+	resultPath := resultFile.Name()
+	defer os.Remove(resultPath)
+	if err := resultFile.Close(); err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("close ocsp issuer info temp file: %w", err)
+	}
+
+	bin := r.Bin
+	if bin == "" {
+		bin = "modern-pki-core"
+	}
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, "ocsp", "inspect-issuer", "--issuer", issuerPath, "--out", resultPath)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return OCSPIssuerInfo{}, commandError(err, stderr.String())
+	}
+
+	resultFile, err = os.Open(resultPath)
+	if err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("open ocsp issuer info: %w", err)
+	}
+	defer resultFile.Close()
+
+	var result OCSPIssuerInfo
+	if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
+		return OCSPIssuerInfo{}, fmt.Errorf("decode ocsp issuer info: %w", err)
 	}
 	return result, nil
 }

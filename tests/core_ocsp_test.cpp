@@ -186,6 +186,9 @@ int main(int argc, char *argv[])
 	require(info.certificates[0].serial_number == "1001");
 	require(!info.certificates[0].issuer_name_hash.empty());
 	require(!info.certificates[0].issuer_key_hash.empty());
+	const modern_pki::core::OCSPIssuerInfo issuer_info = modern_pki::core::inspect_ocsp_issuer_pem(certificate_to_pem(issuer.get()));
+	require(issuer_info.issuer_name_hash == info.certificates[0].issuer_name_hash);
+	require(issuer_info.issuer_key_hash == info.certificates[0].issuer_key_hash);
 
 	modern_pki::core::GenerateOCSPResponseRequest response_request;
 	response_request.request_der = request_der;

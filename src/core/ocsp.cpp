@@ -292,6 +292,18 @@ OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der)
 	return info;
 }
 
+OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem)
+{
+	const X509Ptr issuer = parse_certificate(issuer_certificate_pem);
+	OCSPCertIDPtr id{OCSP_cert_to_id(EVP_sha1(), issuer.get(), issuer.get())};
+	if (!id)
+	{
+		throw_error(kOCSPCreateFailed);
+	}
+	const OCSPCertificateID parsed_id = certificate_id(id.get());
+	return OCSPIssuerInfo{parsed_id.issuer_name_hash, parsed_id.issuer_key_hash};
+}
+
 GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request)
 {
 	const OCSPRequestPtr ocsp_request = parse_request_der(request.request_der);

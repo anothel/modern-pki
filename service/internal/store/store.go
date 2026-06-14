@@ -15,6 +15,7 @@ type IdentityRepository interface {
 type IssuerRepository interface {
 	CreateIssuer(ctx context.Context, issuer domain.Issuer) error
 	GetIssuer(ctx context.Context, id string) (domain.Issuer, error)
+	ListIssuers(ctx context.Context) ([]domain.Issuer, error)
 }
 
 type CertificateProfileRepository interface {

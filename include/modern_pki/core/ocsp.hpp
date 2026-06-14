@@ -18,6 +18,12 @@ struct OCSPRequestInfo
 	std::vector<OCSPCertificateID> certificates;
 };
 
+struct OCSPIssuerInfo
+{
+	std::string issuer_name_hash;
+	std::string issuer_key_hash;
+};
+
 struct OCSPCertificateStatus
 {
 	std::string serial_number;
@@ -42,6 +48,7 @@ struct GenerateOCSPResponseResult
 };
 
 [[nodiscard]] OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der);
+[[nodiscard]] OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem);
 [[nodiscard]] GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request);
 
 } // namespace modern_pki::core

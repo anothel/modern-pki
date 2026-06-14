@@ -139,6 +139,22 @@ func TestRunnerGenerateCRLNormalizesTimes(t *testing.T) {
 	}
 }
 
+func TestRunnerMapsOCSPIssuerInfoJSON(t *testing.T) {
+	bin := writeFakeOCSPIssuerInspectCommand(t, true)
+
+	info, err := (Runner{Bin: bin}).InspectOCSPIssuer(context.Background(), "issuer-pem")
+	if err != nil {
+		t.Fatalf("InspectOCSPIssuer returned error: %v", err)
+	}
+
+	if info.IssuerNameHash != "name-hash" {
+		t.Fatalf("IssuerNameHash = %q, want name-hash", info.IssuerNameHash)
+	}
+	if info.IssuerKeyHash != "key-hash" {
+		t.Fatalf("IssuerKeyHash = %q, want key-hash", info.IssuerKeyHash)
+	}
+}
+
 func TestCommandErrorPreservesPayloadCode(t *testing.T) {
 	err := commandError(errors.New("exit status 1"), `{"code":"issue.csr_parse_failed","message":"bad csr"}`)
 
@@ -206,6 +222,25 @@ func writeFakeCRLCommand(t *testing.T, success bool, capturePath string) string 
 
 	path := filepath.Join(dir, "modern-pki-core")
 	if err := os.WriteFile(path, []byte(unixCRLScript(success, capturePath)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
+func writeFakeOCSPIssuerInspectCommand(t *testing.T, success bool) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsOCSPIssuerInspectScript(success)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixOCSPIssuerInspectScript(success)), 0755); err != nil {
 		t.Fatalf("write fake command: %v", err)
 	}
 	return path
@@ -279,6 +314,38 @@ func windowsCRLScript(success bool, capturePath string) string {
 		"if \"%OUT%\"==\"\" exit /b 2",
 		"copy /Y \"%REQ%\" \"" + capturePath + "\" >NUL",
 		"> \"%OUT%\" echo {^\"crl_pem^\":^\"crl-pem^\"}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
+func windowsOCSPIssuerInspectScript(success bool) string {
+	if !success {
+		return strings.Join([]string{
+			"@echo off",
+			"echo {^\"code^\":^\"ocsp.issuer_parse_failed^\",^\"message^\":^\"bad issuer^\"} 1>&2",
+			"exit /b 7",
+			"",
+		}, "\r\n")
+	}
+
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"OUT=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"> \"%OUT%\" echo {^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\"}",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -359,6 +426,34 @@ fi
 cp "$req" '` + escapedCapturePath + `'
 cat > "$out" <<'JSON'
 {"crl_pem":"crl-pem"}
+JSON
+exit 0
+`
+}
+
+func unixOCSPIssuerInspectScript(success bool) string {
+	if !success {
+		return `#!/bin/sh
+printf '%s\n' '{"code":"ocsp.issuer_parse_failed","message":"bad issuer"}' >&2
+exit 7
+`
+	}
+
+	return `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--out" ]; then
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$out" ]; then
+	exit 2
+fi
+cat > "$out" <<'JSON'
+{"issuer_name_hash":"name-hash","issuer_key_hash":"key-hash"}
 JSON
 exit 0
 `

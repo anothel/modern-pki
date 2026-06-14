@@ -575,6 +575,12 @@ std::string ocsp_info_to_json(const modern_pki::core::OCSPRequestInfo &info)
 	return output;
 }
 
+std::string ocsp_issuer_info_to_json(const modern_pki::core::OCSPIssuerInfo &info)
+{
+	return "{\"issuer_name_hash\":" + json_string(info.issuer_name_hash) +
+	       ",\"issuer_key_hash\":" + json_string(info.issuer_key_hash) + "}";
+}
+
 bool arg_is(char *value, std::string_view expected)
 {
 	return value != nullptr && expected == value;
@@ -635,6 +641,20 @@ int run_ocsp_inspect(int argc, char *argv[])
 	return 0;
 }
 
+int run_ocsp_inspect_issuer(int argc, char *argv[])
+{
+	if (argc != 7 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "inspect-issuer") ||
+	    !arg_is(argv[3], "--issuer") || !arg_is(argv[5], "--out"))
+	{
+		write_error("cli.invalid_args", "invalid arguments");
+		return 2;
+	}
+
+	const modern_pki::core::OCSPIssuerInfo info = modern_pki::core::inspect_ocsp_issuer_pem(read_file(argv[4]));
+	write_file(argv[6], ocsp_issuer_info_to_json(info) + "\n");
+	return 0;
+}
+
 int run_ocsp_respond(int argc, char *argv[])
 {
 	if (argc != 9 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "respond") || !arg_is(argv[3], "--in") ||
@@ -672,6 +692,10 @@ int main(int argc, char *argv[])
 		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "inspect"))
 		{
 			return run_ocsp_inspect(argc, argv);
+		}
+		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "inspect-issuer"))
+		{
+			return run_ocsp_inspect_issuer(argc, argv);
 		}
 		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "respond"))
 		{

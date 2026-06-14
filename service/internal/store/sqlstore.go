@@ -70,6 +70,10 @@ func (s *SQLStore) GetIssuer(ctx context.Context, id string) (domain.Issuer, err
 	return s.repository().GetIssuer(ctx, id)
 }
 
+func (s *SQLStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
+	return s.repository().ListIssuers(ctx)
+}
+
 func (s *SQLStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
 	return s.repository().CreateCertificateProfile(ctx, profile)
 }
@@ -249,6 +253,30 @@ WHERE id = $1`, id))
 		return domain.Issuer{}, err
 	}
 	return issuer, nil
+}
+
+func (r sqlRepository) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, name, kind, status, certificate_pem, key_ref, created_at, updated_at
+FROM issuers
+ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	issuers := make([]domain.Issuer, 0)
+	for rows.Next() {
+		issuer, err := scanIssuer(rows)
+		if err != nil {
+			return nil, err
+		}
+		issuers = append(issuers, issuer)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return issuers, nil
 }
 
 func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
