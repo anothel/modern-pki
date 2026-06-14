@@ -39,9 +39,10 @@ const (
 type CertificateStatus string
 
 const (
-	CertificateValid   CertificateStatus = "valid"
-	CertificateRevoked CertificateStatus = "revoked"
-	CertificateExpired CertificateStatus = "expired"
+	CertificateValid     CertificateStatus = "valid"
+	CertificateSuspended CertificateStatus = "suspended"
+	CertificateRevoked   CertificateStatus = "revoked"
+	CertificateExpired   CertificateStatus = "expired"
 )
 
 type CRLPublicationStatus string

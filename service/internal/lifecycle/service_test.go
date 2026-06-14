@@ -692,6 +692,50 @@ func TestRespondOCSPSignsUnknownOnlyRequestByIssuerHash(t *testing.T) {
 	}
 }
 
+func TestRespondOCSPTreatsSuspendedCertificateAsUnknown(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		issuerOCSPInfo: corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+		ocspInfo: corecli.OCSPRequestInfo{
+			Certificates: []corecli.OCSPCertificateID{
+				{SerialNumber: "1001", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+			},
+		},
+		ocspResponseDER: []byte("ocsp-response-der"),
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:           "cert-suspended",
+		IssuerID:     issuer.ID,
+		SerialNumber: "1001",
+		Status:       domain.CertificateSuspended,
+		CreatedAt:    clock.now,
+		UpdatedAt:    clock.now,
+	}); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+
+	if _, err := service.RespondOCSP(ctx, "ocsp-client", []byte("ocsp-request-der")); err != nil {
+		t.Fatalf("RespondOCSP returned error: %v", err)
+	}
+	gotStatuses := coreClient.ocspResponses[0].Certificates
+	if len(gotStatuses) != 1 || gotStatuses[0].SerialNumber != "1001" || gotStatuses[0].Status != "unknown" {
+		t.Fatalf("OCSP statuses = %#v, want suspended serial unknown", gotStatuses)
+	}
+}
+
 func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -1129,6 +1173,97 @@ func TestRevokeCertificateRejectsInvalidRequest(t *testing.T) {
 				t.Fatalf("RevokeCertificate error = %v, want ErrInvalidRequest", err)
 			}
 		})
+	}
+}
+
+func TestSuspendResumeAndForceRevokeCertificate(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	service := New(
+		repo,
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+
+	suspended, err := service.SuspendCertificate(ctx, "operator", certificate.ID)
+	if err != nil {
+		t.Fatalf("SuspendCertificate returned error: %v", err)
+	}
+	if suspended.Status != domain.CertificateSuspended {
+		t.Fatalf("suspended certificate status = %q, want %q", suspended.Status, domain.CertificateSuspended)
+	}
+
+	resumed, err := service.ResumeCertificate(ctx, "operator", certificate.ID)
+	if err != nil {
+		t.Fatalf("ResumeCertificate returned error: %v", err)
+	}
+	if resumed.Status != domain.CertificateValid {
+		t.Fatalf("resumed certificate status = %q, want %q", resumed.Status, domain.CertificateValid)
+	}
+
+	suspended, err = service.SuspendCertificate(ctx, "operator", certificate.ID)
+	if err != nil {
+		t.Fatalf("second SuspendCertificate returned error: %v", err)
+	}
+	revoked, err := service.ForceRevokeCertificate(ctx, "operator", suspended.ID, domain.RevocationSuperseded)
+	if err != nil {
+		t.Fatalf("ForceRevokeCertificate returned error: %v", err)
+	}
+	if revoked.Status != domain.CertificateRevoked {
+		t.Fatalf("force revoked certificate status = %q, want %q", revoked.Status, domain.CertificateRevoked)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	wantTail := []string{"certificate.suspended", "certificate.resumed", "certificate.suspended", "certificate.force_revoked"}
+	if len(events) < len(wantTail) {
+		t.Fatalf("audit event count = %d", len(events))
+	}
+	for i, want := range wantTail {
+		got := events[len(events)-len(wantTail)+i].Action
+		if got != want {
+			t.Fatalf("audit event tail %d action = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestSuspendResumeRejectInvalidTransitions(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	if _, err := service.ResumeCertificate(ctx, "operator", certificate.ID); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("ResumeCertificate valid error = %v, want ErrInvalidTransition", err)
+	}
+	if _, err := service.SuspendCertificate(ctx, "operator", certificate.ID); err != nil {
+		t.Fatalf("SuspendCertificate returned error: %v", err)
+	}
+	if _, err := service.SuspendCertificate(ctx, "operator", certificate.ID); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("SuspendCertificate suspended error = %v, want ErrInvalidTransition", err)
 	}
 }
 

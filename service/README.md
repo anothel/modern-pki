@@ -18,6 +18,14 @@ CRL publications are service-owned artifacts generated from certificate inventor
 - `GET /crls/{id}`
 - `GET /issuers/{id}/crl`
 
+Certificate lifecycle operations include revocation, suspension, and resumption:
+
+- `POST /certificates/{id}/revoke`
+- `POST /certificates/{id}/suspend`
+- `POST /certificates/{id}/resume`
+
+Normal revocation accepts only `valid` certificates. Forced revocation accepts `valid` and `suspended` certificates by posting `{"force": true}` with the revocation reason.
+
 OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service selects the responder issuer from the OCSP issuer name/key hash, maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, and delegates OCSP response signing to the core CLI. Requests for a known issuer but missing or mismatched serial return `unknown`; requests whose issuer hash is not known are rejected.
 
 Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.

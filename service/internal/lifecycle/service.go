@@ -468,6 +468,28 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 }
 
 func (s *Service) RevokeCertificate(ctx context.Context, actor string, certificateID string, reason domain.RevocationReason) (domain.Certificate, error) {
+	return s.revokeCertificate(ctx, actor, certificateID, reason, false)
+}
+
+func (s *Service) ForceRevokeCertificate(ctx context.Context, actor string, certificateID string, reason domain.RevocationReason) (domain.Certificate, error) {
+	return s.revokeCertificate(ctx, actor, certificateID, reason, true)
+}
+
+func (s *Service) SuspendCertificate(ctx context.Context, actor string, certificateID string) (domain.Certificate, error) {
+	if isBlank(certificateID) {
+		return domain.Certificate{}, domain.ErrInvalidRequest
+	}
+	return s.transitionCertificateStatus(ctx, actor, certificateID, domain.CertificateValid, domain.CertificateSuspended, "certificate.suspended")
+}
+
+func (s *Service) ResumeCertificate(ctx context.Context, actor string, certificateID string) (domain.Certificate, error) {
+	if isBlank(certificateID) {
+		return domain.Certificate{}, domain.ErrInvalidRequest
+	}
+	return s.transitionCertificateStatus(ctx, actor, certificateID, domain.CertificateSuspended, domain.CertificateValid, "certificate.resumed")
+}
+
+func (s *Service) revokeCertificate(ctx context.Context, actor string, certificateID string, reason domain.RevocationReason, force bool) (domain.Certificate, error) {
 	if isBlank(certificateID) || !isValidRevocationReason(reason) {
 		return domain.Certificate{}, domain.ErrInvalidRequest
 	}
@@ -480,13 +502,14 @@ func (s *Service) RevokeCertificate(ctx context.Context, actor string, certifica
 		if err != nil {
 			return err
 		}
-		if certificate.Status != domain.CertificateValid {
+		if !canRevokeCertificateStatus(certificate.Status, force) {
 			return domain.ErrInvalidTransition
 		}
+		currentStatus := certificate.Status
 
 		certificate.Status = domain.CertificateRevoked
 		certificate.UpdatedAt = now
-		if err := repo.UpdateCertificateIfStatus(ctx, certificate, domain.CertificateValid); err != nil {
+		if err := repo.UpdateCertificateIfStatus(ctx, certificate, currentStatus); err != nil {
 			return err
 		}
 
@@ -502,7 +525,11 @@ func (s *Service) RevokeCertificate(ctx context.Context, actor string, certifica
 			return err
 		}
 
-		return s.createAuditEvent(ctx, repo, actor, "certificate.revoked", "certificate", certificate.ID, now, auditFields(
+		action := "certificate.revoked"
+		if force {
+			action = "certificate.force_revoked"
+		}
+		return s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, auditFields(
 			"identity_id", certificate.IdentityID,
 			"issuer_id", certificate.IssuerID,
 			"enrollment_id", certificate.EnrollmentID,
@@ -513,6 +540,43 @@ func (s *Service) RevokeCertificate(ctx context.Context, actor string, certifica
 		return domain.Certificate{}, err
 	}
 	return certificate, nil
+}
+
+func (s *Service) transitionCertificateStatus(ctx context.Context, actor string, certificateID string, currentStatus domain.CertificateStatus, nextStatus domain.CertificateStatus, action string) (domain.Certificate, error) {
+	var certificate domain.Certificate
+	now := s.clock.Now()
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		var err error
+		certificate, err = repo.GetCertificate(ctx, certificateID)
+		if err != nil {
+			return err
+		}
+		if certificate.Status != currentStatus {
+			return domain.ErrInvalidTransition
+		}
+		certificate.Status = nextStatus
+		certificate.UpdatedAt = now
+		if err := repo.UpdateCertificateIfStatus(ctx, certificate, currentStatus); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, auditFields(
+			"identity_id", certificate.IdentityID,
+			"issuer_id", certificate.IssuerID,
+			"enrollment_id", certificate.EnrollmentID,
+			"certificate_id", certificate.ID,
+			"serial_number", certificate.SerialNumber,
+		))
+	}); err != nil {
+		return domain.Certificate{}, err
+	}
+	return certificate, nil
+}
+
+func canRevokeCertificateStatus(status domain.CertificateStatus, force bool) bool {
+	if status == domain.CertificateValid {
+		return true
+	}
+	return force && status == domain.CertificateSuspended
 }
 
 func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRequest) (domain.CRLPublication, error) {

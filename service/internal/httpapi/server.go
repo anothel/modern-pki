@@ -57,6 +57,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /certificates", s.listCertificates)
 	s.mux.HandleFunc("GET /certificates/{id}", s.getCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/revoke", s.revokeCertificate)
+	s.mux.HandleFunc("POST /certificates/{id}/suspend", s.suspendCertificate)
+	s.mux.HandleFunc("POST /certificates/{id}/resume", s.resumeCertificate)
 
 	s.mux.HandleFunc("POST /crls", s.publishCRL)
 	s.mux.HandleFunc("GET /crls/{id}", s.getCRLPublication)
@@ -270,7 +272,31 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	certificate, err := s.service.RevokeCertificate(r.Context(), requestActor(r), r.PathValue("id"), req.Reason)
+	var certificate domain.Certificate
+	var err error
+	if req.Force {
+		certificate, err = s.service.ForceRevokeCertificate(r.Context(), requestActor(r), r.PathValue("id"), req.Reason)
+	} else {
+		certificate, err = s.service.RevokeCertificate(r.Context(), requestActor(r), r.PathValue("id"), req.Reason)
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
+}
+
+func (s *Server) suspendCertificate(w http.ResponseWriter, r *http.Request) {
+	certificate, err := s.service.SuspendCertificate(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCertificateResponse(certificate))
+}
+
+func (s *Server) resumeCertificate(w http.ResponseWriter, r *http.Request) {
+	certificate, err := s.service.ResumeCertificate(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -508,6 +534,7 @@ type issueCertificateRequest struct {
 
 type revokeCertificateRequest struct {
 	Reason domain.RevocationReason `json:"reason"`
+	Force  bool                    `json:"force,omitempty"`
 }
 
 type publishCRLRequest struct {

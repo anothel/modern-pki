@@ -276,6 +276,58 @@ func TestRevokeCertificate(t *testing.T) {
 	}
 }
 
+func TestSuspendResumeAndForceRevokeCertificate(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var suspended apiCertificate
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/suspend", "operator", nil, &suspended)
+	assertStatus(t, status, http.StatusOK)
+	if suspended.Status != domain.CertificateSuspended {
+		t.Fatalf("suspended certificate status = %q, want %q", suspended.Status, domain.CertificateSuspended)
+	}
+
+	var resumed apiCertificate
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/resume", "operator", nil, &resumed)
+	assertStatus(t, status, http.StatusOK)
+	if resumed.Status != domain.CertificateValid {
+		t.Fatalf("resumed certificate status = %q, want %q", resumed.Status, domain.CertificateValid)
+	}
+
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/suspend", "operator", nil, &suspended)
+	assertStatus(t, status, http.StatusOK)
+	var revoked apiCertificate
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/revoke", "operator", map[string]any{
+		"reason": string(domain.RevocationSuperseded),
+		"force":  true,
+	}, &revoked)
+	assertStatus(t, status, http.StatusOK)
+	if revoked.Status != domain.CertificateRevoked {
+		t.Fatalf("force revoked certificate status = %q, want %q", revoked.Status, domain.CertificateRevoked)
+	}
+}
+
+func TestCertificateLifecycleRejectsInvalidTransitions(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/resume", "operator", nil, &body)
+	assertStatus(t, status, http.StatusConflict)
+
+	var suspended apiCertificate
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/suspend", "operator", nil, &suspended)
+	assertStatus(t, status, http.StatusOK)
+
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/suspend", "operator", nil, &body)
+	assertStatus(t, status, http.StatusConflict)
+
+	status = api.doJSON(t, http.MethodPost, "/certificates/"+certificate.ID+"/revoke", "operator", map[string]string{
+		"reason": string(domain.RevocationSuperseded),
+	}, &body)
+	assertStatus(t, status, http.StatusConflict)
+}
+
 func TestPublishCRL(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := api.createCertificate(t)
