@@ -17,6 +17,8 @@ struct OCSPCertificateID
 struct OCSPRequestInfo
 {
 	std::vector<OCSPCertificateID> certificates;
+	bool has_nonce = false;
+	std::string nonce_hex;
 };
 
 struct OCSPIssuerInfo

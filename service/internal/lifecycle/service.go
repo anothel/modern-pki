@@ -831,6 +831,7 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 			"issuer_id":                issuerID,
 			"requested_cert_count":     len(info.Certificates),
 			"response_status":          "successful",
+			"nonce_present":            info.HasNonce,
 			"first_serial_number":      firstOCSPSerial(info.Certificates),
 			"first_certificate_status": firstOCSPStatus(statuses),
 			"certificates":             ocspAuditCertificates(info.Certificates, statuses),

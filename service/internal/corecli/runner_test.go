@@ -185,6 +185,12 @@ func TestRunnerInspectOCSPPreservesDERAndMapsJSON(t *testing.T) {
 	if certificate.HashAlgorithm != "sha256" {
 		t.Fatalf("HashAlgorithm = %q, want sha256", certificate.HashAlgorithm)
 	}
+	if !info.HasNonce {
+		t.Fatal("HasNonce = false, want true")
+	}
+	if info.NonceHex != "01020304a5" {
+		t.Fatalf("NonceHex = %q, want 01020304a5", info.NonceHex)
+	}
 
 	capturedDER, err := os.ReadFile(capturePath)
 	if err != nil {
@@ -517,7 +523,7 @@ func windowsOCSPInspectScript(success bool, capturePath string) string {
 		"if \"%IN%\"==\"\" exit /b 2",
 		"if \"%OUT%\"==\"\" exit /b 2",
 		"copy /Y \"%IN%\" \"" + capturePath + "\" >NUL",
-		"> \"%OUT%\" echo {^\"certificates^\": [{^\"serial_number^\":^\"1001^\",^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\",^\"hash_algorithm^\":^\"sha256^\"}]}",
+		"> \"%OUT%\" echo {^\"certificates^\": [{^\"serial_number^\":^\"1001^\",^\"issuer_name_hash^\":^\"name-hash^\",^\"issuer_key_hash^\":^\"key-hash^\",^\"hash_algorithm^\":^\"sha256^\"}],^\"has_nonce^\":true,^\"nonce_hex^\":^\"01020304a5^\"}",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -706,7 +712,7 @@ if [ -z "$input" ] || [ -z "$out" ]; then
 fi
 cp "$input" '` + escapedCapturePath + `'
 cat > "$out" <<'JSON'
-{"certificates":[{"serial_number":"1001","issuer_name_hash":"name-hash","issuer_key_hash":"key-hash","hash_algorithm":"sha256"}]}
+{"certificates":[{"serial_number":"1001","issuer_name_hash":"name-hash","issuer_key_hash":"key-hash","hash_algorithm":"sha256"}],"has_nonce":true,"nonce_hex":"01020304a5"}
 JSON
 exit 0
 `

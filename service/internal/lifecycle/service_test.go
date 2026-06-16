@@ -644,6 +644,8 @@ func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
 	coreClient := &fakeIssuer{
 		issuerOCSPInfo: corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
 		ocspInfo: corecli.OCSPRequestInfo{
+			HasNonce: true,
+			NonceHex: "01020304a5",
 			Certificates: []corecli.OCSPCertificateID{
 				{SerialNumber: "1001", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
 				{SerialNumber: "1002", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
@@ -735,6 +737,7 @@ func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
 	if metadata["request_type"] != "ocsp" ||
 		metadata["issuer_id"] != issuer.ID ||
 		metadata["result_code"] != "ok" ||
+		metadata["nonce_present"] != true ||
 		metadata["requested_cert_count"].(float64) != 3 ||
 		metadata["response_status"] != "successful" {
 		t.Fatalf("OCSP audit metadata = %#v", metadata)

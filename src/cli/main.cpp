@@ -598,7 +598,9 @@ std::string ocsp_info_to_json(const modern_pki::core::OCSPRequestInfo &info)
 		          ",\"issuer_key_hash\":" + json_string(certificate.issuer_key_hash) +
 		          ",\"hash_algorithm\":" + json_string(certificate.hash_algorithm) + "}";
 	}
-	output += "]}";
+	output += "],\"has_nonce\":";
+	output += info.has_nonce ? "true" : "false";
+	output += ",\"nonce_hex\":" + json_string(info.nonce_hex) + "}";
 	return output;
 }
 

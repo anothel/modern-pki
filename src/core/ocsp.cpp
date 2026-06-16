@@ -48,6 +48,7 @@ struct BioDeleter
 };
 
 using Asn1TimePtr = std::unique_ptr<ASN1_TIME, OpenSslDeleter<ASN1_TIME, ASN1_TIME_free>>;
+using Asn1OctetStringPtr = std::unique_ptr<ASN1_OCTET_STRING, OpenSslDeleter<ASN1_OCTET_STRING, ASN1_OCTET_STRING_free>>;
 using BignumPtr = std::unique_ptr<BIGNUM, OpenSslDeleter<BIGNUM, BN_free>>;
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, OpenSslDeleter<EVP_PKEY, EVP_PKEY_free>>;
@@ -247,6 +248,32 @@ OCSPCertificateID certificate_id(OCSP_CERTID *id)
 	};
 }
 
+std::string request_nonce_hex(OCSP_REQUEST *request)
+{
+	const int extension_index = OCSP_REQUEST_get_ext_by_NID(request, NID_id_pkix_OCSP_Nonce, -1);
+	if (extension_index < 0)
+	{
+		return {};
+	}
+	X509_EXTENSION *extension = OCSP_REQUEST_get_ext(request, extension_index);
+	if (extension == nullptr)
+	{
+		throw_error(kOCSPParseFailed);
+	}
+	const ASN1_OCTET_STRING *encoded_nonce = X509_EXTENSION_get_data(extension);
+	if (encoded_nonce == nullptr)
+	{
+		throw_error(kOCSPParseFailed);
+	}
+	const unsigned char *cursor = encoded_nonce->data;
+	Asn1OctetStringPtr nonce{d2i_ASN1_OCTET_STRING(nullptr, &cursor, encoded_nonce->length)};
+	if (!nonce || cursor != encoded_nonce->data + encoded_nonce->length)
+	{
+		throw_error(kOCSPParseFailed);
+	}
+	return octets_to_hex(nonce.get());
+}
+
 std::string asn1_time_from_rfc3339(std::string_view value)
 {
 	if (value.size() != 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
@@ -366,6 +393,8 @@ OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der)
 {
 	const OCSPRequestPtr request = parse_request_der(request_der);
 	OCSPRequestInfo info;
+	info.nonce_hex = request_nonce_hex(request.get());
+	info.has_nonce = !info.nonce_hex.empty();
 	const int count = OCSP_request_onereq_count(request.get());
 	for (int index = 0; index < count; ++index)
 	{
@@ -448,6 +477,11 @@ GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequ
 		{
 			throw_error(kOCSPCreateFailed);
 		}
+	}
+
+	if (OCSP_copy_nonce(basic.get(), ocsp_request.get()) <= 0)
+	{
+		throw_error(kOCSPCreateFailed);
 	}
 
 	if (OCSP_basic_sign(basic.get(), issuer.get(), issuer_key.get(), EVP_sha256(), nullptr, 0) != 1)

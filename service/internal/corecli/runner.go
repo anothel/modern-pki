@@ -75,6 +75,8 @@ type OCSPCertificateID struct {
 
 type OCSPRequestInfo struct {
 	Certificates []OCSPCertificateID `json:"certificates"`
+	HasNonce     bool                `json:"has_nonce"`
+	NonceHex     string              `json:"nonce_hex"`
 }
 
 type OCSPIssuerInfo struct {

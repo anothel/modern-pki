@@ -154,6 +154,25 @@ std::string ocsp_request_der(X509 *leaf, X509 *issuer, const EVP_MD *digest, OCS
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
+std::string ocsp_request_der_with_nonce(X509 *leaf, X509 *issuer, const unsigned char *nonce, int nonce_size, OCSP_CERTID **out_id)
+{
+	OCSPRequestPtr request{OCSP_REQUEST_new()};
+	require(request != nullptr);
+	OCSP_CERTID *id = OCSP_cert_to_id(EVP_sha1(), leaf, issuer);
+	require(id != nullptr);
+	*out_id = OCSP_CERTID_dup(id);
+	require(*out_id != nullptr);
+	require(OCSP_request_add0_id(request.get(), id) != nullptr);
+	require(OCSP_request_add1_nonce(request.get(), const_cast<unsigned char *>(nonce), nonce_size) == 1);
+	BioPtr bio{BIO_new(BIO_s_mem())};
+	require(bio != nullptr);
+	require(i2d_OCSP_REQUEST_bio(bio.get(), request.get()) == 1);
+	char *data = nullptr;
+	const long size = BIO_get_mem_data(bio.get(), &data);
+	require(size > 0 && data != nullptr);
+	return std::string{data, static_cast<std::string::size_type>(size)};
+}
+
 std::string ocsp_request_der(X509 *leaf, X509 *issuer, OCSP_CERTID **out_id)
 {
 	return ocsp_request_der(leaf, issuer, EVP_sha1(), out_id);
@@ -207,6 +226,15 @@ OCSPResponsePtr ocsp_response_from_der(const std::string &der)
 	OCSPResponsePtr response{d2i_OCSP_RESPONSE_bio(bio.get(), nullptr)};
 	require(response != nullptr);
 	return response;
+}
+
+OCSPRequestPtr ocsp_request_from_der(const std::string &der)
+{
+	BioPtr bio{BIO_new_mem_buf(der.data(), static_cast<int>(der.size()))};
+	require(bio != nullptr);
+	OCSPRequestPtr request{d2i_OCSP_REQUEST_bio(bio.get(), nullptr)};
+	require(request != nullptr);
+	return request;
 }
 
 std::optional<unsigned char> base64_value(char value)
@@ -266,6 +294,8 @@ void assert_curated_ocsp_request_vector(const std::filesystem::path &fixture_dir
 	const std::string request_der = decode_base64(read_file(fixture_dir / "curated-single-request.der.b64"));
 	const modern_pki::core::OCSPRequestInfo info = modern_pki::core::inspect_ocsp_request_der(request_der);
 	require(info.certificates.size() == 1);
+	require(!info.has_nonce);
+	require(info.nonce_hex.empty());
 	require(info.certificates[0].serial_number == "1001");
 	require(info.certificates[0].issuer_name_hash == "84378ae02c8a13718b0efda0e3a283b0006a4265");
 	require(info.certificates[0].issuer_key_hash == "d5dcea91c8d109ec61e84d07bea04fab0b720ac3");
@@ -346,6 +376,35 @@ int main(int argc, char *argv[])
 	require(OCSP_resp_find_status(basic.get(), id.get(), &status, &reason, &revocation_time, &this_update, &next_update) == 1);
 	require(status == V_OCSP_CERTSTATUS_REVOKED);
 	require(reason == OCSP_REVOKED_STATUS_KEYCOMPROMISE);
+
+	const unsigned char nonce[] = {0x01, 0x02, 0x03, 0x04, 0xa5};
+	OCSP_CERTID *nonce_raw_id = nullptr;
+	const std::string nonce_request_der = ocsp_request_der_with_nonce(leaf.get(), issuer.get(), nonce, sizeof(nonce), &nonce_raw_id);
+	OCSPCertIDPtr nonce_id{nonce_raw_id};
+	const modern_pki::core::OCSPRequestInfo nonce_info = modern_pki::core::inspect_ocsp_request_der(nonce_request_der);
+	require(nonce_info.has_nonce);
+	require(nonce_info.nonce_hex == "01020304a5");
+
+	modern_pki::core::GenerateOCSPResponseRequest nonce_response_request;
+	nonce_response_request.request_der = nonce_request_der;
+	nonce_response_request.issuer_certificate_pem = certificate_to_pem(issuer.get());
+	nonce_response_request.issuer_key_ref = issuer_key_path.string();
+	nonce_response_request.this_update = "2026-06-13T00:00:00Z";
+	nonce_response_request.next_update = "2026-06-14T00:00:00Z";
+	modern_pki::core::OCSPCertificateStatus nonce_status;
+	nonce_status.serial_number = nonce_info.certificates[0].serial_number;
+	nonce_status.status = "good";
+	nonce_status.hash_algorithm = nonce_info.certificates[0].hash_algorithm;
+	nonce_status.issuer_name_hash = nonce_info.certificates[0].issuer_name_hash;
+	nonce_status.issuer_key_hash = nonce_info.certificates[0].issuer_key_hash;
+	nonce_response_request.certificates.push_back(nonce_status);
+	const modern_pki::core::GenerateOCSPResponseResult nonce_response_result =
+	    modern_pki::core::generate_ocsp_response(nonce_response_request);
+	const OCSPRequestPtr nonce_request = ocsp_request_from_der(nonce_request_der);
+	const OCSPResponsePtr nonce_response = ocsp_response_from_der(nonce_response_result.response_der);
+	OCSPBasicResponsePtr nonce_basic{OCSP_response_get1_basic(nonce_response.get())};
+	require(nonce_basic != nullptr);
+	require(OCSP_check_nonce(nonce_request.get(), nonce_basic.get()) == 1);
 
 	std::vector<OCSPCertIDPtr> mixed_ids;
 	const std::string mixed_request_der = ocsp_request_der(leaf.get(), issuer.get(), {EVP_sha1(), EVP_sha256()}, mixed_ids);
