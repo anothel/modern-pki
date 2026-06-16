@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -111,6 +112,27 @@ X509Ptr make_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, cons
 		add_extension(certificate.get(), certificate.get(), NID_key_usage, "critical,keyCertSign,cRLSign");
 	}
 	require(X509_sign(certificate.get(), issuer_key == nullptr ? key : issuer_key, EVP_sha256()) > 0);
+	return certificate;
+}
+
+X509Ptr make_ocsp_responder_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, const char *common_name, unsigned long serial, bool ocsp_signing)
+{
+	X509Ptr certificate{X509_new()};
+	require(certificate != nullptr);
+	require(X509_set_version(certificate.get(), 2) == 1);
+	set_serial(certificate.get(), serial);
+	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0);
+	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 86400);
+	set_name(X509_get_subject_name(certificate.get()), common_name);
+	require(X509_set_issuer_name(certificate.get(), X509_get_subject_name(issuer)) == 1);
+	require(X509_set_pubkey(certificate.get(), key) == 1);
+	add_extension(certificate.get(), issuer, NID_basic_constraints, "critical,CA:FALSE");
+	add_extension(certificate.get(), issuer, NID_key_usage, "critical,digitalSignature");
+	if (ocsp_signing)
+	{
+		add_extension(certificate.get(), issuer, NID_ext_key_usage, "OCSPSigning");
+	}
+	require(X509_sign(certificate.get(), issuer_key, EVP_sha256()) > 0);
 	return certificate;
 }
 
@@ -376,6 +398,38 @@ int main(int argc, char *argv[])
 	require(OCSP_resp_find_status(basic.get(), id.get(), &status, &reason, &revocation_time, &this_update, &next_update) == 1);
 	require(status == V_OCSP_CERTSTATUS_REVOKED);
 	require(reason == OCSP_REVOKED_STATUS_KEYCOMPROMISE);
+
+	const EvpPkeyPtr responder_key = make_rsa_key();
+	const X509Ptr responder = make_ocsp_responder_certificate(
+	    responder_key.get(), issuer.get(), issuer_key.get(), "OCSP Responder", 2001, true);
+	const std::filesystem::path responder_key_path = work_dir / "core_ocsp_responder.key";
+	write_file(responder_key_path, private_key_to_pem(responder_key.get()));
+	modern_pki::core::GenerateOCSPResponseRequest responder_response_request = response_request;
+	responder_response_request.issuer_certificate_pem = certificate_to_pem(responder.get());
+	responder_response_request.issuer_key_ref = responder_key_path.string();
+	const modern_pki::core::GenerateOCSPResponseResult responder_response_result =
+	    modern_pki::core::generate_ocsp_response(responder_response_request);
+	const OCSPResponsePtr responder_response = ocsp_response_from_der(responder_response_result.response_der);
+	require(OCSP_response_status(responder_response.get()) == OCSP_RESPONSE_STATUS_SUCCESSFUL);
+
+	const EvpPkeyPtr invalid_responder_key = make_rsa_key();
+	const X509Ptr invalid_responder = make_ocsp_responder_certificate(
+	    invalid_responder_key.get(), issuer.get(), issuer_key.get(), "Invalid OCSP Responder", 2002, false);
+	const std::filesystem::path invalid_responder_key_path = work_dir / "core_ocsp_invalid_responder.key";
+	write_file(invalid_responder_key_path, private_key_to_pem(invalid_responder_key.get()));
+	modern_pki::core::GenerateOCSPResponseRequest invalid_responder_response_request = response_request;
+	invalid_responder_response_request.issuer_certificate_pem = certificate_to_pem(invalid_responder.get());
+	invalid_responder_response_request.issuer_key_ref = invalid_responder_key_path.string();
+	bool rejected_invalid_responder = false;
+	try
+	{
+		(void)modern_pki::core::generate_ocsp_response(invalid_responder_response_request);
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_invalid_responder = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	require(rejected_invalid_responder);
 
 	const unsigned char nonce[] = {0x01, 0x02, 0x03, 0x04, 0xa5};
 	OCSP_CERTID *nonce_raw_id = nullptr;

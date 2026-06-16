@@ -7,6 +7,7 @@
 #include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <cctype>
 #include <fstream>
@@ -29,6 +30,7 @@ constexpr const char *kOCSPSignFailed = "ocsp.sign_failed";
 constexpr const char *kOCSPIssuerParseFailed = "ocsp.issuer_parse_failed";
 constexpr const char *kOCSPKeyReadFailed = "ocsp.key_read_failed";
 constexpr const char *kOCSPInvalidTime = "ocsp.invalid_time";
+constexpr const char *kOCSPResponderInvalid = "ocsp.responder_invalid";
 
 template <typename T, void (*FreeFn)(T *)>
 struct OpenSslDeleter
@@ -274,6 +276,24 @@ std::string request_nonce_hex(OCSP_REQUEST *request)
 	return octets_to_hex(nonce.get());
 }
 
+void validate_ocsp_signer(X509 *certificate)
+{
+	if (X509_check_ca(certificate) > 0)
+	{
+		return;
+	}
+	const bool has_key_usage = X509_get_ext_by_NID(certificate, NID_key_usage, -1) >= 0;
+	if (has_key_usage && (X509_get_key_usage(certificate) & KU_DIGITAL_SIGNATURE) == 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+	const bool has_extended_key_usage = X509_get_ext_by_NID(certificate, NID_ext_key_usage, -1) >= 0;
+	if (!has_extended_key_usage || (X509_get_extended_key_usage(certificate) & XKU_OCSP_SIGN) == 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+}
+
 std::string asn1_time_from_rfc3339(std::string_view value)
 {
 	if (value.size() != 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
@@ -426,6 +446,7 @@ GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequ
 	const OCSPRequestPtr ocsp_request = parse_request_der(request.request_der);
 	const X509Ptr issuer = parse_certificate(request.issuer_certificate_pem);
 	const EvpPkeyPtr issuer_key = parse_private_key(read_file(request.issuer_key_ref));
+	validate_ocsp_signer(issuer.get());
 	const Asn1TimePtr this_update = make_time(request.this_update);
 	const Asn1TimePtr next_update = make_time(request.next_update);
 	const std::map<std::string, OCSPCertificateStatus> statuses = statuses_by_id(request.certificates);
