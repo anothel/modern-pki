@@ -611,6 +611,11 @@ std::string ocsp_issuer_info_to_json(const modern_pki::core::OCSPIssuerInfo &inf
 	       ",\"hash_algorithm\":" + json_string(info.hash_algorithm) + "}";
 }
 
+std::string ocsp_responder_validation_to_json(const modern_pki::core::ValidateOCSPResponderResult &result)
+{
+	return std::string{"{\"valid\":"} + (result.valid ? "true" : "false") + "}";
+}
+
 bool arg_is(char *value, std::string_view expected)
 {
 	return value != nullptr && expected == value;
@@ -695,6 +700,19 @@ int run_ocsp_inspect_issuer(int argc, char *argv[])
 	return 0;
 }
 
+int run_ocsp_validate_responder(int argc, char *argv[])
+{
+	if (argc != 9 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "validate-responder") || !arg_is(argv[3], "--issuer") || !arg_is(argv[5], "--responder") || !arg_is(argv[7], "--out"))
+	{
+		write_error("cli.invalid_args", "invalid arguments");
+		return 2;
+	}
+
+	const modern_pki::core::ValidateOCSPResponderResult result = modern_pki::core::validate_ocsp_responder(read_file(argv[4]), read_file(argv[6]));
+	write_file(argv[8], ocsp_responder_validation_to_json(result) + "\n");
+	return 0;
+}
+
 int run_ocsp_respond(int argc, char *argv[])
 {
 	if (argc != 9 || !arg_is(argv[1], "ocsp") || !arg_is(argv[2], "respond") || !arg_is(argv[3], "--in") ||
@@ -736,6 +754,10 @@ int main(int argc, char *argv[])
 		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "inspect-issuer"))
 		{
 			return run_ocsp_inspect_issuer(argc, argv);
+		}
+		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "validate-responder"))
+		{
+			return run_ocsp_validate_responder(argc, argv);
 		}
 		if (argc >= 3 && arg_is(argv[1], "ocsp") && arg_is(argv[2], "respond"))
 		{

@@ -85,6 +85,10 @@ type OCSPIssuerInfo struct {
 	HashAlgorithm  string `json:"hash_algorithm"`
 }
 
+type ValidateOCSPResponderResult struct {
+	Valid bool `json:"valid"`
+}
+
 type OCSPCertificateStatus struct {
 	SerialNumber     string
 	Status           string
@@ -403,6 +407,70 @@ func (r Runner) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM stri
 	var result OCSPIssuerInfo
 	if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
 		return OCSPIssuerInfo{}, fmt.Errorf("decode ocsp issuer info: %w", err)
+	}
+	return result, nil
+}
+
+func (r Runner) ValidateOCSPResponder(ctx context.Context, issuerCertificatePEM string, responderCertificatePEM string) (ValidateOCSPResponderResult, error) {
+	issuerFile, err := os.CreateTemp("", "modern-pki-core-ocsp-issuer-*.pem")
+	if err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("create ocsp issuer temp file: %w", err)
+	}
+	issuerPath := issuerFile.Name()
+	defer os.Remove(issuerPath)
+	if _, err := issuerFile.WriteString(issuerCertificatePEM); err != nil {
+		issuerFile.Close()
+		return ValidateOCSPResponderResult{}, fmt.Errorf("write ocsp issuer: %w", err)
+	}
+	if err := issuerFile.Close(); err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("close ocsp issuer: %w", err)
+	}
+
+	responderFile, err := os.CreateTemp("", "modern-pki-core-ocsp-responder-*.pem")
+	if err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("create ocsp responder temp file: %w", err)
+	}
+	responderPath := responderFile.Name()
+	defer os.Remove(responderPath)
+	if _, err := responderFile.WriteString(responderCertificatePEM); err != nil {
+		responderFile.Close()
+		return ValidateOCSPResponderResult{}, fmt.Errorf("write ocsp responder: %w", err)
+	}
+	if err := responderFile.Close(); err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("close ocsp responder: %w", err)
+	}
+
+	resultFile, err := os.CreateTemp("", "modern-pki-core-ocsp-responder-validation-*.json")
+	if err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("create ocsp responder validation temp file: %w", err)
+	}
+	resultPath := resultFile.Name()
+	defer os.Remove(resultPath)
+	if err := resultFile.Close(); err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("close ocsp responder validation temp file: %w", err)
+	}
+
+	bin := r.Bin
+	if bin == "" {
+		bin = "modern-pki-core"
+	}
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, "ocsp", "validate-responder", "--issuer", issuerPath, "--responder", responderPath, "--out", resultPath)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return ValidateOCSPResponderResult{}, commandError(err, stderr.String())
+	}
+
+	resultFile, err = os.Open(resultPath)
+	if err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("open ocsp responder validation: %w", err)
+	}
+	defer resultFile.Close()
+
+	var result ValidateOCSPResponderResult
+	if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
+		return ValidateOCSPResponderResult{}, fmt.Errorf("decode ocsp responder validation: %w", err)
 	}
 	return result, nil
 }

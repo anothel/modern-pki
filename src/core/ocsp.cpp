@@ -294,6 +294,52 @@ void validate_ocsp_signer(X509 *certificate)
 	}
 }
 
+void validate_delegated_ocsp_responder_policy(X509 *certificate)
+{
+	if (X509_check_ca(certificate) > 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+	const bool has_key_usage = X509_get_ext_by_NID(certificate, NID_key_usage, -1) >= 0;
+	if (has_key_usage && (X509_get_key_usage(certificate) & KU_DIGITAL_SIGNATURE) == 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+	const bool has_extended_key_usage = X509_get_ext_by_NID(certificate, NID_ext_key_usage, -1) >= 0;
+	if (!has_extended_key_usage || (X509_get_extended_key_usage(certificate) & XKU_OCSP_SIGN) == 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+}
+
+void validate_responder_issued_by(X509 *issuer, X509 *responder)
+{
+	if (X509_NAME_cmp(X509_get_subject_name(issuer), X509_get_issuer_name(responder)) != 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+	EVP_PKEY *issuer_key_raw = X509_get_pubkey(issuer);
+	if (issuer_key_raw == nullptr)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+	EvpPkeyPtr issuer_key{issuer_key_raw};
+	if (X509_verify(responder, issuer_key.get()) != 1)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+}
+
+void validate_responder_currently_valid(X509 *responder)
+{
+	const int not_before_cmp = X509_cmp_current_time(X509_get0_notBefore(responder));
+	const int not_after_cmp = X509_cmp_current_time(X509_get0_notAfter(responder));
+	if (not_before_cmp == 0 || not_after_cmp == 0 || not_before_cmp > 0 || not_after_cmp <= 0)
+	{
+		throw_error(kOCSPResponderInvalid);
+	}
+}
+
 std::string asn1_time_from_rfc3339(std::string_view value)
 {
 	if (value.size() != 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' ||
@@ -439,6 +485,16 @@ OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem
 	}
 	const OCSPCertificateID parsed_id = certificate_id(id.get());
 	return OCSPIssuerInfo{parsed_id.issuer_name_hash, parsed_id.issuer_key_hash, parsed_id.hash_algorithm};
+}
+
+ValidateOCSPResponderResult validate_ocsp_responder(const std::string &issuer_certificate_pem, const std::string &responder_certificate_pem)
+{
+	const X509Ptr issuer = parse_certificate(issuer_certificate_pem);
+	const X509Ptr responder = parse_certificate(responder_certificate_pem);
+	validate_responder_issued_by(issuer.get(), responder.get());
+	validate_delegated_ocsp_responder_policy(responder.get());
+	validate_responder_currently_valid(responder.get());
+	return ValidateOCSPResponderResult{true};
 }
 
 GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request)

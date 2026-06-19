@@ -42,6 +42,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /identities/{id}", s.getIdentity)
 
 	s.mux.HandleFunc("POST /issuers", s.createIssuer)
+	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders", s.createOCSPResponder)
+	s.mux.HandleFunc("GET /issuers/{id}/ocsp-responders", s.listOCSPResponders)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -126,6 +128,35 @@ func (s *Server) createIssuer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toIssuerResponse(issuer))
+}
+
+func (s *Server) createOCSPResponder(w http.ResponseWriter, r *http.Request) {
+	var req createOCSPResponderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	responder, err := s.service.CreateOCSPResponder(r.Context(), requestActor(r), lifecycle.CreateOCSPResponderRequest{
+		IssuerID:       r.PathValue("id"),
+		Name:           req.Name,
+		CertificatePEM: req.CertificatePEM,
+		KeyRef:         req.KeyRef,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toOCSPResponderResponse(responder))
+}
+
+func (s *Server) listOCSPResponders(w http.ResponseWriter, r *http.Request) {
+	responders, err := s.service.ListOCSPRespondersByIssuer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toOCSPResponderResponses(responders))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -550,6 +581,12 @@ type createIssuerRequest struct {
 	KeyRef         string            `json:"key_ref"`
 }
 
+type createOCSPResponderRequest struct {
+	Name           string `json:"name"`
+	CertificatePEM string `json:"certificate_pem"`
+	KeyRef         string `json:"key_ref"`
+}
+
 type createCertificateProfileRequest struct {
 	Name                   string                           `json:"name"`
 	Description            string                           `json:"description"`
@@ -623,6 +660,17 @@ type issuerResponse struct {
 	KeyRef         string              `json:"key_ref"`
 	CreatedAt      time.Time           `json:"created_at"`
 	UpdatedAt      time.Time           `json:"updated_at"`
+}
+
+type ocspResponderResponse struct {
+	ID             string                     `json:"id"`
+	IssuerID       string                     `json:"issuer_id"`
+	Name           string                     `json:"name"`
+	Status         domain.OCSPResponderStatus `json:"status"`
+	CertificatePEM string                     `json:"certificate_pem"`
+	KeyRef         string                     `json:"key_ref"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	UpdatedAt      time.Time                  `json:"updated_at"`
 }
 
 type certificateProfileResponse struct {
@@ -734,6 +782,27 @@ func toIssuerResponse(issuer domain.Issuer) issuerResponse {
 		CreatedAt:      issuer.CreatedAt,
 		UpdatedAt:      issuer.UpdatedAt,
 	}
+}
+
+func toOCSPResponderResponse(responder domain.OCSPResponder) ocspResponderResponse {
+	return ocspResponderResponse{
+		ID:             responder.ID,
+		IssuerID:       responder.IssuerID,
+		Name:           responder.Name,
+		Status:         responder.Status,
+		CertificatePEM: responder.CertificatePEM,
+		KeyRef:         responder.KeyRef,
+		CreatedAt:      responder.CreatedAt,
+		UpdatedAt:      responder.UpdatedAt,
+	}
+}
+
+func toOCSPResponderResponses(responders []domain.OCSPResponder) []ocspResponderResponse {
+	responses := make([]ocspResponderResponse, 0, len(responders))
+	for _, responder := range responders {
+		responses = append(responses, toOCSPResponderResponse(responder))
+	}
+	return responses
 }
 
 func toCertificateProfileResponse(profile domain.CertificateProfile) certificateProfileResponse {

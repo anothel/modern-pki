@@ -760,6 +760,252 @@ func TestRespondOCSPMapsCertificateStatesAndAudits(t *testing.T) {
 	}
 }
 
+func TestCreateOCSPResponderValidatesStoresAndAudits(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspResponderValidationResult: corecli.ValidateOCSPResponderResult{Valid: true},
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	responder, err := service.CreateOCSPResponder(ctx, "admin", CreateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-a-ocsp",
+		CertificatePEM: "responder-pem",
+		KeyRef:         "responder-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+	if responder.Status != domain.OCSPResponderActive {
+		t.Fatalf("responder status = %q, want %q", responder.Status, domain.OCSPResponderActive)
+	}
+	if len(coreClient.ocspResponderValidationRequests) != 1 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 1", len(coreClient.ocspResponderValidationRequests))
+	}
+	validationReq := coreClient.ocspResponderValidationRequests[0]
+	if validationReq.issuerCertificatePEM != issuer.CertificatePEM {
+		t.Fatalf("validation issuer PEM = %q, want %q", validationReq.issuerCertificatePEM, issuer.CertificatePEM)
+	}
+	if validationReq.responderCertificatePEM != responder.CertificatePEM {
+		t.Fatalf("validation responder PEM = %q, want %q", validationReq.responderCertificatePEM, responder.CertificatePEM)
+	}
+
+	stored, err := repo.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetActiveOCSPResponderByIssuer returned error: %v", err)
+	}
+	if stored.ID != responder.ID {
+		t.Fatalf("stored responder ID = %q, want %q", stored.ID, responder.ID)
+	}
+
+	list, err := service.ListOCSPRespondersByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("ListOCSPRespondersByIssuer returned error: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != responder.ID {
+		t.Fatalf("ListOCSPRespondersByIssuer = %#v, want responder %q", list, responder.ID)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Action != "ocsp_responder.created" {
+		t.Fatalf("last audit action = %q, want ocsp_responder.created", last.Action)
+	}
+	metadata := auditMetadata(t, last)
+	if metadata["issuer_id"] != issuer.ID ||
+		metadata["ocsp_responder_id"] != responder.ID ||
+		metadata["result_code"] != "ok" {
+		t.Fatalf("OCSP responder audit metadata = %#v", metadata)
+	}
+}
+
+func TestOCSPResponderLifecycleRejectsBlankFields(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	_, err := service.CreateOCSPResponder(ctx, "admin", CreateOCSPResponderRequest{})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateOCSPResponder error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = service.ListOCSPRespondersByIssuer(ctx, " ")
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("ListOCSPRespondersByIssuer error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestCreateOCSPResponderRejectsInvalidValidationResult(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspResponderValidationResult: corecli.ValidateOCSPResponderResult{Valid: false},
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	_, err = service.CreateOCSPResponder(ctx, "admin", CreateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-a-ocsp",
+		CertificatePEM: "responder-pem",
+		KeyRef:         "responder-key",
+	})
+	if !errors.Is(err, domain.ErrOCSPResponseFailed) {
+		t.Fatalf("CreateOCSPResponder error = %v, want ErrOCSPResponseFailed", err)
+	}
+
+	if responders, err := service.ListOCSPRespondersByIssuer(ctx, issuer.ID); err != nil {
+		t.Fatalf("ListOCSPRespondersByIssuer returned error: %v", err)
+	} else if len(responders) != 0 {
+		t.Fatalf("stored responders = %#v, want none", responders)
+	}
+}
+
+func TestRespondOCSPUsesDelegatedResponderWhenActiveResponderExists(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		issuerOCSPInfo: corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+		ocspInfo: corecli.OCSPRequestInfo{
+			Certificates: []corecli.OCSPCertificateID{
+				{SerialNumber: "4040", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+			},
+		},
+		ocspResponseDER: []byte("ocsp-response-der"),
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateOCSPResponder(ctx, domain.OCSPResponder{
+		ID:             "responder-1",
+		IssuerID:       issuer.ID,
+		Name:           "issuer-a-ocsp",
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: "responder-pem",
+		KeyRef:         "responder-key",
+		CreatedAt:      clock.now,
+		UpdatedAt:      clock.now,
+	}); err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+
+	if _, err := service.RespondOCSP(ctx, "ocsp-client", []byte("ocsp-request-der")); err != nil {
+		t.Fatalf("RespondOCSP returned error: %v", err)
+	}
+	if len(coreClient.ocspResponses) != 1 {
+		t.Fatalf("OCSP response request count = %d, want 1", len(coreClient.ocspResponses))
+	}
+	req := coreClient.ocspResponses[0]
+	if req.IssuerCertificatePEM != "responder-pem" {
+		t.Fatalf("OCSP signer certificate = %q, want responder-pem", req.IssuerCertificatePEM)
+	}
+	if req.IssuerKeyRef != "responder-key" {
+		t.Fatalf("OCSP signer key = %q, want responder-key", req.IssuerKeyRef)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	metadata := auditMetadata(t, events[len(events)-1])
+	if metadata["responder_mode"] != "delegated" {
+		t.Fatalf("responder_mode = %v, want delegated", metadata["responder_mode"])
+	}
+	if metadata["responder_id"] != "responder-1" {
+		t.Fatalf("responder_id = %v, want responder-1", metadata["responder_id"])
+	}
+}
+
+func TestRespondOCSPFallsBackToIssuerDirectWhenNoActiveResponderExists(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		issuerOCSPInfo: corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+		ocspInfo: corecli.OCSPRequestInfo{
+			Certificates: []corecli.OCSPCertificateID{
+				{SerialNumber: "4040", IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash"},
+			},
+		},
+		ocspResponseDER: []byte("ocsp-response-der"),
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	if _, err := service.RespondOCSP(ctx, "ocsp-client", []byte("ocsp-request-der")); err != nil {
+		t.Fatalf("RespondOCSP returned error: %v", err)
+	}
+	if len(coreClient.ocspResponses) != 1 {
+		t.Fatalf("OCSP response request count = %d, want 1", len(coreClient.ocspResponses))
+	}
+	req := coreClient.ocspResponses[0]
+	if req.IssuerCertificatePEM != issuer.CertificatePEM {
+		t.Fatalf("OCSP signer certificate = %q, want %q", req.IssuerCertificatePEM, issuer.CertificatePEM)
+	}
+	if req.IssuerKeyRef != issuer.KeyRef {
+		t.Fatalf("OCSP signer key = %q, want %q", req.IssuerKeyRef, issuer.KeyRef)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	metadata := auditMetadata(t, events[len(events)-1])
+	if metadata["responder_mode"] != "issuer_direct" {
+		t.Fatalf("responder_mode = %v, want issuer_direct", metadata["responder_mode"])
+	}
+	if _, ok := metadata["responder_id"]; ok {
+		t.Fatalf("responder_id present for issuer_direct fallback: %#v", metadata)
+	}
+}
+
 func TestRespondOCSPTreatsIssuerHashMismatchAsUnknown(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -1813,16 +2059,18 @@ func createPendingEnrollment(t *testing.T, ctx context.Context, service *Service
 }
 
 type fakeIssuer struct {
-	requests        []corecli.IssueRequest
-	crlRequests     []corecli.GenerateCRLRequest
-	ocspResponses   []corecli.GenerateOCSPResponseRequest
-	csrInfo         corecli.CSRInfo
-	crlResult       corecli.GenerateCRLResult
-	issuerOCSPInfo  corecli.OCSPIssuerInfo
-	issuerOCSPInfos map[string]corecli.OCSPIssuerInfo
-	ocspInfo        corecli.OCSPRequestInfo
-	ocspResponseDER []byte
-	err             error
+	requests                        []corecli.IssueRequest
+	crlRequests                     []corecli.GenerateCRLRequest
+	ocspResponses                   []corecli.GenerateOCSPResponseRequest
+	ocspResponderValidationRequests []ocspResponderValidationRequest
+	csrInfo                         corecli.CSRInfo
+	crlResult                       corecli.GenerateCRLResult
+	issuerOCSPInfo                  corecli.OCSPIssuerInfo
+	issuerOCSPInfos                 map[string]corecli.OCSPIssuerInfo
+	ocspInfo                        corecli.OCSPRequestInfo
+	ocspResponseDER                 []byte
+	ocspResponderValidationResult   corecli.ValidateOCSPResponderResult
+	err                             error
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -1879,6 +2127,17 @@ func (f *fakeIssuer) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM
 	return info, nil
 }
 
+func (f *fakeIssuer) ValidateOCSPResponder(ctx context.Context, issuerCertificatePEM string, responderCertificatePEM string) (corecli.ValidateOCSPResponderResult, error) {
+	f.ocspResponderValidationRequests = append(f.ocspResponderValidationRequests, ocspResponderValidationRequest{
+		issuerCertificatePEM:    issuerCertificatePEM,
+		responderCertificatePEM: responderCertificatePEM,
+	})
+	if f.err != nil {
+		return corecli.ValidateOCSPResponderResult{}, f.err
+	}
+	return f.ocspResponderValidationResult, nil
+}
+
 func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
 	if f.err != nil {
 		return corecli.OCSPRequestInfo{}, f.err
@@ -1892,6 +2151,11 @@ func (f *fakeIssuer) GenerateOCSPResponse(ctx context.Context, req corecli.Gener
 		return corecli.GenerateOCSPResponseResult{}, f.err
 	}
 	return corecli.GenerateOCSPResponseResult{ResponseDER: f.ocspResponseDER}, nil
+}
+
+type ocspResponderValidationRequest struct {
+	issuerCertificatePEM    string
+	responderCertificatePEM string
 }
 
 type fixedClock struct {

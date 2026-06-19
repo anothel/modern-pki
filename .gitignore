@@ -27,3 +27,4 @@ docs/
 
 .gocache/*
 .gomodcache/*
+.tmp/*

@@ -20,6 +20,7 @@ type CertificateIssuer interface {
 	InspectCSR(context.Context, string) (corecli.CSRInfo, error)
 	GenerateCRL(context.Context, corecli.GenerateCRLRequest) (corecli.GenerateCRLResult, error)
 	InspectOCSPIssuer(context.Context, string, string) (corecli.OCSPIssuerInfo, error)
+	ValidateOCSPResponder(context.Context, string, string) (corecli.ValidateOCSPResponderResult, error)
 	InspectOCSP(context.Context, []byte) (corecli.OCSPRequestInfo, error)
 	GenerateOCSPResponse(context.Context, corecli.GenerateOCSPResponseRequest) (corecli.GenerateOCSPResponseResult, error)
 }
@@ -79,6 +80,13 @@ type CreateIssuerRequest struct {
 	KeyRef         string
 }
 
+type CreateOCSPResponderRequest struct {
+	IssuerID       string
+	Name           string
+	CertificatePEM string
+	KeyRef         string
+}
+
 type CreateCertificateProfileRequest struct {
 	Name                   string
 	Description            string
@@ -122,6 +130,13 @@ type PublishCRLRequest struct {
 
 type OCSPResponse struct {
 	ResponseDER []byte
+}
+
+type ocspSigner struct {
+	CertificatePEM string
+	KeyRef         string
+	ResponderMode  string
+	ResponderID    string
 }
 
 func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator) *Service {
@@ -194,6 +209,60 @@ func (s *Service) CreateIssuer(ctx context.Context, actor string, req CreateIssu
 		return domain.Issuer{}, err
 	}
 	return issuer, nil
+}
+
+func (s *Service) CreateOCSPResponder(ctx context.Context, actor string, req CreateOCSPResponderRequest) (domain.OCSPResponder, error) {
+	if isBlank(req.IssuerID) || isBlank(req.Name) || isBlank(req.CertificatePEM) || isBlank(req.KeyRef) {
+		return domain.OCSPResponder{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	issuer, err := s.repo.GetIssuer(ctx, req.IssuerID)
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	validation, err := s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	if err != nil {
+		return domain.OCSPResponder{}, mapOCSPResponseError(err)
+	}
+	if !validation.Valid {
+		return domain.OCSPResponder{}, mapOCSPResponseError(errors.New("ocsp responder validation failed"))
+	}
+
+	responder := domain.OCSPResponder{
+		ID:             s.idgen.NewID(),
+		IssuerID:       req.IssuerID,
+		Name:           req.Name,
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: req.CertificatePEM,
+		KeyRef:         req.KeyRef,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.CreateOCSPResponder(ctx, responder); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "ocsp_responder.created", "ocsp_responder", responder.ID, now, auditFields(
+			"issuer_id", responder.IssuerID,
+			"ocsp_responder_id", responder.ID,
+		))
+	}); err != nil {
+		return domain.OCSPResponder{}, err
+	}
+
+	return responder, nil
+}
+
+func (s *Service) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
+	if isBlank(issuerID) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if _, err := s.repo.GetIssuer(ctx, issuerID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListOCSPRespondersByIssuer(ctx, issuerID)
 }
 
 func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, req CreateCertificateProfileRequest) (domain.CertificateProfile, error) {
@@ -812,11 +881,15 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 	if err != nil {
 		return OCSPResponse{}, err
 	}
+	signer, err := s.ocspSignerForIssuer(ctx, issuer)
+	if err != nil {
+		return OCSPResponse{}, err
+	}
 
 	result, err := s.issuer.GenerateOCSPResponse(ctx, corecli.GenerateOCSPResponseRequest{
 		RequestDER:           append([]byte(nil), requestDER...),
-		IssuerCertificatePEM: issuer.CertificatePEM,
-		IssuerKeyRef:         issuer.KeyRef,
+		IssuerCertificatePEM: signer.CertificatePEM,
+		IssuerKeyRef:         signer.KeyRef,
 		ThisUpdate:           now,
 		NextUpdate:           now.Add(time.Hour),
 		Certificates:         statuses,
@@ -826,7 +899,7 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 	}
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
-		return s.createAuditEvent(ctx, repo, actor, "ocsp.requested", "ocsp", s.idgen.NewID(), now, map[string]any{
+		fields := map[string]any{
 			"request_type":             "ocsp",
 			"issuer_id":                issuerID,
 			"requested_cert_count":     len(info.Certificates),
@@ -835,12 +908,37 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 			"first_serial_number":      firstOCSPSerial(info.Certificates),
 			"first_certificate_status": firstOCSPStatus(statuses),
 			"certificates":             ocspAuditCertificates(info.Certificates, statuses),
-		})
+			"responder_mode":           signer.ResponderMode,
+		}
+		if signer.ResponderID != "" {
+			fields["responder_id"] = signer.ResponderID
+		}
+		return s.createAuditEvent(ctx, repo, actor, "ocsp.requested", "ocsp", s.idgen.NewID(), now, fields)
 	}); err != nil {
 		return OCSPResponse{}, err
 	}
 
 	return OCSPResponse{ResponseDER: result.ResponseDER}, nil
+}
+
+func (s *Service) ocspSignerForIssuer(ctx context.Context, issuer domain.Issuer) (ocspSigner, error) {
+	responder, err := s.repo.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err == nil {
+		return ocspSigner{
+			CertificatePEM: responder.CertificatePEM,
+			KeyRef:         responder.KeyRef,
+			ResponderMode:  "delegated",
+			ResponderID:    responder.ID,
+		}, nil
+	}
+	if errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		return ocspSigner{
+			CertificatePEM: issuer.CertificatePEM,
+			KeyRef:         issuer.KeyRef,
+			ResponderMode:  "issuer_direct",
+		}, nil
+	}
+	return ocspSigner{}, err
 }
 
 func (s *Service) ListIdentities(ctx context.Context) ([]domain.Identity, error) {

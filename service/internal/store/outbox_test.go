@@ -28,6 +28,78 @@ func TestSQLStoreOutboxAndJobAttempts(t *testing.T) {
 	testOutboxAndJobAttempts(t, NewSQLStore(db))
 }
 
+func TestSQLStoreOCSPResponders(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	repo := NewSQLStore(db)
+	issuer := domain.Issuer{
+		ID:             "issuer-1",
+		Name:           "Issuer",
+		Kind:           domain.IssuerIntermediateCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-pem",
+		KeyRef:         "issuer-key",
+		CreatedAt:      time.Unix(10, 0),
+		UpdatedAt:      time.Unix(10, 0),
+	}
+	if err := repo.CreateIssuer(ctx, issuer); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	first := domain.OCSPResponder{
+		ID:             "responder-1",
+		IssuerID:       issuer.ID,
+		Name:           "old",
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: "old-pem",
+		KeyRef:         "old-key",
+		CreatedAt:      time.Unix(20, 0),
+		UpdatedAt:      time.Unix(20, 0),
+	}
+	second := domain.OCSPResponder{
+		ID:             "responder-2",
+		IssuerID:       issuer.ID,
+		Name:           "new",
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: "new-pem",
+		KeyRef:         "new-key",
+		CreatedAt:      time.Unix(30, 0),
+		UpdatedAt:      time.Unix(30, 0),
+	}
+	if err := repo.CreateOCSPResponder(ctx, first); err != nil {
+		t.Fatalf("CreateOCSPResponder first returned error: %v", err)
+	}
+	if err := repo.CreateOCSPResponder(ctx, second); err != nil {
+		t.Fatalf("CreateOCSPResponder second returned error: %v", err)
+	}
+
+	active, err := repo.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetActiveOCSPResponderByIssuer returned error: %v", err)
+	}
+	if active.ID != second.ID {
+		t.Fatalf("active responder ID = %q, want %q", active.ID, second.ID)
+	}
+
+	list, err := repo.ListOCSPRespondersByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("ListOCSPRespondersByIssuer returned error: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("responder count = %d, want 2", len(list))
+	}
+	if list[0].ID != first.ID || list[1].ID != second.ID {
+		t.Fatalf("responders = %#v, want creation order [%q, %q]", list, first.ID, second.ID)
+	}
+}
+
 func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()

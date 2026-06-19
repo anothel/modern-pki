@@ -19,6 +19,20 @@ CREATE TABLE IF NOT EXISTS issuers (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ocsp_responders (
+    id TEXT PRIMARY KEY,
+    issuer_id TEXT NOT NULL REFERENCES issuers(id),
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    certificate_pem TEXT NOT NULL,
+    key_ref TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocsp_responders_issuer_active
+    ON ocsp_responders(issuer_id, status, created_at, id);
+
 CREATE TABLE IF NOT EXISTS certificate_profiles (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

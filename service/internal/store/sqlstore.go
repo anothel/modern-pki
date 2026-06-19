@@ -74,6 +74,18 @@ func (s *SQLStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 	return s.repository().ListIssuers(ctx)
 }
 
+func (s *SQLStore) CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error {
+	return s.repository().CreateOCSPResponder(ctx, responder)
+}
+
+func (s *SQLStore) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
+	return s.repository().ListOCSPRespondersByIssuer(ctx, issuerID)
+}
+
+func (s *SQLStore) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
+	return s.repository().GetActiveOCSPResponderByIssuer(ctx, issuerID)
+}
+
 func (s *SQLStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
 	return s.repository().CreateCertificateProfile(ctx, profile)
 }
@@ -297,6 +309,66 @@ ORDER BY created_at, id`)
 		return nil, err
 	}
 	return issuers, nil
+}
+
+func (r sqlRepository) CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO ocsp_responders (
+	id, issuer_id, name, status, certificate_pem, key_ref, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7, $8
+)`,
+		responder.ID,
+		responder.IssuerID,
+		responder.Name,
+		string(responder.Status),
+		responder.CertificatePEM,
+		responder.KeyRef,
+		formatSQLTime(responder.CreatedAt),
+		formatSQLTime(responder.UpdatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, issuer_id, name, status, certificate_pem, key_ref, created_at, updated_at
+FROM ocsp_responders
+WHERE issuer_id = $1
+ORDER BY created_at, id`, issuerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	responders := make([]domain.OCSPResponder, 0)
+	for rows.Next() {
+		responder, err := scanOCSPResponder(rows)
+		if err != nil {
+			return nil, err
+		}
+		responders = append(responders, responder)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return responders, nil
+}
+
+func (r sqlRepository) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
+	responder, err := scanOCSPResponder(r.exec.QueryRowContext(ctx, `
+SELECT id, issuer_id, name, status, certificate_pem, key_ref, created_at, updated_at
+FROM ocsp_responders
+WHERE issuer_id = $1 AND status = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, issuerID, string(domain.OCSPResponderActive)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
+	}
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	return responder, nil
 }
 
 func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -1088,6 +1160,40 @@ func scanIssuer(scanner sqlScanner) (domain.Issuer, error) {
 	issuer.CreatedAt = parsedCreatedAt
 	issuer.UpdatedAt = parsedUpdatedAt
 	return issuer, nil
+}
+
+func scanOCSPResponder(scanner sqlScanner) (domain.OCSPResponder, error) {
+	var responder domain.OCSPResponder
+	var status string
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&responder.ID,
+		&responder.IssuerID,
+		&responder.Name,
+		&status,
+		&responder.CertificatePEM,
+		&responder.KeyRef,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.OCSPResponder{}, err
+	}
+
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+
+	responder.Status = domain.OCSPResponderStatus(status)
+	responder.CreatedAt = parsedCreatedAt
+	responder.UpdatedAt = parsedUpdatedAt
+	return responder, nil
 }
 
 func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, error) {

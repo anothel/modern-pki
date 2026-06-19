@@ -49,6 +49,11 @@ struct GenerateOCSPResponseRequest
 	std::vector<OCSPCertificateStatus> certificates;
 };
 
+struct ValidateOCSPResponderResult
+{
+	bool valid = false;
+};
+
 struct GenerateOCSPResponseResult
 {
 	std::string response_der;
@@ -56,6 +61,7 @@ struct GenerateOCSPResponseResult
 
 [[nodiscard]] OCSPRequestInfo inspect_ocsp_request_der(const std::string &request_der);
 [[nodiscard]] OCSPIssuerInfo inspect_ocsp_issuer_pem(const std::string &issuer_certificate_pem, const std::string &hash_algorithm);
+[[nodiscard]] ValidateOCSPResponderResult validate_ocsp_responder(const std::string &issuer_certificate_pem, const std::string &responder_certificate_pem);
 [[nodiscard]] GenerateOCSPResponseResult generate_ocsp_response(const GenerateOCSPResponseRequest &request);
 
 } // namespace modern_pki::core

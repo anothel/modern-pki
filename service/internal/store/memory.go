@@ -12,30 +12,32 @@ import (
 type MemoryStore struct {
 	mu sync.RWMutex
 
-	identities   map[string]domain.Identity
-	issuers      map[string]domain.Issuer
-	profiles     map[string]domain.CertificateProfile
-	enrollments  map[string]domain.Enrollment
-	certificates map[string]domain.Certificate
-	revocations  map[string]domain.Revocation
-	crls         map[string]domain.CRLPublication
-	auditEvents  []domain.AuditEvent
-	outbox       map[string]domain.OutboxMessage
-	jobAttempts  map[string]domain.JobAttempt
+	identities     map[string]domain.Identity
+	issuers        map[string]domain.Issuer
+	ocspResponders map[string]domain.OCSPResponder
+	profiles       map[string]domain.CertificateProfile
+	enrollments    map[string]domain.Enrollment
+	certificates   map[string]domain.Certificate
+	revocations    map[string]domain.Revocation
+	crls           map[string]domain.CRLPublication
+	auditEvents    []domain.AuditEvent
+	outbox         map[string]domain.OutboxMessage
+	jobAttempts    map[string]domain.JobAttempt
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		identities:   make(map[string]domain.Identity),
-		issuers:      make(map[string]domain.Issuer),
-		profiles:     make(map[string]domain.CertificateProfile),
-		enrollments:  make(map[string]domain.Enrollment),
-		certificates: make(map[string]domain.Certificate),
-		revocations:  make(map[string]domain.Revocation),
-		crls:         make(map[string]domain.CRLPublication),
-		auditEvents:  make([]domain.AuditEvent, 0),
-		outbox:       make(map[string]domain.OutboxMessage),
-		jobAttempts:  make(map[string]domain.JobAttempt),
+		identities:     make(map[string]domain.Identity),
+		issuers:        make(map[string]domain.Issuer),
+		ocspResponders: make(map[string]domain.OCSPResponder),
+		profiles:       make(map[string]domain.CertificateProfile),
+		enrollments:    make(map[string]domain.Enrollment),
+		certificates:   make(map[string]domain.Certificate),
+		revocations:    make(map[string]domain.Revocation),
+		crls:           make(map[string]domain.CRLPublication),
+		auditEvents:    make([]domain.AuditEvent, 0),
+		outbox:         make(map[string]domain.OutboxMessage),
+		jobAttempts:    make(map[string]domain.JobAttempt),
 	}
 }
 
@@ -44,16 +46,17 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	defer s.mu.Unlock()
 
 	tx := &memoryTx{
-		identities:   cloneIdentities(s.identities),
-		issuers:      cloneIssuers(s.issuers),
-		profiles:     cloneCertificateProfiles(s.profiles),
-		enrollments:  cloneEnrollments(s.enrollments),
-		certificates: cloneCertificates(s.certificates),
-		revocations:  cloneRevocations(s.revocations),
-		crls:         cloneCRLPublications(s.crls),
-		auditEvents:  cloneAuditEvents(s.auditEvents),
-		outbox:       cloneOutboxMessages(s.outbox),
-		jobAttempts:  cloneJobAttempts(s.jobAttempts),
+		identities:     cloneIdentities(s.identities),
+		issuers:        cloneIssuers(s.issuers),
+		ocspResponders: cloneOCSPResponders(s.ocspResponders),
+		profiles:       cloneCertificateProfiles(s.profiles),
+		enrollments:    cloneEnrollments(s.enrollments),
+		certificates:   cloneCertificates(s.certificates),
+		revocations:    cloneRevocations(s.revocations),
+		crls:           cloneCRLPublications(s.crls),
+		auditEvents:    cloneAuditEvents(s.auditEvents),
+		outbox:         cloneOutboxMessages(s.outbox),
+		jobAttempts:    cloneJobAttempts(s.jobAttempts),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -61,6 +64,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 
 	s.identities = tx.identities
 	s.issuers = tx.issuers
+	s.ocspResponders = tx.ocspResponders
 	s.profiles = tx.profiles
 	s.enrollments = tx.enrollments
 	s.certificates = tx.certificates
@@ -130,6 +134,28 @@ func (s *MemoryStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) 
 		issuers = append(issuers, issuer)
 	}
 	return issuers, nil
+}
+
+func (s *MemoryStore) CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ocspResponders[responder.ID] = responder
+	return nil
+}
+
+func (s *MemoryStore) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listOCSPRespondersByIssuer(s.ocspResponders, issuerID), nil
+}
+
+func (s *MemoryStore) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return activeOCSPResponderByIssuer(s.ocspResponders, issuerID)
 }
 
 func (s *MemoryStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -462,16 +488,17 @@ func listJobAttemptsByOutboxMessage(attempts map[string]domain.JobAttempt, outbo
 }
 
 type memoryTx struct {
-	identities   map[string]domain.Identity
-	issuers      map[string]domain.Issuer
-	profiles     map[string]domain.CertificateProfile
-	enrollments  map[string]domain.Enrollment
-	certificates map[string]domain.Certificate
-	revocations  map[string]domain.Revocation
-	crls         map[string]domain.CRLPublication
-	auditEvents  []domain.AuditEvent
-	outbox       map[string]domain.OutboxMessage
-	jobAttempts  map[string]domain.JobAttempt
+	identities     map[string]domain.Identity
+	issuers        map[string]domain.Issuer
+	ocspResponders map[string]domain.OCSPResponder
+	profiles       map[string]domain.CertificateProfile
+	enrollments    map[string]domain.Enrollment
+	certificates   map[string]domain.Certificate
+	revocations    map[string]domain.Revocation
+	crls           map[string]domain.CRLPublication
+	auditEvents    []domain.AuditEvent
+	outbox         map[string]domain.OutboxMessage
+	jobAttempts    map[string]domain.JobAttempt
 }
 
 func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) error {
@@ -518,6 +545,19 @@ func (tx *memoryTx) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 		issuers = append(issuers, issuer)
 	}
 	return issuers, nil
+}
+
+func (tx *memoryTx) CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error {
+	tx.ocspResponders[responder.ID] = responder
+	return nil
+}
+
+func (tx *memoryTx) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
+	return listOCSPRespondersByIssuer(tx.ocspResponders, issuerID), nil
+}
+
+func (tx *memoryTx) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
+	return activeOCSPResponderByIssuer(tx.ocspResponders, issuerID)
 }
 
 func (tx *memoryTx) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -686,6 +726,14 @@ func cloneIssuers(src map[string]domain.Issuer) map[string]domain.Issuer {
 	return dst
 }
 
+func cloneOCSPResponders(src map[string]domain.OCSPResponder) map[string]domain.OCSPResponder {
+	dst := make(map[string]domain.OCSPResponder, len(src))
+	for id, responder := range src {
+		dst[id] = responder
+	}
+	return dst
+}
+
 func cloneCertificateProfiles(src map[string]domain.CertificateProfile) map[string]domain.CertificateProfile {
 	dst := make(map[string]domain.CertificateProfile, len(src))
 	for id, profile := range src {
@@ -751,6 +799,40 @@ func listCRLPublicationsByIssuer(publications map[string]domain.CRLPublication, 
 		}
 	}
 	return result
+}
+
+func listOCSPRespondersByIssuer(responders map[string]domain.OCSPResponder, issuerID string) []domain.OCSPResponder {
+	result := make([]domain.OCSPResponder, 0)
+	for _, responder := range responders {
+		if responder.IssuerID == issuerID {
+			result = append(result, responder)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func activeOCSPResponderByIssuer(responders map[string]domain.OCSPResponder, issuerID string) (domain.OCSPResponder, error) {
+	var active domain.OCSPResponder
+	found := false
+	for _, responder := range responders {
+		if responder.IssuerID != issuerID || responder.Status != domain.OCSPResponderActive {
+			continue
+		}
+		if !found || responder.CreatedAt.After(active.CreatedAt) || (responder.CreatedAt.Equal(active.CreatedAt) && responder.ID > active.ID) {
+			active = responder
+			found = true
+		}
+	}
+	if !found {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
+	}
+	return active, nil
 }
 
 func latestCRLPublicationByIssuer(publications map[string]domain.CRLPublication, issuerID string) (domain.CRLPublication, error) {

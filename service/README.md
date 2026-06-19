@@ -30,7 +30,13 @@ Normal revocation accepts only `valid` certificates. Forced revocation accepts `
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.
 
-OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service selects the responder issuer from the OCSP CertID hash algorithm plus issuer name/key hash, maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, preserves OCSP nonce extensions in signed responses, and delegates OCSP response signing to the core CLI. The core signer accepts CA certificates directly and accepts delegated responder certificates only when they carry the OCSP Signing EKU. Requests for a known issuer but missing or mismatched serial return `unknown`; requests whose issuer hash is not known are rejected. OCSP audit metadata records whether a request nonce was present.
+OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders` and listed with `GET /issuers/{id}/ocsp-responders`.
+
+OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service selects the responder issuer from the OCSP CertID hash algorithm plus issuer name/key hash, maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, preserves OCSP nonce extensions in signed responses, and delegates OCSP response signing to the core CLI.
+
+When a matched issuer has an active responder, `POST /ocsp` signs with the newest active responder certificate and key reference. When no active responder exists, the service falls back to issuer direct signing for compatibility.
+
+Responder certificates are validated by the core CLI before storage and must be issued by the issuer, be non-CA certificates, and carry the OCSP Signing EKU.
 
 Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.
 

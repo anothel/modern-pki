@@ -115,14 +115,14 @@ X509Ptr make_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, cons
 	return certificate;
 }
 
-X509Ptr make_ocsp_responder_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, const char *common_name, unsigned long serial, bool ocsp_signing)
+X509Ptr make_ocsp_responder_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, const char *common_name, unsigned long serial, bool ocsp_signing, long not_before_offset_seconds, long not_after_offset_seconds)
 {
 	X509Ptr certificate{X509_new()};
 	require(certificate != nullptr);
 	require(X509_set_version(certificate.get(), 2) == 1);
 	set_serial(certificate.get(), serial);
-	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0);
-	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 86400);
+	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), not_before_offset_seconds);
+	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), not_after_offset_seconds);
 	set_name(X509_get_subject_name(certificate.get()), common_name);
 	require(X509_set_issuer_name(certificate.get(), X509_get_subject_name(issuer)) == 1);
 	require(X509_set_pubkey(certificate.get(), key) == 1);
@@ -134,6 +134,11 @@ X509Ptr make_ocsp_responder_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *i
 	}
 	require(X509_sign(certificate.get(), issuer_key, EVP_sha256()) > 0);
 	return certificate;
+}
+
+X509Ptr make_ocsp_responder_certificate(EVP_PKEY *key, X509 *issuer, EVP_PKEY *issuer_key, const char *common_name, unsigned long serial, bool ocsp_signing)
+{
+	return make_ocsp_responder_certificate(key, issuer, issuer_key, common_name, serial, ocsp_signing, 0, 86400);
 }
 
 std::string certificate_to_pem(X509 *certificate)
@@ -413,8 +418,106 @@ int main(int argc, char *argv[])
 	require(OCSP_response_status(responder_response.get()) == OCSP_RESPONSE_STATUS_SUCCESSFUL);
 
 	const EvpPkeyPtr invalid_responder_key = make_rsa_key();
-	const X509Ptr invalid_responder = make_ocsp_responder_certificate(
-	    invalid_responder_key.get(), issuer.get(), issuer_key.get(), "Invalid OCSP Responder", 2002, false);
+	const X509Ptr invalid_responder = make_ocsp_responder_certificate(invalid_responder_key.get(), issuer.get(), issuer_key.get(), "Invalid OCSP Responder", 2002, false);
+	const modern_pki::core::ValidateOCSPResponderResult valid_responder_result = modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(responder.get()));
+	if (!valid_responder_result.valid)
+	{
+		throw std::runtime_error{"valid delegated responder was rejected"};
+	}
+
+	bool rejected_invalid_policy = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(invalid_responder.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_invalid_policy = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_invalid_policy)
+	{
+		throw std::runtime_error{"invalid delegated responder policy accepted"};
+	}
+
+	bool rejected_ca_responder = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(issuer.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_ca_responder = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_ca_responder)
+	{
+		throw std::runtime_error{"CA certificate accepted as registered OCSP responder"};
+	}
+
+	const X509Ptr other_issuer = make_certificate(issuer_key.get(), nullptr, nullptr, "Other Issuer", 9301, true);
+	bool rejected_issuer_mismatch = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(other_issuer.get()), certificate_to_pem(responder.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_issuer_mismatch = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_issuer_mismatch)
+	{
+		throw std::runtime_error{"OCSP responder issuer mismatch accepted"};
+	}
+
+	const EvpPkeyPtr expired_responder_key = make_rsa_key();
+	const X509Ptr expired_responder = make_ocsp_responder_certificate(expired_responder_key.get(), issuer.get(), issuer_key.get(), "Expired OCSP Responder", 2003, true, -172800, -86400);
+	bool rejected_expired_responder = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(expired_responder.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_expired_responder = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_expired_responder)
+	{
+		throw std::runtime_error{"expired OCSP responder accepted"};
+	}
+
+	const EvpPkeyPtr future_responder_key = make_rsa_key();
+	const X509Ptr future_responder = make_ocsp_responder_certificate(future_responder_key.get(), issuer.get(), issuer_key.get(), "Future OCSP Responder", 2004, true, 86400, 172800);
+	bool rejected_future_responder = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(future_responder.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_future_responder = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_future_responder)
+	{
+		throw std::runtime_error{"not-yet-valid OCSP responder accepted"};
+	}
+
+	const EvpPkeyPtr wrong_issuer_key = make_rsa_key();
+	const EvpPkeyPtr wrong_signature_responder_key = make_rsa_key();
+	const X509Ptr wrong_signature_responder = make_ocsp_responder_certificate(
+	    wrong_signature_responder_key.get(), issuer.get(), wrong_issuer_key.get(), "Wrong Signature OCSP Responder", 2005, true);
+	bool rejected_wrong_signature_responder = false;
+	try
+	{
+		(void)modern_pki::core::validate_ocsp_responder(certificate_to_pem(issuer.get()), certificate_to_pem(wrong_signature_responder.get()));
+	}
+	catch (const std::runtime_error &error)
+	{
+		rejected_wrong_signature_responder = std::string_view{error.what()} == "ocsp.responder_invalid";
+	}
+	if (!rejected_wrong_signature_responder)
+	{
+		throw std::runtime_error{"OCSP responder with invalid signature accepted"};
+	}
+
 	const std::filesystem::path invalid_responder_key_path = work_dir / "core_ocsp_invalid_responder.key";
 	write_file(invalid_responder_key_path, private_key_to_pem(invalid_responder_key.get()));
 	modern_pki::core::GenerateOCSPResponseRequest invalid_responder_response_request = response_request;
@@ -452,8 +555,7 @@ int main(int argc, char *argv[])
 	nonce_status.issuer_name_hash = nonce_info.certificates[0].issuer_name_hash;
 	nonce_status.issuer_key_hash = nonce_info.certificates[0].issuer_key_hash;
 	nonce_response_request.certificates.push_back(nonce_status);
-	const modern_pki::core::GenerateOCSPResponseResult nonce_response_result =
-	    modern_pki::core::generate_ocsp_response(nonce_response_request);
+	const modern_pki::core::GenerateOCSPResponseResult nonce_response_result = modern_pki::core::generate_ocsp_response(nonce_response_request);
 	const OCSPRequestPtr nonce_request = ocsp_request_from_der(nonce_request_der);
 	const OCSPResponsePtr nonce_response = ocsp_response_from_der(nonce_response_result.response_der);
 	OCSPBasicResponsePtr nonce_basic{OCSP_response_get1_basic(nonce_response.get())};

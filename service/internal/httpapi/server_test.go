@@ -87,6 +87,69 @@ func TestCreateIssuer(t *testing.T) {
 	}
 }
 
+func TestCreateAndListOCSPResponders(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var created apiOCSPResponder
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-a-ocsp",
+		"certificate_pem": "responder-pem",
+		"key_ref":         "responder-key",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" {
+		t.Fatal("created OCSP responder ID is empty")
+	}
+	if created.IssuerID != issuer.ID {
+		t.Fatalf("created OCSP responder issuer ID = %q, want %q", created.IssuerID, issuer.ID)
+	}
+	if created.Name != "issuer-a-ocsp" {
+		t.Fatalf("created OCSP responder name = %q, want %q", created.Name, "issuer-a-ocsp")
+	}
+	if created.Status != domain.OCSPResponderActive {
+		t.Fatalf("created OCSP responder status = %q, want %q", created.Status, domain.OCSPResponderActive)
+	}
+	if created.CertificatePEM != "responder-pem" {
+		t.Fatalf("created OCSP responder certificate = %q, want %q", created.CertificatePEM, "responder-pem")
+	}
+	if created.KeyRef != "responder-key" {
+		t.Fatalf("created OCSP responder key ref = %q, want %q", created.KeyRef, "responder-key")
+	}
+	if len(api.issuer.ocspResponderValidationRequests) != 1 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 1", len(api.issuer.ocspResponderValidationRequests))
+	}
+	validationReq := api.issuer.ocspResponderValidationRequests[0]
+	if validationReq.issuerCertificatePEM != issuer.CertificatePEM {
+		t.Fatalf("ValidateOCSPResponder issuer certificate = %q, want %q", validationReq.issuerCertificatePEM, issuer.CertificatePEM)
+	}
+	if validationReq.responderCertificatePEM != "responder-pem" {
+		t.Fatalf("ValidateOCSPResponder responder certificate = %q, want %q", validationReq.responderCertificatePEM, "responder-pem")
+	}
+
+	var listed []apiOCSPResponder
+	status = api.doJSON(t, http.MethodGet, "/issuers/"+issuer.ID+"/ocsp-responders", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("OCSP responder count = %d, want 1", len(listed))
+	}
+	if listed[0].ID != created.ID {
+		t.Fatalf("listed OCSP responder ID = %q, want %q", listed[0].ID, created.ID)
+	}
+}
+
+func TestCreateOCSPResponderRejectsInvalidJSON(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", "not-an-object", &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -825,13 +888,15 @@ func assertStatus(t *testing.T, got int, want int) {
 }
 
 type fakeIssuer struct {
-	requests        []corecli.IssueRequest
-	crlRequests     []corecli.GenerateCRLRequest
-	err             error
-	crlPEM          string
-	ocspInfo        corecli.OCSPRequestInfo
-	ocspResponses   []corecli.GenerateOCSPResponseRequest
-	ocspResponseDER []byte
+	requests                        []corecli.IssueRequest
+	crlRequests                     []corecli.GenerateCRLRequest
+	err                             error
+	crlPEM                          string
+	ocspInfo                        corecli.OCSPRequestInfo
+	ocspResponses                   []corecli.GenerateOCSPResponseRequest
+	ocspResponseDER                 []byte
+	ocspResponderValidationRequests []ocspResponderValidationRequest
+	ocspResponderValidationResult   corecli.ValidateOCSPResponderResult
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -873,6 +938,20 @@ func (f *fakeIssuer) InspectOCSPIssuer(ctx context.Context, issuerCertificatePEM
 		return corecli.OCSPIssuerInfo{}, f.err
 	}
 	return corecli.OCSPIssuerInfo{IssuerNameHash: "name-hash", IssuerKeyHash: "key-hash", HashAlgorithm: hashAlgorithm}, nil
+}
+
+func (f *fakeIssuer) ValidateOCSPResponder(ctx context.Context, issuerCertificatePEM string, responderCertificatePEM string) (corecli.ValidateOCSPResponderResult, error) {
+	f.ocspResponderValidationRequests = append(f.ocspResponderValidationRequests, ocspResponderValidationRequest{
+		issuerCertificatePEM:    issuerCertificatePEM,
+		responderCertificatePEM: responderCertificatePEM,
+	})
+	if f.err != nil {
+		return corecli.ValidateOCSPResponderResult{}, f.err
+	}
+	if f.ocspResponderValidationResult == (corecli.ValidateOCSPResponderResult{}) {
+		return corecli.ValidateOCSPResponderResult{Valid: true}, nil
+	}
+	return f.ocspResponderValidationResult, nil
 }
 
 func (f *fakeIssuer) InspectOCSP(ctx context.Context, requestDER []byte) (corecli.OCSPRequestInfo, error) {
@@ -926,6 +1005,17 @@ type apiIssuer struct {
 	KeyRef         string              `json:"key_ref"`
 	CreatedAt      time.Time           `json:"created_at"`
 	UpdatedAt      time.Time           `json:"updated_at"`
+}
+
+type apiOCSPResponder struct {
+	ID             string                     `json:"id"`
+	IssuerID       string                     `json:"issuer_id"`
+	Name           string                     `json:"name"`
+	Status         domain.OCSPResponderStatus `json:"status"`
+	CertificatePEM string                     `json:"certificate_pem"`
+	KeyRef         string                     `json:"key_ref"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	UpdatedAt      time.Time                  `json:"updated_at"`
 }
 
 type apiCertificateProfile struct {
@@ -1004,6 +1094,11 @@ type apiAuditEvent struct {
 	ResourceID   string    `json:"resource_id"`
 	MetadataJSON string    `json:"metadata_json"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+type ocspResponderValidationRequest struct {
+	issuerCertificatePEM    string
+	responderCertificatePEM string
 }
 
 func apiAuditMetadata(t *testing.T, event apiAuditEvent) map[string]any {

@@ -159,6 +159,77 @@ func TestRunnerMapsOCSPIssuerInfoJSON(t *testing.T) {
 	}
 }
 
+func TestRunnerValidateOCSPResponderMapsJSONAndWritesFiles(t *testing.T) {
+	issuerCapturePath := filepath.Join(t.TempDir(), "issuer.pem")
+	responderCapturePath := filepath.Join(t.TempDir(), "responder.pem")
+	argsCapturePath := filepath.Join(t.TempDir(), "args.txt")
+	bin := writeFakeOCSPValidateResponderCommand(t, true, issuerCapturePath, responderCapturePath, argsCapturePath)
+
+	result, err := (Runner{Bin: bin}).ValidateOCSPResponder(context.Background(), "issuer-pem", "responder-pem")
+	if err != nil {
+		t.Fatalf("ValidateOCSPResponder returned error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatal("Valid = false, want true")
+	}
+
+	if got, err := os.ReadFile(issuerCapturePath); err != nil {
+		t.Fatalf("read captured issuer: %v", err)
+	} else if string(got) != "issuer-pem" {
+		t.Fatalf("issuer capture = %q, want issuer-pem", string(got))
+	}
+	if got, err := os.ReadFile(responderCapturePath); err != nil {
+		t.Fatalf("read captured responder: %v", err)
+	} else if string(got) != "responder-pem" {
+		t.Fatalf("responder capture = %q, want responder-pem", string(got))
+	}
+
+	args, err := os.ReadFile(argsCapturePath)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	tokens := strings.Split(strings.TrimSpace(string(args)), ";")
+	if len(tokens) != 9 {
+		t.Fatalf("captured args = %q, want 9 tokens", string(args))
+	}
+	for index, want := range map[int]string{
+		1: "ocsp",
+		2: "validate-responder",
+		3: "--issuer",
+		5: "--responder",
+		7: "--out",
+	} {
+		if tokens[index] != want {
+			t.Fatalf("captured args token %d = %q, want %q", index, tokens[index], want)
+		}
+	}
+	for _, index := range []int{4, 6, 8} {
+		if tokens[index] == "" {
+			t.Fatalf("captured args token %d is empty", index)
+		}
+	}
+}
+
+func TestRunnerValidateOCSPResponderMapsCommandFailure(t *testing.T) {
+	bin := writeFakeOCSPValidateResponderCommand(t, false, "", "", "")
+
+	_, err := (Runner{Bin: bin}).ValidateOCSPResponder(context.Background(), "issuer-pem", "responder-pem")
+	if err == nil {
+		t.Fatal("ValidateOCSPResponder returned nil error")
+	}
+
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("error type = %T, want *CommandError", err)
+	}
+	if commandErr.Code != "ocsp.responder_invalid" {
+		t.Fatalf("command error code = %q, want ocsp.responder_invalid", commandErr.Code)
+	}
+	if commandErr.Message != "bad responder" {
+		t.Fatalf("command error message = %q, want bad responder", commandErr.Message)
+	}
+}
+
 func TestRunnerInspectOCSPPreservesDERAndMapsJSON(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "ocsp-request.der")
 	bin := writeFakeOCSPInspectCommand(t, true, capturePath)
@@ -334,6 +405,31 @@ func writeFakeOCSPIssuerInspectCommand(t *testing.T, success bool) string {
 
 	path := filepath.Join(dir, "modern-pki-core")
 	if err := os.WriteFile(path, []byte(unixOCSPIssuerInspectScript(success)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
+func writeFakeOCSPValidateResponderCommand(
+	t *testing.T,
+	success bool,
+	issuerCapturePath,
+	responderCapturePath,
+	argsCapturePath string,
+) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsOCSPValidateResponderScript(success, issuerCapturePath, responderCapturePath, argsCapturePath)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixOCSPValidateResponderScript(success, issuerCapturePath, responderCapturePath, argsCapturePath)), 0755); err != nil {
 		t.Fatalf("write fake command: %v", err)
 	}
 	return path
@@ -570,6 +666,62 @@ func windowsOCSPResponseScript(success bool, capturePath string) string {
 	}, "\r\n")
 }
 
+func windowsOCSPValidateResponderScript(success bool, issuerCapturePath, responderCapturePath, argsCapturePath string) string {
+	if !success {
+		return strings.Join([]string{
+			"@echo off",
+			"echo {^\"code^\":^\"ocsp.responder_invalid^\",^\"message^\":^\"bad responder^\"} 1>&2",
+			"exit /b 7",
+			"",
+		}, "\r\n")
+	}
+
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"ISSUER=\"",
+		"set \"RESPONDER=\"",
+		"set \"OUT=\"",
+		"set \"ARGS=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"set \"ARGS=%ARGS%;%~1\"",
+		"if \"%~1\"==\"--issuer\" (",
+		"  set \"ARGS=%ARGS%;%~2\"",
+		"  set \"ISSUER=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--responder\" (",
+		"  set \"ARGS=%ARGS%;%~2\"",
+		"  set \"RESPONDER=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"ARGS=%ARGS%;%~2\"",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%ISSUER%\"==\"\" exit /b 2",
+		"if \"%RESPONDER%\"==\"\" exit /b 2",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"copy /Y \"%ISSUER%\" \"" + issuerCapturePath + "\" >NUL",
+		"copy /Y \"%RESPONDER%\" \"" + responderCapturePath + "\" >NUL",
+		"> \"" + argsCapturePath + "\" echo %ARGS%",
+		"> \"%OUT%\" echo {^\"valid^\":true}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
 func windowsInspectScript(success bool) string {
 	if !success {
 		return strings.Join([]string{
@@ -746,6 +898,53 @@ if [ -z "$request" ] || [ -z "$out" ]; then
 fi
 cp "$request" '` + escapedCapturePath + `'
 printf '%s' 'ocsp-response-der' > "$out"
+exit 0
+`
+}
+
+func unixOCSPValidateResponderScript(success bool, issuerCapturePath, responderCapturePath, argsCapturePath string) string {
+	if !success {
+		return `#!/bin/sh
+printf '%s\n' '{"code":"ocsp.responder_invalid","message":"bad responder"}' >&2
+exit 7
+`
+	}
+
+	escapedIssuerCapturePath := strings.ReplaceAll(issuerCapturePath, "'", "'\"'\"'")
+	escapedResponderCapturePath := strings.ReplaceAll(responderCapturePath, "'", "'\"'\"'")
+	escapedArgsCapturePath := strings.ReplaceAll(argsCapturePath, "'", "'\"'\"'")
+	return `#!/bin/sh
+issuer=""
+responder=""
+out=""
+	args=""
+while [ "$#" -gt 0 ]; do
+	args="$args;$1"
+	if [ "$1" = "--issuer" ]; then
+		args="$args;$2"
+		issuer="$2"
+		shift 2
+	elif [ "$1" = "--responder" ]; then
+		args="$args;$2"
+		responder="$2"
+		shift 2
+	elif [ "$1" = "--out" ]; then
+		args="$args;$2"
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$issuer" ] || [ -z "$responder" ] || [ -z "$out" ]; then
+	exit 2
+fi
+cp "$issuer" '` + escapedIssuerCapturePath + `'
+cp "$responder" '` + escapedResponderCapturePath + `'
+printf '%s' "$args" > '` + escapedArgsCapturePath + `'
+cat > "$out" <<'JSON'
+{"valid":true}
+JSON
 exit 0
 `
 }

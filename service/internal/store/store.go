@@ -19,6 +19,12 @@ type IssuerRepository interface {
 	ListIssuers(ctx context.Context) ([]domain.Issuer, error)
 }
 
+type OCSPResponderRepository interface {
+	CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error
+	ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error)
+	GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error)
+}
+
 type CertificateProfileRepository interface {
 	CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error
 	GetCertificateProfile(ctx context.Context, id string) (domain.CertificateProfile, error)
@@ -69,6 +75,7 @@ type OutboxRepository interface {
 type Repository interface {
 	IdentityRepository
 	IssuerRepository
+	OCSPResponderRepository
 	CertificateProfileRepository
 	EnrollmentRepository
 	CertificateRepository

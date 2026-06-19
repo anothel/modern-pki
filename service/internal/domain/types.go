@@ -26,6 +26,13 @@ const (
 	IssuerDisabled IssuerStatus = "disabled"
 )
 
+type OCSPResponderStatus string
+
+const (
+	OCSPResponderActive   OCSPResponderStatus = "active"
+	OCSPResponderDisabled OCSPResponderStatus = "disabled"
+)
+
 type EnrollmentStatus string
 
 const (
@@ -101,6 +108,17 @@ type Issuer struct {
 	Name           string
 	Kind           IssuerKind
 	Status         IssuerStatus
+	CertificatePEM string
+	KeyRef         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type OCSPResponder struct {
+	ID             string
+	IssuerID       string
+	Name           string
+	Status         OCSPResponderStatus
 	CertificatePEM string
 	KeyRef         string
 	CreatedAt      time.Time
