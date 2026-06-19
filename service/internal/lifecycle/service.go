@@ -2,6 +2,8 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,6 +159,12 @@ type OCSPResponse struct {
 	ResponseDER []byte
 }
 
+type EnsureAPIKeyRequest struct {
+	Name  string
+	Token string
+	Actor string
+}
+
 type ocspSigner struct {
 	CertificatePEM string
 	KeyRef         string
@@ -175,6 +183,69 @@ func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDG
 
 func WithAuditRequestMetadata(ctx context.Context, metadata AuditRequestMetadata) context.Context {
 	return context.WithValue(ctx, auditRequestMetadataContextKey{}, metadata)
+}
+
+func HashAPIKeyToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.APIKey, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return domain.APIKey{}, domain.ErrUnauthorized
+	}
+
+	key, err := s.repo.GetAPIKeyByTokenHash(ctx, HashAPIKeyToken(token))
+	if errors.Is(err, domain.ErrAPIKeyNotFound) {
+		return domain.APIKey{}, domain.ErrUnauthorized
+	}
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	if key.Status != domain.APIKeyActive || strings.TrimSpace(key.Actor) == "" {
+		return domain.APIKey{}, domain.ErrUnauthorized
+	}
+	return key, nil
+}
+
+func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIKeyRequest) (domain.APIKey, error) {
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.Actor) == "" {
+		return domain.APIKey{}, domain.ErrInvalidRequest
+	}
+
+	tokenHash := HashAPIKeyToken(req.Token)
+	existing, err := s.repo.GetAPIKeyByTokenHash(ctx, tokenHash)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, domain.ErrAPIKeyNotFound) {
+		return domain.APIKey{}, err
+	}
+
+	now := s.clock.Now()
+	key := domain.APIKey{
+		ID:        s.idgen.NewID(),
+		Name:      strings.TrimSpace(req.Name),
+		TokenHash: tokenHash,
+		Status:    domain.APIKeyActive,
+		Actor:     strings.TrimSpace(req.Actor),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.CreateAPIKey(ctx, key); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "api_key.created", "api_key", key.ID, now, auditFields(
+			"api_key_id", key.ID,
+			"api_key_name", key.Name,
+			"api_key_actor", key.Actor,
+		))
+	}); err != nil {
+		return domain.APIKey{}, err
+	}
+	return key, nil
 }
 
 func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateIdentityRequest) (domain.Identity, error) {
@@ -1435,6 +1506,8 @@ func auditErrorCode(err error) string {
 		return "invalid_request"
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
 		return "unsupported_media_type"
+	case errors.Is(err, domain.ErrUnauthorized):
+		return "unauthorized"
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return "invalid_lifecycle_transition"
 	case errors.Is(err, domain.ErrIdentityNotFound):

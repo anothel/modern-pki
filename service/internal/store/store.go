@@ -84,6 +84,11 @@ type OutboxRepository interface {
 	ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error)
 }
 
+type APIKeyRepository interface {
+	CreateAPIKey(ctx context.Context, key domain.APIKey) error
+	GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error)
+}
+
 type Repository interface {
 	IdentityRepository
 	IssuerRepository
@@ -96,5 +101,6 @@ type Repository interface {
 	CRLPublicationRepository
 	AuditRepository
 	OutboxRepository
+	APIKeyRepository
 	WithinTx(ctx context.Context, fn func(Repository) error) error
 }

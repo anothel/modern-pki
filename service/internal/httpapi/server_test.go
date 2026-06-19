@@ -1003,6 +1003,68 @@ func TestFailedRequestsCreateAuditEvents(t *testing.T) {
 	}
 }
 
+func TestAPIKeyAuthRejectsMissingBearerToken(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodGet, "/identities", "", nil, &body)
+	assertStatus(t, status, http.StatusUnauthorized)
+	if body.Error != domain.ErrUnauthorized.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
+	}
+}
+
+func TestAPIKeyAuthRejectsInvalidBearerToken(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createTestAPIKey(t, api.repo, "key-1", "admin-token", "api-admin", domain.APIKeyActive)
+
+	var body errorResponse
+	status := api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer wrong-token",
+	}, &body)
+	assertStatus(t, status, http.StatusUnauthorized)
+	if body.Error != domain.ErrUnauthorized.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
+	}
+}
+
+func TestAPIKeyAuthUsesAPIKeyActorForMutations(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createTestAPIKey(t, api.repo, "key-1", "admin-token", "api-admin", domain.APIKeyActive)
+
+	var created apiIdentity
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "ignored-header-actor", map[string]any{
+		"type":        string(domain.IdentityMachine),
+		"name":        "edge-01",
+		"external_id": "asset-123",
+	}, map[string]string{
+		"Authorization": "Bearer admin-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+
+	events, err := api.repo.ListAuditEvents(api.ctx)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	if events[0].Actor != "api-admin" {
+		t.Fatalf("audit actor = %q, want api-admin", events[0].Actor)
+	}
+}
+
+func TestAPIKeyAuthAllowsPublicCRLReads(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodGet, "/crls/missing-crl", "", nil, &body)
+	assertStatus(t, status, http.StatusNotFound)
+	if body.Error != domain.ErrCRLPublicationNotFound.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrCRLPublicationNotFound.Error())
+	}
+}
+
 type testAPI struct {
 	ctx     context.Context
 	client  *http.Client
@@ -1014,6 +1076,11 @@ type testAPI struct {
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
+	return newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeDev})
+}
+
+func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
+	t.Helper()
 
 	issuer := &fakeIssuer{}
 	repo := store.NewMemoryStore()
@@ -1023,7 +1090,7 @@ func newTestAPI(t *testing.T) *testAPI {
 		fixedClock{now: testNow},
 		&fakeIDGenerator{},
 	)
-	server := httptest.NewServer(New(service))
+	server := httptest.NewServer(NewWithAuth(service, auth))
 	t.Cleanup(server.Close)
 
 	return &testAPI{
@@ -1033,6 +1100,21 @@ func newTestAPI(t *testing.T) *testAPI {
 		repo:    repo,
 		service: service,
 		issuer:  issuer,
+	}
+}
+
+func createTestAPIKey(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus) {
+	t.Helper()
+	if err := repo.CreateAPIKey(context.Background(), domain.APIKey{
+		ID:        id,
+		Name:      id,
+		TokenHash: lifecycle.HashAPIKeyToken(token),
+		Status:    status,
+		Actor:     actor,
+		CreatedAt: testNow,
+		UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatalf("create api key: %v", err)
 	}
 }
 

@@ -24,6 +24,7 @@ type MemoryStore struct {
 	auditEvents    []domain.AuditEvent
 	outbox         map[string]domain.OutboxMessage
 	jobAttempts    map[string]domain.JobAttempt
+	apiKeys        map[string]domain.APIKey
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -40,6 +41,7 @@ func NewMemoryStore() *MemoryStore {
 		auditEvents:    make([]domain.AuditEvent, 0),
 		outbox:         make(map[string]domain.OutboxMessage),
 		jobAttempts:    make(map[string]domain.JobAttempt),
+		apiKeys:        make(map[string]domain.APIKey),
 	}
 }
 
@@ -60,6 +62,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		auditEvents:    cloneAuditEvents(s.auditEvents),
 		outbox:         cloneOutboxMessages(s.outbox),
 		jobAttempts:    cloneJobAttempts(s.jobAttempts),
+		apiKeys:        cloneAPIKeys(s.apiKeys),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -77,6 +80,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.auditEvents = tx.auditEvents
 	s.outbox = tx.outbox
 	s.jobAttempts = tx.jobAttempts
+	s.apiKeys = tx.apiKeys
 	return nil
 }
 
@@ -471,6 +475,21 @@ func (s *MemoryStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outbox
 	return listJobAttemptsByOutboxMessage(s.jobAttempts, outboxMessageID), nil
 }
 
+func (s *MemoryStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.apiKeys[key.ID] = key
+	return nil
+}
+
+func (s *MemoryStore) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return apiKeyByTokenHash(s.apiKeys, tokenHash)
+}
+
 func copyEnrollment(enrollment domain.Enrollment) domain.Enrollment {
 	enrollment.RequestedDNSNames = append([]string(nil), enrollment.RequestedDNSNames...)
 	enrollment.RequestedIPAddresses = append([]string(nil), enrollment.RequestedIPAddresses...)
@@ -650,6 +669,7 @@ type memoryTx struct {
 	auditEvents    []domain.AuditEvent
 	outbox         map[string]domain.OutboxMessage
 	jobAttempts    map[string]domain.JobAttempt
+	apiKeys        map[string]domain.APIKey
 }
 
 func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) error {
@@ -915,6 +935,15 @@ func (tx *memoryTx) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMe
 	return listJobAttemptsByOutboxMessage(tx.jobAttempts, outboxMessageID), nil
 }
 
+func (tx *memoryTx) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
+	tx.apiKeys[key.ID] = key
+	return nil
+}
+
+func (tx *memoryTx) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
+	return apiKeyByTokenHash(tx.apiKeys, tokenHash)
+}
+
 func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity {
 	dst := make(map[string]domain.Identity, len(src))
 	for id, identity := range src {
@@ -1118,4 +1147,21 @@ func cloneJobAttempts(src map[string]domain.JobAttempt) map[string]domain.JobAtt
 		dst[id] = attempt
 	}
 	return dst
+}
+
+func cloneAPIKeys(src map[string]domain.APIKey) map[string]domain.APIKey {
+	dst := make(map[string]domain.APIKey, len(src))
+	for id, key := range src {
+		dst[id] = key
+	}
+	return dst
+}
+
+func apiKeyByTokenHash(keys map[string]domain.APIKey, tokenHash string) (domain.APIKey, error) {
+	for _, key := range keys {
+		if key.TokenHash == tokenHash {
+			return key, nil
+		}
+	}
+	return domain.APIKey{}, domain.ErrAPIKeyNotFound
 }

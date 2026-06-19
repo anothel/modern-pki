@@ -88,6 +88,13 @@ const (
 	JobAttemptFailed    JobAttemptStatus = "failed"
 )
 
+type APIKeyStatus string
+
+const (
+	APIKeyActive   APIKeyStatus = "active"
+	APIKeyDisabled APIKeyStatus = "disabled"
+)
+
 type RevocationReason string
 
 const (
@@ -278,4 +285,14 @@ type JobAttempt struct {
 	StartedAt       time.Time
 	FinishedAt      time.Time
 	CreatedAt       time.Time
+}
+
+type APIKey struct {
+	ID        string
+	Name      string
+	TokenHash string
+	Status    APIKeyStatus
+	Actor     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

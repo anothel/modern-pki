@@ -227,6 +227,14 @@ func (s *SQLStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMes
 	return s.repository().ListJobAttemptsByOutboxMessage(ctx, outboxMessageID)
 }
 
+func (s *SQLStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
+	return s.repository().CreateAPIKey(ctx, key)
+}
+
+func (s *SQLStore) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
+	return s.repository().GetAPIKeyByTokenHash(ctx, tokenHash)
+}
+
 func (s *SQLStore) repository() sqlRepository {
 	return sqlRepository{exec: s.db}
 }
@@ -1389,6 +1397,38 @@ ORDER BY created_at, id`, outboxMessageID)
 	return attempts, nil
 }
 
+func (r sqlRepository) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO api_keys (
+	id, name, token_hash, status, actor, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7
+)`,
+		key.ID,
+		key.Name,
+		key.TokenHash,
+		string(key.Status),
+		key.Actor,
+		formatSQLTime(key.CreatedAt),
+		formatSQLTime(key.UpdatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
+	key, err := scanAPIKey(r.exec.QueryRowContext(ctx, `
+SELECT id, name, token_hash, status, actor, created_at, updated_at
+FROM api_keys
+WHERE token_hash = $1`, tokenHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.APIKey{}, domain.ErrAPIKeyNotFound
+	}
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	return key, nil
+}
+
 func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 	var identity domain.Identity
 	var identityType string
@@ -1422,6 +1462,39 @@ func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 	identity.CreatedAt = parsedCreatedAt
 	identity.UpdatedAt = parsedUpdatedAt
 	return identity, nil
+}
+
+func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
+	var key domain.APIKey
+	var status string
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&key.ID,
+		&key.Name,
+		&key.TokenHash,
+		&status,
+		&key.Actor,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.APIKey{}, err
+	}
+
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+
+	key.Status = domain.APIKeyStatus(status)
+	key.CreatedAt = parsedCreatedAt
+	key.UpdatedAt = parsedUpdatedAt
+	return key, nil
 }
 
 func scanIssuer(scanner sqlScanner) (domain.Issuer, error) {

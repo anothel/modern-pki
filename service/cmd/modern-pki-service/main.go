@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
@@ -33,6 +34,9 @@ const (
 	defaultExpirationScanInterval      = time.Hour
 	defaultExpirationScanWarningWindow = 30 * 24 * time.Hour
 	defaultExpirationScanBatchSize     = 100
+
+	defaultBootstrapAPIKeyName  = "bootstrap"
+	defaultBootstrapAPIKeyActor = "bootstrap"
 )
 
 type outboxConfig struct {
@@ -48,11 +52,22 @@ type expirationScanConfig struct {
 	BatchSize     int
 }
 
+type authConfig struct {
+	HTTP                 httpapi.AuthConfig
+	BootstrapAPIKey      string
+	BootstrapAPIKeyName  string
+	BootstrapAPIKeyActor string
+}
+
 func main() {
 	addr := envOrDefault("MODERN_PKI_ADDR", defaultAddr)
 	dbDriver := envOrDefault("MODERN_PKI_DB_DRIVER", defaultDBDriver)
 	dbDSN := envOrDefault("MODERN_PKI_DB_DSN", defaultDBDSN)
 	coreBin := envOrDefault("MODERN_PKI_CORE_BIN", defaultCoreBin)
+	authCfg, err := loadAuthConfig()
+	if err != nil {
+		log.Fatalf("load auth config: %v", err)
+	}
 	outboxCfg, err := loadOutboxConfig()
 	if err != nil {
 		log.Fatalf("load outbox config: %v", err)
@@ -74,7 +89,18 @@ func main() {
 
 	repo := store.NewSQLStore(db)
 	svc := lifecycle.New(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
-	server := httpapi.New(svc)
+	if authCfg.BootstrapAPIKey != "" {
+		key, err := svc.EnsureAPIKey(context.Background(), "system", lifecycle.EnsureAPIKeyRequest{
+			Name:  authCfg.BootstrapAPIKeyName,
+			Token: authCfg.BootstrapAPIKey,
+			Actor: authCfg.BootstrapAPIKeyActor,
+		})
+		if err != nil {
+			log.Fatalf("bootstrap api key: %v", err)
+		}
+		log.Printf("modern-pki bootstrap api key ready id=%s name=%s actor=%s", key.ID, key.Name, key.Actor)
+	}
+	server := httpapi.NewWithAuth(svc, authCfg.HTTP)
 	if outboxCfg.Enabled {
 		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, &http.Client{Timeout: 10 * time.Second})
 		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
@@ -100,6 +126,25 @@ func envOrDefault(name string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func loadAuthConfig() (authConfig, error) {
+	modeValue := strings.TrimSpace(envOrDefault("MODERN_PKI_AUTH_MODE", string(httpapi.AuthModeDev)))
+	mode := httpapi.AuthMode(modeValue)
+	switch mode {
+	case httpapi.AuthModeDev, httpapi.AuthModeAPIKey:
+	default:
+		return authConfig{}, fmt.Errorf("MODERN_PKI_AUTH_MODE must be %q or %q", httpapi.AuthModeDev, httpapi.AuthModeAPIKey)
+	}
+
+	return authConfig{
+		HTTP: httpapi.AuthConfig{
+			Mode: mode,
+		},
+		BootstrapAPIKey:      os.Getenv("MODERN_PKI_BOOTSTRAP_API_KEY"),
+		BootstrapAPIKeyName:  envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", defaultBootstrapAPIKeyName),
+		BootstrapAPIKeyActor: envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", defaultBootstrapAPIKeyActor),
+	}, nil
 }
 
 func loadOutboxConfig() (outboxConfig, error) {

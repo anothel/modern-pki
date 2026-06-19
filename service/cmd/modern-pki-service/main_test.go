@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modern-pki/modern-pki/service/internal/httpapi"
 )
 
 func TestLoadOutboxConfigDefaults(t *testing.T) {
@@ -56,6 +58,47 @@ func TestLoadOutboxConfigRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("loadOutboxConfig error = %v, want mention %s", err, tt.wantError)
 			}
 		})
+	}
+}
+
+func TestLoadAuthConfigDefaults(t *testing.T) {
+	clearAuthEnv(t)
+
+	cfg, err := loadAuthConfig()
+	if err != nil {
+		t.Fatalf("loadAuthConfig returned error: %v", err)
+	}
+	if cfg.HTTP.Mode != httpapi.AuthModeDev || cfg.BootstrapAPIKey != "" {
+		t.Fatalf("auth config = %#v, want dev mode without bootstrap key", cfg)
+	}
+}
+
+func TestLoadAuthConfigAPIKeyMode(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "bootstrap-token")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", "bootstrap-admin")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", "ops-admin")
+
+	cfg, err := loadAuthConfig()
+	if err != nil {
+		t.Fatalf("loadAuthConfig returned error: %v", err)
+	}
+	if cfg.HTTP.Mode != httpapi.AuthModeAPIKey ||
+		cfg.BootstrapAPIKey != "bootstrap-token" ||
+		cfg.BootstrapAPIKeyName != "bootstrap-admin" ||
+		cfg.BootstrapAPIKeyActor != "ops-admin" {
+		t.Fatalf("auth config = %#v", cfg)
+	}
+}
+
+func TestLoadAuthConfigRejectsInvalidMode(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_AUTH_MODE", "mtls")
+
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_AUTH_MODE") {
+		t.Fatalf("loadAuthConfig error = %v, want MODERN_PKI_AUTH_MODE", err)
 	}
 }
 
@@ -130,4 +173,12 @@ func clearExpirationScanEnv(t *testing.T) {
 	t.Setenv("MODERN_PKI_EXPIRATION_SCAN_INTERVAL", "")
 	t.Setenv("MODERN_PKI_EXPIRATION_WARNING_WINDOW", "")
 	t.Setenv("MODERN_PKI_EXPIRATION_SCAN_BATCH_SIZE", "")
+}
+
+func clearAuthEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("MODERN_PKI_AUTH_MODE", "")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", "")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", "")
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,12 +17,34 @@ import (
 type Server struct {
 	service *lifecycle.Service
 	mux     *http.ServeMux
+	auth    AuthConfig
 }
 
+type AuthMode string
+
+const (
+	AuthModeDev    AuthMode = "dev"
+	AuthModeAPIKey AuthMode = "api_key"
+)
+
+type AuthConfig struct {
+	Mode AuthMode
+}
+
+type actorContextKey struct{}
+
 func New(service *lifecycle.Service) *Server {
+	return NewWithAuth(service, AuthConfig{Mode: AuthModeDev})
+}
+
+func NewWithAuth(service *lifecycle.Service, auth AuthConfig) *Server {
+	if auth.Mode == "" {
+		auth.Mode = AuthModeDev
+	}
 	s := &Server{
 		service: service,
 		mux:     http.NewServeMux(),
+		auth:    auth,
 	}
 	s.registerRoutes()
 	return s
@@ -33,7 +56,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ClientIP:  requestClientIP(r),
 		StartedAt: time.Now(),
 	})
-	s.mux.ServeHTTP(w, r.WithContext(ctx))
+	r = r.WithContext(ctx)
+	authenticated, err := s.authenticateRequest(r)
+	if err != nil {
+		r = r.WithContext(context.WithValue(r.Context(), actorContextKey{}, "anonymous"))
+		s.writeError(w, r, err)
+		return
+	}
+	r = r.WithContext(authenticated)
+	s.mux.ServeHTTP(w, r)
 }
 
 func (s *Server) registerRoutes() {
@@ -573,11 +604,59 @@ func decodeJSON(r *http.Request, dst any) error {
 }
 
 func requestActor(r *http.Request) string {
+	if actor, ok := r.Context().Value(actorContextKey{}).(string); ok && actor != "" {
+		return actor
+	}
 	actor := r.Header.Get("X-Actor")
 	if actor == "" {
 		return "anonymous"
 	}
 	return actor
+}
+
+func (s *Server) authenticateRequest(r *http.Request) (context.Context, error) {
+	switch s.auth.Mode {
+	case AuthModeDev, "":
+		return context.WithValue(r.Context(), actorContextKey{}, requestActor(r)), nil
+	case AuthModeAPIKey:
+		if isPublicEndpoint(r.Method, r.URL.Path) {
+			return context.WithValue(r.Context(), actorContextKey{}, "public"), nil
+		}
+		token, ok := bearerToken(r.Header.Get("Authorization"))
+		if !ok {
+			return r.Context(), domain.ErrUnauthorized
+		}
+		key, err := s.service.AuthenticateAPIKey(r.Context(), token)
+		if err != nil {
+			return r.Context(), err
+		}
+		return context.WithValue(r.Context(), actorContextKey{}, key.Actor), nil
+	default:
+		return r.Context(), domain.ErrUnauthorized
+	}
+}
+
+func bearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	return token, token != ""
+}
+
+func isPublicEndpoint(method string, path string) bool {
+	if method == http.MethodPost && path == "/ocsp" {
+		return true
+	}
+	if method == http.MethodGet && strings.HasPrefix(path, "/crls/") && len(strings.TrimPrefix(path, "/crls/")) > 0 {
+		return true
+	}
+	if method != http.MethodGet || !strings.HasPrefix(path, "/issuers/") || !strings.HasSuffix(path, "/crl") {
+		return false
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return len(parts) == 3 && parts[0] == "issuers" && parts[1] != "" && parts[2] == "crl"
 }
 
 func requestClientIP(r *http.Request) string {
@@ -618,6 +697,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrInvalidRequest.Error()
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
 		return domain.ErrUnsupportedMediaType.Error()
+	case errors.Is(err, domain.ErrUnauthorized):
+		return domain.ErrUnauthorized.Error()
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return domain.ErrInvalidTransition.Error()
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -663,6 +744,8 @@ func statusForError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
 		return http.StatusUnsupportedMediaType
+	case errors.Is(err, domain.ErrUnauthorized):
+		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrIdentityNotFound),

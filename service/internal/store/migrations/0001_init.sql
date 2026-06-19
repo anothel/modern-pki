@@ -168,3 +168,16 @@ CREATE TABLE IF NOT EXISTS job_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
     ON job_attempts(outbox_message_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
+    ON api_keys(token_hash);

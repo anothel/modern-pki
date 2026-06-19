@@ -28,6 +28,23 @@ func TestSQLStoreOutboxAndJobAttempts(t *testing.T) {
 	testOutboxAndJobAttempts(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreAPIKeys(t *testing.T) {
+	testAPIKeys(t, NewMemoryStore())
+}
+
+func TestSQLStoreAPIKeys(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testAPIKeys(t, NewSQLStore(db))
+}
+
 func TestMemoryStoreOutboxRetryMetadata(t *testing.T) {
 	testOutboxRetryMetadata(t, NewMemoryStore())
 }
@@ -431,5 +448,33 @@ func expirationScanCertificate(id string, status domain.CertificateStatus, notAf
 		RenewalNotifiedAt: renewalNotifiedAt,
 		CreatedAt:         createdAt,
 		UpdatedAt:         createdAt,
+	}
+}
+
+func testAPIKeys(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Unix(10, 0)
+	key := domain.APIKey{
+		ID:        "key-1",
+		Name:      "admin",
+		TokenHash: "sha256:abc",
+		Status:    domain.APIKeyActive,
+		Actor:     "api-admin",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := repo.CreateAPIKey(ctx, key); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+	got, err := repo.GetAPIKeyByTokenHash(ctx, key.TokenHash)
+	if err != nil {
+		t.Fatalf("GetAPIKeyByTokenHash returned error: %v", err)
+	}
+	if got.ID != key.ID || got.Actor != key.Actor || got.Status != key.Status {
+		t.Fatalf("api key = %#v, want %#v", got, key)
+	}
+	if _, err := repo.GetAPIKeyByTokenHash(ctx, "sha256:missing"); !errors.Is(err, domain.ErrAPIKeyNotFound) {
+		t.Fatalf("GetAPIKeyByTokenHash missing error = %v, want ErrAPIKeyNotFound", err)
 	}
 }

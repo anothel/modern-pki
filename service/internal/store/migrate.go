@@ -118,6 +118,17 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
 			ON notification_endpoints(status, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			status TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
+			ON api_keys(token_hash)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -232,6 +243,17 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		"ALTER TABLE notification_endpoints ADD COLUMN IF NOT EXISTS secret TEXT NOT NULL DEFAULT ''",
 		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
 			ON notification_endpoints(status, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			status TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
+			ON api_keys(token_hash)`,
 	}
 
 	for _, statement := range statements {

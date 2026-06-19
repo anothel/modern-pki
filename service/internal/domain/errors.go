@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrInvalidRequest                = errors.New("invalid request")
 	ErrUnsupportedMediaType          = errors.New("unsupported media type")
+	ErrUnauthorized                  = errors.New("unauthorized")
 	ErrIdentityNotFound              = errors.New("identity not found")
 	ErrIssuerNotFound                = errors.New("issuer not found")
 	ErrOCSPResponderNotFound         = errors.New("ocsp responder not found")
@@ -14,6 +15,7 @@ var (
 	ErrCertificateNotFound           = errors.New("certificate not found")
 	ErrCRLPublicationNotFound        = errors.New("crl publication not found")
 	ErrOutboxMessageNotFound         = errors.New("outbox message not found")
+	ErrAPIKeyNotFound                = errors.New("api key not found")
 	ErrInvalidTransition             = errors.New("invalid lifecycle transition")
 	ErrCSRParseFailed                = errors.New("csr parse failed")
 	ErrCertificateIssuanceFailed     = errors.New("certificate issuance failed")
