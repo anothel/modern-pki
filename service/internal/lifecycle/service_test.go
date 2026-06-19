@@ -884,8 +884,8 @@ func TestCreateOCSPResponderRejectsInvalidValidationResult(t *testing.T) {
 		CertificatePEM: "responder-pem",
 		KeyRef:         "responder-key",
 	})
-	if !errors.Is(err, domain.ErrOCSPResponseFailed) {
-		t.Fatalf("CreateOCSPResponder error = %v, want ErrOCSPResponseFailed", err)
+	if !errors.Is(err, domain.ErrOCSPResponderValidationFailed) {
+		t.Fatalf("CreateOCSPResponder error = %v, want ErrOCSPResponderValidationFailed", err)
 	}
 
 	if responders, err := service.ListOCSPRespondersByIssuer(ctx, issuer.ID); err != nil {
@@ -1009,6 +1009,187 @@ func TestDisableOCSPResponderDisablesAndAllowsReplacement(t *testing.T) {
 	}
 	if !foundDisabled {
 		t.Fatal("ocsp_responder.disabled audit event not found")
+	}
+}
+
+func TestRotateOCSPResponderDisablesCurrentAndCreatesNewActive(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspResponderValidationResult: corecli.ValidateOCSPResponderResult{Valid: true},
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	first, err := service.CreateOCSPResponder(ctx, "admin", CreateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-a-ocsp",
+		CertificatePEM: "responder-a-pem",
+		KeyRef:         "responder-a-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+
+	rotated, err := service.RotateOCSPResponder(ctx, "admin", RotateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-b-ocsp",
+		CertificatePEM: "responder-b-pem",
+		KeyRef:         "responder-b-key",
+	})
+	if err != nil {
+		t.Fatalf("RotateOCSPResponder returned error: %v", err)
+	}
+	if rotated.ID == "" || rotated.ID == first.ID {
+		t.Fatalf("rotated responder ID = %q, first ID = %q", rotated.ID, first.ID)
+	}
+	if rotated.Status != domain.OCSPResponderActive ||
+		rotated.CertificatePEM != "responder-b-pem" ||
+		rotated.KeyRef != "responder-b-key" {
+		t.Fatalf("rotated responder = %#v", rotated)
+	}
+	if len(coreClient.ocspResponderValidationRequests) != 2 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 2", len(coreClient.ocspResponderValidationRequests))
+	}
+	if got := coreClient.ocspResponderValidationRequests[1].responderCertificatePEM; got != "responder-b-pem" {
+		t.Fatalf("rotation validation responder PEM = %q, want responder-b-pem", got)
+	}
+
+	active, err := repo.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetActiveOCSPResponderByIssuer returned error: %v", err)
+	}
+	if active.ID != rotated.ID {
+		t.Fatalf("active responder ID = %q, want %q", active.ID, rotated.ID)
+	}
+	list, err := service.ListOCSPRespondersByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("ListOCSPRespondersByIssuer returned error: %v", err)
+	}
+	statuses := map[string]domain.OCSPResponderStatus{}
+	for _, responder := range list {
+		statuses[responder.ID] = responder.Status
+	}
+	if statuses[first.ID] != domain.OCSPResponderDisabled || statuses[rotated.ID] != domain.OCSPResponderActive {
+		t.Fatalf("responder statuses = %#v", statuses)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("audit event count = %d, want at least 2", len(events))
+	}
+	disabled := events[len(events)-2]
+	created := events[len(events)-1]
+	if disabled.Action != "ocsp_responder.disabled" || created.Action != "ocsp_responder.created" {
+		t.Fatalf("rotation audit actions = %q, %q", disabled.Action, created.Action)
+	}
+	disabledMetadata := auditMetadata(t, disabled)
+	if disabledMetadata["issuer_id"] != issuer.ID || disabledMetadata["ocsp_responder_id"] != first.ID {
+		t.Fatalf("disabled audit metadata = %#v", disabledMetadata)
+	}
+	createdMetadata := auditMetadata(t, created)
+	if createdMetadata["issuer_id"] != issuer.ID || createdMetadata["ocsp_responder_id"] != rotated.ID {
+		t.Fatalf("created audit metadata = %#v", createdMetadata)
+	}
+}
+
+func TestRotateOCSPResponderRequiresActiveResponder(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspResponderValidationResult: corecli.ValidateOCSPResponderResult{Valid: true},
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	_, err = service.RotateOCSPResponder(ctx, "admin", RotateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-b-ocsp",
+		CertificatePEM: "responder-b-pem",
+		KeyRef:         "responder-b-key",
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("RotateOCSPResponder error = %v, want ErrInvalidTransition", err)
+	}
+	if len(coreClient.ocspResponderValidationRequests) != 0 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 0", len(coreClient.ocspResponderValidationRequests))
+	}
+}
+
+func TestRotateOCSPResponderValidationFailureLeavesCurrentActive(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{
+		ocspResponderValidationResult: corecli.ValidateOCSPResponderResult{Valid: true},
+	}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, coreClient, clock, &fakeIDGenerator{})
+
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	first, err := service.CreateOCSPResponder(ctx, "admin", CreateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-a-ocsp",
+		CertificatePEM: "responder-a-pem",
+		KeyRef:         "responder-a-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+	coreClient.ocspResponderValidationResult = corecli.ValidateOCSPResponderResult{Valid: false}
+
+	_, err = service.RotateOCSPResponder(ctx, "admin", RotateOCSPResponderRequest{
+		IssuerID:       issuer.ID,
+		Name:           "issuer-b-ocsp",
+		CertificatePEM: "responder-b-pem",
+		KeyRef:         "responder-b-key",
+	})
+	if !errors.Is(err, domain.ErrOCSPResponderValidationFailed) {
+		t.Fatalf("RotateOCSPResponder error = %v, want ErrOCSPResponderValidationFailed", err)
+	}
+
+	active, err := repo.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetActiveOCSPResponderByIssuer returned error: %v", err)
+	}
+	if active.ID != first.ID {
+		t.Fatalf("active responder ID = %q, want %q", active.ID, first.ID)
+	}
+	list, err := service.ListOCSPRespondersByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("ListOCSPRespondersByIssuer returned error: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != first.ID || list[0].Status != domain.OCSPResponderActive {
+		t.Fatalf("responders after failed rotation = %#v", list)
 	}
 }
 

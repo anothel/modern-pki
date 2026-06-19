@@ -28,3 +28,4 @@ docs/
 .gocache/*
 .gomodcache/*
 .tmp/*
+service/.tmp-gocache/*

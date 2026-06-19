@@ -30,11 +30,11 @@ Normal revocation accepts only `valid` certificates. Forced revocation accepts `
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.
 
-OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders`, listed with `GET /issuers/{id}/ocsp-responders`, and disabled with `POST /issuers/{id}/ocsp-responders/{responderID}/disable`.
+OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders`, listed with `GET /issuers/{id}/ocsp-responders`, disabled with `POST /issuers/{id}/ocsp-responders/{responderID}/disable`, and atomically rotated with `POST /issuers/{id}/ocsp-responders/rotate`.
 
 OCSP response is available at `POST /ocsp`. Requests must use `Content-Type: application/ocsp-request`; successful responses use `Content-Type: application/ocsp-response`. The service selects the responder issuer from the OCSP CertID hash algorithm plus issuer name/key hash, maps requested serials to `good`, `revoked`, or `unknown` from certificate inventory and revocation records, preserves OCSP nonce extensions in signed responses, and delegates OCSP response signing to the core CLI.
 
-Only one active OCSP responder is allowed per issuer. Registering a replacement requires disabling the current active responder first.
+Only one active OCSP responder is allowed per issuer. Registering a replacement requires disabling the current active responder first, or using rotate to disable the current active responder and create the replacement in one transaction. Rotate fails with a lifecycle conflict when no active responder exists.
 
 When a matched issuer has an active responder, `POST /ocsp` signs with that responder certificate and key reference. When no active responder exists, the service falls back to issuer direct signing for compatibility.
 

@@ -218,6 +218,106 @@ func TestDisableOCSPResponderAllowsReplacement(t *testing.T) {
 	}
 }
 
+func TestRotateOCSPResponder(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var first apiOCSPResponder
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-a-ocsp",
+		"certificate_pem": "responder-a-pem",
+		"key_ref":         "responder-a-key",
+	}, &first)
+	assertStatus(t, status, http.StatusCreated)
+
+	var rotated apiOCSPResponder
+	status = api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders/rotate", "admin", map[string]any{
+		"name":            "issuer-b-ocsp",
+		"certificate_pem": "responder-b-pem",
+		"key_ref":         "responder-b-key",
+	}, &rotated)
+	assertStatus(t, status, http.StatusCreated)
+	if rotated.ID == "" || rotated.ID == first.ID {
+		t.Fatalf("rotated responder ID = %q, first ID = %q", rotated.ID, first.ID)
+	}
+	if rotated.IssuerID != issuer.ID ||
+		rotated.Name != "issuer-b-ocsp" ||
+		rotated.Status != domain.OCSPResponderActive ||
+		rotated.CertificatePEM != "responder-b-pem" ||
+		rotated.KeyRef != "responder-b-key" {
+		t.Fatalf("rotated responder = %#v", rotated)
+	}
+	if len(api.issuer.ocspResponderValidationRequests) != 2 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 2", len(api.issuer.ocspResponderValidationRequests))
+	}
+	if got := api.issuer.ocspResponderValidationRequests[1].responderCertificatePEM; got != "responder-b-pem" {
+		t.Fatalf("rotation validation responder certificate = %q, want responder-b-pem", got)
+	}
+
+	var listed []apiOCSPResponder
+	status = api.doJSON(t, http.MethodGet, "/issuers/"+issuer.ID+"/ocsp-responders", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	statuses := map[string]domain.OCSPResponderStatus{}
+	for _, responder := range listed {
+		statuses[responder.ID] = responder.Status
+	}
+	if statuses[first.ID] != domain.OCSPResponderDisabled || statuses[rotated.ID] != domain.OCSPResponderActive {
+		t.Fatalf("OCSP responder statuses = %#v", statuses)
+	}
+}
+
+func TestRotateOCSPResponderRequiresActiveResponder(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders/rotate", "admin", map[string]any{
+		"name":            "issuer-b-ocsp",
+		"certificate_pem": "responder-b-pem",
+		"key_ref":         "responder-b-key",
+	}, &body)
+	assertStatus(t, status, http.StatusConflict)
+	if body.Error != domain.ErrInvalidTransition.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidTransition.Error())
+	}
+	if len(api.issuer.ocspResponderValidationRequests) != 0 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 0", len(api.issuer.ocspResponderValidationRequests))
+	}
+}
+
+func TestRotateOCSPResponderRejectsInvalidResponderValidation(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var first apiOCSPResponder
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-a-ocsp",
+		"certificate_pem": "responder-a-pem",
+		"key_ref":         "responder-a-key",
+	}, &first)
+	assertStatus(t, status, http.StatusCreated)
+	api.issuer.ocspResponderValidationConfigured = true
+	api.issuer.ocspResponderValidationResult = corecli.ValidateOCSPResponderResult{Valid: false}
+
+	var body errorResponse
+	status = api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders/rotate", "admin", map[string]any{
+		"name":            "issuer-b-ocsp",
+		"certificate_pem": "responder-b-pem",
+		"key_ref":         "responder-b-key",
+	}, &body)
+	assertStatus(t, status, http.StatusUnprocessableEntity)
+	if body.Error != domain.ErrOCSPResponderValidationFailed.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrOCSPResponderValidationFailed.Error())
+	}
+
+	var listed []apiOCSPResponder
+	status = api.doJSON(t, http.MethodGet, "/issuers/"+issuer.ID+"/ocsp-responders", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 || listed[0].ID != first.ID || listed[0].Status != domain.OCSPResponderActive {
+		t.Fatalf("OCSP responders after failed rotate = %#v", listed)
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -956,15 +1056,16 @@ func assertStatus(t *testing.T, got int, want int) {
 }
 
 type fakeIssuer struct {
-	requests                        []corecli.IssueRequest
-	crlRequests                     []corecli.GenerateCRLRequest
-	err                             error
-	crlPEM                          string
-	ocspInfo                        corecli.OCSPRequestInfo
-	ocspResponses                   []corecli.GenerateOCSPResponseRequest
-	ocspResponseDER                 []byte
-	ocspResponderValidationRequests []ocspResponderValidationRequest
-	ocspResponderValidationResult   corecli.ValidateOCSPResponderResult
+	requests                          []corecli.IssueRequest
+	crlRequests                       []corecli.GenerateCRLRequest
+	err                               error
+	crlPEM                            string
+	ocspInfo                          corecli.OCSPRequestInfo
+	ocspResponses                     []corecli.GenerateOCSPResponseRequest
+	ocspResponseDER                   []byte
+	ocspResponderValidationRequests   []ocspResponderValidationRequest
+	ocspResponderValidationConfigured bool
+	ocspResponderValidationResult     corecli.ValidateOCSPResponderResult
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
@@ -1016,7 +1117,7 @@ func (f *fakeIssuer) ValidateOCSPResponder(ctx context.Context, issuerCertificat
 	if f.err != nil {
 		return corecli.ValidateOCSPResponderResult{}, f.err
 	}
-	if f.ocspResponderValidationResult == (corecli.ValidateOCSPResponderResult{}) {
+	if !f.ocspResponderValidationConfigured {
 		return corecli.ValidateOCSPResponderResult{Valid: true}, nil
 	}
 	return f.ocspResponderValidationResult, nil

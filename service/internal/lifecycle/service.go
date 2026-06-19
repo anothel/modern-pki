@@ -87,6 +87,13 @@ type CreateOCSPResponderRequest struct {
 	KeyRef         string
 }
 
+type RotateOCSPResponderRequest struct {
+	IssuerID       string
+	Name           string
+	CertificatePEM string
+	KeyRef         string
+}
+
 type CreateCertificateProfileRequest struct {
 	Name                   string
 	Description            string
@@ -231,7 +238,7 @@ func (s *Service) CreateOCSPResponder(ctx context.Context, actor string, req Cre
 		return domain.OCSPResponder{}, mapOCSPResponseError(err)
 	}
 	if !validation.Valid {
-		return domain.OCSPResponder{}, mapOCSPResponseError(errors.New("ocsp responder validation failed"))
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderValidationFailed
 	}
 
 	responder := domain.OCSPResponder{
@@ -304,6 +311,76 @@ func (s *Service) DisableOCSPResponder(ctx context.Context, actor string, issuer
 	}); err != nil {
 		return domain.OCSPResponder{}, err
 	}
+	return responder, nil
+}
+
+func (s *Service) RotateOCSPResponder(ctx context.Context, actor string, req RotateOCSPResponderRequest) (domain.OCSPResponder, error) {
+	if isBlank(req.IssuerID) || isBlank(req.Name) || isBlank(req.CertificatePEM) || isBlank(req.KeyRef) {
+		return domain.OCSPResponder{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	issuer, err := s.repo.GetIssuer(ctx, req.IssuerID)
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	if _, err := s.repo.GetActiveOCSPResponderByIssuer(ctx, req.IssuerID); errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		return domain.OCSPResponder{}, domain.ErrInvalidTransition
+	} else if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	validation, err := s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	if err != nil {
+		return domain.OCSPResponder{}, mapOCSPResponseError(err)
+	}
+	if !validation.Valid {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderValidationFailed
+	}
+
+	responder := domain.OCSPResponder{
+		ID:             s.idgen.NewID(),
+		IssuerID:       req.IssuerID,
+		Name:           req.Name,
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: req.CertificatePEM,
+		KeyRef:         req.KeyRef,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if _, err := repo.GetIssuer(ctx, req.IssuerID); err != nil {
+			return err
+		}
+		current, err := repo.GetActiveOCSPResponderByIssuer(ctx, req.IssuerID)
+		if errors.Is(err, domain.ErrOCSPResponderNotFound) {
+			return domain.ErrInvalidTransition
+		}
+		if err != nil {
+			return err
+		}
+		current.Status = domain.OCSPResponderDisabled
+		current.UpdatedAt = now
+		if err := repo.UpdateOCSPResponderIfStatus(ctx, current, domain.OCSPResponderActive); err != nil {
+			return err
+		}
+		if err := s.createAuditEvent(ctx, repo, actor, "ocsp_responder.disabled", "ocsp_responder", current.ID, now, auditFields(
+			"issuer_id", current.IssuerID,
+			"ocsp_responder_id", current.ID,
+		)); err != nil {
+			return err
+		}
+		if err := repo.CreateOCSPResponder(ctx, responder); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "ocsp_responder.created", "ocsp_responder", responder.ID, now, auditFields(
+			"issuer_id", responder.IssuerID,
+			"ocsp_responder_id", responder.ID,
+		))
+	}); err != nil {
+		return domain.OCSPResponder{}, err
+	}
+
 	return responder, nil
 }
 
@@ -1164,6 +1241,8 @@ func auditErrorCode(err error) string {
 		return "crl_generation_failed"
 	case errors.Is(err, domain.ErrOCSPDecodeFailed):
 		return "ocsp_decode_failed"
+	case errors.Is(err, domain.ErrOCSPResponderValidationFailed):
+		return "ocsp_responder_validation_failed"
 	case errors.Is(err, domain.ErrOCSPResponseFailed):
 		return "ocsp_response_failed"
 	case errors.Is(err, domain.ErrStorageFailure):

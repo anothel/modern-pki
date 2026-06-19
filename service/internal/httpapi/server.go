@@ -44,6 +44,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /issuers", s.createIssuer)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders", s.createOCSPResponder)
 	s.mux.HandleFunc("GET /issuers/{id}/ocsp-responders", s.listOCSPResponders)
+	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/rotate", s.rotateOCSPResponder)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/{responderID}/disable", s.disableOCSPResponder)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
@@ -167,6 +168,26 @@ func (s *Server) disableOCSPResponder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toOCSPResponderResponse(responder))
+}
+
+func (s *Server) rotateOCSPResponder(w http.ResponseWriter, r *http.Request) {
+	var req createOCSPResponderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	responder, err := s.service.RotateOCSPResponder(r.Context(), requestActor(r), lifecycle.RotateOCSPResponderRequest{
+		IssuerID:       r.PathValue("id"),
+		Name:           req.Name,
+		CertificatePEM: req.CertificatePEM,
+		KeyRef:         req.KeyRef,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toOCSPResponderResponse(responder))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -539,6 +560,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrCRLGenerationFailed.Error()
 	case errors.Is(err, domain.ErrOCSPDecodeFailed):
 		return domain.ErrOCSPDecodeFailed.Error()
+	case errors.Is(err, domain.ErrOCSPResponderValidationFailed):
+		return domain.ErrOCSPResponderValidationFailed.Error()
 	case errors.Is(err, domain.ErrOCSPResponseFailed):
 		return domain.ErrOCSPResponseFailed.Error()
 	case errors.Is(err, domain.ErrStorageFailure):
@@ -572,6 +595,8 @@ func statusForError(err error) int {
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrOCSPDecodeFailed):
 		return http.StatusBadRequest
+	case errors.Is(err, domain.ErrOCSPResponderValidationFailed):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, domain.ErrOCSPResponseFailed):
 		return http.StatusBadGateway
 	case errors.Is(err, domain.ErrStorageFailure):
