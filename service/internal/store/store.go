@@ -27,6 +27,13 @@ type OCSPResponderRepository interface {
 	UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error
 }
 
+type NotificationEndpointRepository interface {
+	CreateNotificationEndpoint(ctx context.Context, endpoint domain.NotificationEndpoint) error
+	GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error)
+	ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error)
+	UpdateNotificationEndpointIfStatus(ctx context.Context, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error
+}
+
 type CertificateProfileRepository interface {
 	CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error
 	GetCertificateProfile(ctx context.Context, id string) (domain.CertificateProfile, error)
@@ -79,6 +86,7 @@ type Repository interface {
 	IdentityRepository
 	IssuerRepository
 	OCSPResponderRepository
+	NotificationEndpointRepository
 	CertificateProfileRepository
 	EnrollmentRepository
 	CertificateRepository

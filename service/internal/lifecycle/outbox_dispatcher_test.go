@@ -101,4 +101,14 @@ func TestOutboxDispatcherRecordsFailure(t *testing.T) {
 	if len(attempts) != 1 || attempts[0].Status != domain.JobAttemptFailed || attempts[0].Error != "notify failed" {
 		t.Fatalf("attempts = %#v, want one failed attempt", attempts)
 	}
+	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(defaultOutboxRetryDelay), 10)
+	if err != nil {
+		t.Fatalf("ListDueOutboxMessages retry returned error: %v", err)
+	}
+	if len(retryDue) != 1 || retryDue[0].ID != message.ID || retryDue[0].Status != domain.OutboxPending {
+		t.Fatalf("retry due messages = %#v, want pending message", retryDue)
+	}
+	if !retryDue[0].AvailableAt.Equal(clock.now.Add(defaultOutboxRetryDelay)) {
+		t.Fatalf("retry available_at = %s, want %s", retryDue[0].AvailableAt, clock.now.Add(defaultOutboxRetryDelay))
+	}
 }

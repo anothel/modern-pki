@@ -76,7 +76,8 @@ func main() {
 	svc := lifecycle.New(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
 	server := httpapi.New(svc)
 	if outboxCfg.Enabled {
-		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandler(), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
+		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, &http.Client{Timeout: 10 * time.Second})
+		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
 		worker := lifecycle.NewOutboxWorker(dispatcher, outboxCfg.Interval, outboxCfg.BatchSize, log.Printf)
 		go worker.Run(context.Background())
 		log.Printf("modern-pki outbox worker enabled interval=%s batch=%d", outboxCfg.Interval, outboxCfg.BatchSize)

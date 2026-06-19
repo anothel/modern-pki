@@ -95,6 +95,22 @@ func (s *SQLStore) UpdateOCSPResponderIfStatus(ctx context.Context, responder do
 	return s.repository().UpdateOCSPResponderIfStatus(ctx, responder, currentStatus)
 }
 
+func (s *SQLStore) CreateNotificationEndpoint(ctx context.Context, endpoint domain.NotificationEndpoint) error {
+	return s.repository().CreateNotificationEndpoint(ctx, endpoint)
+}
+
+func (s *SQLStore) GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error) {
+	return s.repository().GetNotificationEndpoint(ctx, id)
+}
+
+func (s *SQLStore) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
+	return s.repository().ListNotificationEndpoints(ctx)
+}
+
+func (s *SQLStore) UpdateNotificationEndpointIfStatus(ctx context.Context, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error {
+	return s.repository().UpdateNotificationEndpointIfStatus(ctx, endpoint, currentStatus)
+}
+
 func (s *SQLStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
 	return s.repository().CreateCertificateProfile(ctx, profile)
 }
@@ -436,6 +452,110 @@ WHERE id = $8 AND status = $9`,
 		return nil
 	}
 	if _, err := r.GetOCSPResponder(ctx, responder.ID); errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		return err
+	} else if err != nil {
+		return err
+	}
+	return domain.ErrInvalidTransition
+}
+
+func (r sqlRepository) CreateNotificationEndpoint(ctx context.Context, endpoint domain.NotificationEndpoint) error {
+	eventTypes, err := marshalStringSlice(endpoint.EventTypes)
+	if err != nil {
+		return err
+	}
+	_, err = r.exec.ExecContext(ctx, `
+INSERT INTO notification_endpoints (
+	id, name, type, status, url, event_types, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7, $8
+)`,
+		endpoint.ID,
+		endpoint.Name,
+		string(endpoint.Type),
+		string(endpoint.Status),
+		endpoint.URL,
+		eventTypes,
+		formatSQLTime(endpoint.CreatedAt),
+		formatSQLTime(endpoint.UpdatedAt),
+	)
+	return err
+}
+
+func (r sqlRepository) GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error) {
+	endpoint, err := scanNotificationEndpoint(r.exec.QueryRowContext(ctx, `
+SELECT id, name, type, status, url, event_types, created_at, updated_at
+FROM notification_endpoints
+WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.NotificationEndpoint{}, domain.ErrNotificationEndpointNotFound
+	}
+	if err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	return endpoint, nil
+}
+
+func (r sqlRepository) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, name, type, status, url, event_types, created_at, updated_at
+FROM notification_endpoints
+ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	endpoints := make([]domain.NotificationEndpoint, 0)
+	for rows.Next() {
+		endpoint, err := scanNotificationEndpoint(rows)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return endpoints, nil
+}
+
+func (r sqlRepository) UpdateNotificationEndpointIfStatus(ctx context.Context, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error {
+	eventTypes, err := marshalStringSlice(endpoint.EventTypes)
+	if err != nil {
+		return err
+	}
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE notification_endpoints
+SET name = $1,
+	type = $2,
+	status = $3,
+	url = $4,
+	event_types = $5,
+	created_at = $6,
+	updated_at = $7
+WHERE id = $8 AND status = $9`,
+		endpoint.Name,
+		string(endpoint.Type),
+		string(endpoint.Status),
+		endpoint.URL,
+		eventTypes,
+		formatSQLTime(endpoint.CreatedAt),
+		formatSQLTime(endpoint.UpdatedAt),
+		endpoint.ID,
+		string(currentStatus),
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := affectedRows(result)
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 0 {
+		return nil
+	}
+	if _, err := r.GetNotificationEndpoint(ctx, endpoint.ID); errors.Is(err, domain.ErrNotificationEndpointNotFound) {
 		return err
 	} else if err != nil {
 		return err
@@ -1307,6 +1427,48 @@ func scanOCSPResponder(scanner sqlScanner) (domain.OCSPResponder, error) {
 	responder.CreatedAt = parsedCreatedAt
 	responder.UpdatedAt = parsedUpdatedAt
 	return responder, nil
+}
+
+func scanNotificationEndpoint(scanner sqlScanner) (domain.NotificationEndpoint, error) {
+	var endpoint domain.NotificationEndpoint
+	var endpointType string
+	var status string
+	var eventTypes string
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&endpoint.ID,
+		&endpoint.Name,
+		&endpointType,
+		&status,
+		&endpoint.URL,
+		&eventTypes,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+
+	parsedEventTypes, err := unmarshalStringSlice(eventTypes)
+	if err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+
+	endpoint.Type = domain.NotificationEndpointType(endpointType)
+	endpoint.Status = domain.NotificationEndpointStatus(status)
+	endpoint.EventTypes = parsedEventTypes
+	endpoint.CreatedAt = parsedCreatedAt
+	endpoint.UpdatedAt = parsedUpdatedAt
+	return endpoint, nil
 }
 
 func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, error) {

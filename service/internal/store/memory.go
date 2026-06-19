@@ -15,6 +15,7 @@ type MemoryStore struct {
 	identities     map[string]domain.Identity
 	issuers        map[string]domain.Issuer
 	ocspResponders map[string]domain.OCSPResponder
+	notifications  map[string]domain.NotificationEndpoint
 	profiles       map[string]domain.CertificateProfile
 	enrollments    map[string]domain.Enrollment
 	certificates   map[string]domain.Certificate
@@ -30,6 +31,7 @@ func NewMemoryStore() *MemoryStore {
 		identities:     make(map[string]domain.Identity),
 		issuers:        make(map[string]domain.Issuer),
 		ocspResponders: make(map[string]domain.OCSPResponder),
+		notifications:  make(map[string]domain.NotificationEndpoint),
 		profiles:       make(map[string]domain.CertificateProfile),
 		enrollments:    make(map[string]domain.Enrollment),
 		certificates:   make(map[string]domain.Certificate),
@@ -49,6 +51,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		identities:     cloneIdentities(s.identities),
 		issuers:        cloneIssuers(s.issuers),
 		ocspResponders: cloneOCSPResponders(s.ocspResponders),
+		notifications:  cloneNotificationEndpoints(s.notifications),
 		profiles:       cloneCertificateProfiles(s.profiles),
 		enrollments:    cloneEnrollments(s.enrollments),
 		certificates:   cloneCertificates(s.certificates),
@@ -65,6 +68,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.identities = tx.identities
 	s.issuers = tx.issuers
 	s.ocspResponders = tx.ocspResponders
+	s.notifications = tx.notifications
 	s.profiles = tx.profiles
 	s.enrollments = tx.enrollments
 	s.certificates = tx.certificates
@@ -179,6 +183,39 @@ func (s *MemoryStore) UpdateOCSPResponderIfStatus(ctx context.Context, responder
 	defer s.mu.Unlock()
 
 	return updateOCSPResponderIfStatus(s.ocspResponders, responder, currentStatus)
+}
+
+func (s *MemoryStore) CreateNotificationEndpoint(ctx context.Context, endpoint domain.NotificationEndpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.notifications[endpoint.ID] = copyNotificationEndpoint(endpoint)
+	return nil
+}
+
+func (s *MemoryStore) GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	endpoint, ok := s.notifications[id]
+	if !ok {
+		return domain.NotificationEndpoint{}, domain.ErrNotificationEndpointNotFound
+	}
+	return copyNotificationEndpoint(endpoint), nil
+}
+
+func (s *MemoryStore) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listNotificationEndpoints(s.notifications), nil
+}
+
+func (s *MemoryStore) UpdateNotificationEndpointIfStatus(ctx context.Context, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateNotificationEndpointIfStatus(s.notifications, endpoint, currentStatus)
 }
 
 func (s *MemoryStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -438,6 +475,11 @@ func copyCertificate(certificate domain.Certificate) domain.Certificate {
 	return certificate
 }
 
+func copyNotificationEndpoint(endpoint domain.NotificationEndpoint) domain.NotificationEndpoint {
+	endpoint.EventTypes = append([]string(nil), endpoint.EventTypes...)
+	return endpoint
+}
+
 func updateEnrollmentIfStatus(enrollments map[string]domain.Enrollment, enrollment domain.Enrollment, currentStatus domain.EnrollmentStatus) error {
 	current, ok := enrollments[enrollment.ID]
 	if !ok {
@@ -477,6 +519,32 @@ func updateOCSPResponderIfStatus(responders map[string]domain.OCSPResponder, res
 	}
 	responders[responder.ID] = responder
 	return nil
+}
+
+func updateNotificationEndpointIfStatus(endpoints map[string]domain.NotificationEndpoint, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error {
+	current, ok := endpoints[endpoint.ID]
+	if !ok {
+		return domain.ErrNotificationEndpointNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	endpoints[endpoint.ID] = copyNotificationEndpoint(endpoint)
+	return nil
+}
+
+func listNotificationEndpoints(endpoints map[string]domain.NotificationEndpoint) []domain.NotificationEndpoint {
+	result := make([]domain.NotificationEndpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		result = append(result, copyNotificationEndpoint(endpoint))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
 }
 
 func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Time, limit int) []domain.OutboxMessage {
@@ -538,6 +606,7 @@ type memoryTx struct {
 	identities     map[string]domain.Identity
 	issuers        map[string]domain.Issuer
 	ocspResponders map[string]domain.OCSPResponder
+	notifications  map[string]domain.NotificationEndpoint
 	profiles       map[string]domain.CertificateProfile
 	enrollments    map[string]domain.Enrollment
 	certificates   map[string]domain.Certificate
@@ -622,6 +691,27 @@ func (tx *memoryTx) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID
 
 func (tx *memoryTx) UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
 	return updateOCSPResponderIfStatus(tx.ocspResponders, responder, currentStatus)
+}
+
+func (tx *memoryTx) CreateNotificationEndpoint(ctx context.Context, endpoint domain.NotificationEndpoint) error {
+	tx.notifications[endpoint.ID] = copyNotificationEndpoint(endpoint)
+	return nil
+}
+
+func (tx *memoryTx) GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error) {
+	endpoint, ok := tx.notifications[id]
+	if !ok {
+		return domain.NotificationEndpoint{}, domain.ErrNotificationEndpointNotFound
+	}
+	return copyNotificationEndpoint(endpoint), nil
+}
+
+func (tx *memoryTx) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
+	return listNotificationEndpoints(tx.notifications), nil
+}
+
+func (tx *memoryTx) UpdateNotificationEndpointIfStatus(ctx context.Context, endpoint domain.NotificationEndpoint, currentStatus domain.NotificationEndpointStatus) error {
+	return updateNotificationEndpointIfStatus(tx.notifications, endpoint, currentStatus)
 }
 
 func (tx *memoryTx) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -798,6 +888,14 @@ func cloneOCSPResponders(src map[string]domain.OCSPResponder) map[string]domain.
 	dst := make(map[string]domain.OCSPResponder, len(src))
 	for id, responder := range src {
 		dst[id] = responder
+	}
+	return dst
+}
+
+func cloneNotificationEndpoints(src map[string]domain.NotificationEndpoint) map[string]domain.NotificationEndpoint {
+	dst := make(map[string]domain.NotificationEndpoint, len(src))
+	for id, endpoint := range src {
+		dst[id] = copyNotificationEndpoint(endpoint)
 	}
 	return dst
 }

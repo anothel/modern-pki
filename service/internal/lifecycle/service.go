@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -92,6 +93,12 @@ type RotateOCSPResponderRequest struct {
 	Name           string
 	CertificatePEM string
 	KeyRef         string
+}
+
+type CreateNotificationEndpointRequest struct {
+	Name       string
+	URL        string
+	EventTypes []string
 }
 
 type CreateCertificateProfileRequest struct {
@@ -392,6 +399,71 @@ func (s *Service) RotateOCSPResponder(ctx context.Context, actor string, req Rot
 	}
 
 	return responder, nil
+}
+
+func (s *Service) CreateNotificationEndpoint(ctx context.Context, actor string, req CreateNotificationEndpointRequest) (domain.NotificationEndpoint, error) {
+	if err := validateCreateNotificationEndpointRequest(req); err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+
+	now := s.clock.Now()
+	endpoint := domain.NotificationEndpoint{
+		ID:         s.idgen.NewID(),
+		Name:       req.Name,
+		Type:       domain.NotificationEndpointWebhook,
+		Status:     domain.NotificationEndpointActive,
+		URL:        req.URL,
+		EventTypes: append([]string(nil), req.EventTypes...),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.CreateNotificationEndpoint(ctx, endpoint); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "notification_endpoint.created", "notification_endpoint", endpoint.ID, now, auditFields(
+			"notification_endpoint_id", endpoint.ID,
+			"notification_endpoint_type", string(endpoint.Type),
+		))
+	}); err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	return endpoint, nil
+}
+
+func (s *Service) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
+	return s.repo.ListNotificationEndpoints(ctx)
+}
+
+func (s *Service) DisableNotificationEndpoint(ctx context.Context, actor string, id string) (domain.NotificationEndpoint, error) {
+	if isBlank(id) {
+		return domain.NotificationEndpoint{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	endpoint, err := s.repo.GetNotificationEndpoint(ctx, id)
+	if err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	if endpoint.Status != domain.NotificationEndpointActive {
+		return domain.NotificationEndpoint{}, domain.ErrInvalidTransition
+	}
+	endpoint.Status = domain.NotificationEndpointDisabled
+	endpoint.UpdatedAt = now
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.UpdateNotificationEndpointIfStatus(ctx, endpoint, domain.NotificationEndpointActive); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "notification_endpoint.disabled", "notification_endpoint", endpoint.ID, now, auditFields(
+			"notification_endpoint_id", endpoint.ID,
+			"notification_endpoint_type", string(endpoint.Type),
+		))
+	}); err != nil {
+		return domain.NotificationEndpoint{}, err
+	}
+	return endpoint, nil
 }
 
 func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, req CreateCertificateProfileRequest) (domain.CertificateProfile, error) {
@@ -1536,6 +1608,22 @@ func validateCreateIdentityRequest(req CreateIdentityRequest) error {
 func validateCreateIssuerRequest(req CreateIssuerRequest) error {
 	if isBlank(req.Name) || !isValidIssuerKind(req.Kind) || isBlank(req.CertificatePEM) || isBlank(req.KeyRef) {
 		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointRequest) error {
+	if isBlank(req.Name) || isBlank(req.URL) {
+		return domain.ErrInvalidRequest
+	}
+	parsed, err := url.Parse(req.URL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return domain.ErrInvalidRequest
+	}
+	for _, eventType := range req.EventTypes {
+		if isBlank(eventType) {
+			return domain.ErrInvalidRequest
+		}
 	}
 	return nil
 }

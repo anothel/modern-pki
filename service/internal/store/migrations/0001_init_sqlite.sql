@@ -37,6 +37,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ocsp_responders_single_active
     ON ocsp_responders(issuer_id)
     WHERE status = 'active';
 
+CREATE TABLE IF NOT EXISTS notification_endpoints (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    url TEXT NOT NULL,
+    event_types TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
+    ON notification_endpoints(status, created_at, id);
+
 CREATE TABLE IF NOT EXISTS certificate_profiles (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

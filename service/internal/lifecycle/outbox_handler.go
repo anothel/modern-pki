@@ -49,3 +49,19 @@ func NewLifecycleOutboxHandler() OutboxHandler {
 		"certificate.force_revoked":      noop,
 	})
 }
+
+func NewLifecycleOutboxHandlerWithWebhook(webhook OutboxHandler) OutboxHandler {
+	if webhook == nil {
+		return NewLifecycleOutboxHandler()
+	}
+	return NewOutboxHandlerRegistry(map[string]OutboxHandler{
+		"certificate.suspended":          webhook,
+		"certificate.resumed":            webhook,
+		"certificate.renewal_requested":  webhook,
+		"certificate.reissue_requested":  webhook,
+		"certificate.expiration_warning": webhook,
+		"certificate.expired":            webhook,
+		"certificate.revoked":            webhook,
+		"certificate.force_revoked":      webhook,
+	})
+}

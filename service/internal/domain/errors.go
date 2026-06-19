@@ -8,6 +8,7 @@ var (
 	ErrIdentityNotFound              = errors.New("identity not found")
 	ErrIssuerNotFound                = errors.New("issuer not found")
 	ErrOCSPResponderNotFound         = errors.New("ocsp responder not found")
+	ErrNotificationEndpointNotFound  = errors.New("notification endpoint not found")
 	ErrCertificateProfileNotFound    = errors.New("certificate profile not found")
 	ErrEnrollmentNotFound            = errors.New("enrollment not found")
 	ErrCertificateNotFound           = errors.New("certificate not found")

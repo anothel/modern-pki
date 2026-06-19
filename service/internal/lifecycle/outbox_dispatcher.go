@@ -3,10 +3,13 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
+
+const defaultOutboxRetryDelay = time.Minute
 
 type OutboxHandler interface {
 	HandleOutboxMessage(context.Context, domain.OutboxMessage) error
@@ -59,8 +62,9 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 		errorMessage := ""
 		if handlerErr != nil {
 			attemptStatus = domain.JobAttemptFailed
-			nextStatus = domain.OutboxFailed
+			nextStatus = domain.OutboxPending
 			errorMessage = handlerErr.Error()
+			message.AvailableAt = finishedAt.Add(defaultOutboxRetryDelay)
 		}
 
 		if err := d.finish(ctx, message, nextStatus, domain.JobAttempt{

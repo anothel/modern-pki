@@ -33,6 +33,19 @@ const (
 	OCSPResponderDisabled OCSPResponderStatus = "disabled"
 )
 
+type NotificationEndpointType string
+
+const (
+	NotificationEndpointWebhook NotificationEndpointType = "webhook"
+)
+
+type NotificationEndpointStatus string
+
+const (
+	NotificationEndpointActive   NotificationEndpointStatus = "active"
+	NotificationEndpointDisabled NotificationEndpointStatus = "disabled"
+)
+
 type EnrollmentStatus string
 
 const (
@@ -123,6 +136,17 @@ type OCSPResponder struct {
 	KeyRef         string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type NotificationEndpoint struct {
+	ID         string
+	Name       string
+	Type       NotificationEndpointType
+	Status     NotificationEndpointStatus
+	URL        string
+	EventTypes []string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type StringListExtensionPolicy struct {

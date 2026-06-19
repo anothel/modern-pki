@@ -318,6 +318,56 @@ func TestRotateOCSPResponderRejectsInvalidResponderValidation(t *testing.T) {
 	}
 }
 
+func TestCreateListAndDisableNotificationEndpoints(t *testing.T) {
+	api := newTestAPI(t)
+
+	var created apiNotificationEndpoint
+	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
+		"name":        "ops-webhook",
+		"url":         "https://ops.example.test/hooks/pki",
+		"event_types": []string{"certificate.expiration_warning", "certificate.expired"},
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" {
+		t.Fatal("created notification endpoint ID is empty")
+	}
+	if created.Name != "ops-webhook" ||
+		created.Type != domain.NotificationEndpointWebhook ||
+		created.Status != domain.NotificationEndpointActive ||
+		created.URL != "https://ops.example.test/hooks/pki" ||
+		len(created.EventTypes) != 2 {
+		t.Fatalf("created notification endpoint = %#v", created)
+	}
+
+	var listed []apiNotificationEndpoint
+	status = api.doJSON(t, http.MethodGet, "/notification-endpoints", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed notification endpoints = %#v", listed)
+	}
+
+	var disabled apiNotificationEndpoint
+	status = api.doJSON(t, http.MethodPost, "/notification-endpoints/"+created.ID+"/disable", "admin", nil, &disabled)
+	assertStatus(t, status, http.StatusOK)
+	if disabled.Status != domain.NotificationEndpointDisabled {
+		t.Fatalf("disabled notification endpoint status = %q, want disabled", disabled.Status)
+	}
+}
+
+func TestCreateNotificationEndpointRejectsInvalidURL(t *testing.T) {
+	api := newTestAPI(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
+		"name": "ops-webhook",
+		"url":  "ftp://ops.example.test/hooks/pki",
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -1213,6 +1263,17 @@ type apiOCSPResponder struct {
 	KeyRef         string                     `json:"key_ref"`
 	CreatedAt      time.Time                  `json:"created_at"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
+}
+
+type apiNotificationEndpoint struct {
+	ID         string                            `json:"id"`
+	Name       string                            `json:"name"`
+	Type       domain.NotificationEndpointType   `json:"type"`
+	Status     domain.NotificationEndpointStatus `json:"status"`
+	URL        string                            `json:"url"`
+	EventTypes []string                          `json:"event_types"`
+	CreatedAt  time.Time                         `json:"created_at"`
+	UpdatedAt  time.Time                         `json:"updated_at"`
 }
 
 type apiCertificateProfile struct {

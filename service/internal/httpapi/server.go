@@ -47,6 +47,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/rotate", s.rotateOCSPResponder)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/{responderID}/disable", s.disableOCSPResponder)
 
+	s.mux.HandleFunc("POST /notification-endpoints", s.createNotificationEndpoint)
+	s.mux.HandleFunc("GET /notification-endpoints", s.listNotificationEndpoints)
+	s.mux.HandleFunc("POST /notification-endpoints/{id}/disable", s.disableNotificationEndpoint)
+
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
 	s.mux.HandleFunc("GET /certificate-profiles/{id}", s.getCertificateProfile)
@@ -189,6 +193,43 @@ func (s *Server) rotateOCSPResponder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toOCSPResponderResponse(responder))
+}
+
+func (s *Server) createNotificationEndpoint(w http.ResponseWriter, r *http.Request) {
+	var req createNotificationEndpointRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	endpoint, err := s.service.CreateNotificationEndpoint(r.Context(), requestActor(r), lifecycle.CreateNotificationEndpointRequest{
+		Name:       req.Name,
+		URL:        req.URL,
+		EventTypes: req.EventTypes,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toNotificationEndpointResponse(endpoint))
+}
+
+func (s *Server) listNotificationEndpoints(w http.ResponseWriter, r *http.Request) {
+	endpoints, err := s.service.ListNotificationEndpoints(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toNotificationEndpointResponses(endpoints))
+}
+
+func (s *Server) disableNotificationEndpoint(w http.ResponseWriter, r *http.Request) {
+	endpoint, err := s.service.DisableNotificationEndpoint(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toNotificationEndpointResponse(endpoint))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -563,6 +604,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrIssuerNotFound.Error()
 	case errors.Is(err, domain.ErrOCSPResponderNotFound):
 		return domain.ErrOCSPResponderNotFound.Error()
+	case errors.Is(err, domain.ErrNotificationEndpointNotFound):
+		return domain.ErrNotificationEndpointNotFound.Error()
 	case errors.Is(err, domain.ErrCertificateProfileNotFound):
 		return domain.ErrCertificateProfileNotFound.Error()
 	case errors.Is(err, domain.ErrEnrollmentNotFound):
@@ -601,6 +644,7 @@ func statusForError(err error) int {
 	case errors.Is(err, domain.ErrIdentityNotFound),
 		errors.Is(err, domain.ErrIssuerNotFound),
 		errors.Is(err, domain.ErrOCSPResponderNotFound),
+		errors.Is(err, domain.ErrNotificationEndpointNotFound),
 		errors.Is(err, domain.ErrCertificateProfileNotFound),
 		errors.Is(err, domain.ErrEnrollmentNotFound),
 		errors.Is(err, domain.ErrCertificateNotFound),
@@ -642,6 +686,12 @@ type createOCSPResponderRequest struct {
 	Name           string `json:"name"`
 	CertificatePEM string `json:"certificate_pem"`
 	KeyRef         string `json:"key_ref"`
+}
+
+type createNotificationEndpointRequest struct {
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	EventTypes []string `json:"event_types"`
 }
 
 type createCertificateProfileRequest struct {
@@ -733,6 +783,17 @@ type ocspResponderResponse struct {
 	KeyRef         string                     `json:"key_ref"`
 	CreatedAt      time.Time                  `json:"created_at"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
+}
+
+type notificationEndpointResponse struct {
+	ID         string                            `json:"id"`
+	Name       string                            `json:"name"`
+	Type       domain.NotificationEndpointType   `json:"type"`
+	Status     domain.NotificationEndpointStatus `json:"status"`
+	URL        string                            `json:"url"`
+	EventTypes []string                          `json:"event_types"`
+	CreatedAt  time.Time                         `json:"created_at"`
+	UpdatedAt  time.Time                         `json:"updated_at"`
 }
 
 type certificateProfileResponse struct {
@@ -869,6 +930,27 @@ func toOCSPResponderResponses(responders []domain.OCSPResponder) []ocspResponder
 	responses := make([]ocspResponderResponse, 0, len(responders))
 	for _, responder := range responders {
 		responses = append(responses, toOCSPResponderResponse(responder))
+	}
+	return responses
+}
+
+func toNotificationEndpointResponse(endpoint domain.NotificationEndpoint) notificationEndpointResponse {
+	return notificationEndpointResponse{
+		ID:         endpoint.ID,
+		Name:       endpoint.Name,
+		Type:       endpoint.Type,
+		Status:     endpoint.Status,
+		URL:        endpoint.URL,
+		EventTypes: endpoint.EventTypes,
+		CreatedAt:  endpoint.CreatedAt,
+		UpdatedAt:  endpoint.UpdatedAt,
+	}
+}
+
+func toNotificationEndpointResponses(endpoints []domain.NotificationEndpoint) []notificationEndpointResponse {
+	responses := make([]notificationEndpointResponse, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		responses = append(responses, toNotificationEndpointResponse(endpoint))
 	}
 	return responses
 }

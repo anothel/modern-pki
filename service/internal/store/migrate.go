@@ -102,6 +102,18 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			ON job_attempts(outbox_message_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE TABLE IF NOT EXISTS notification_endpoints (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			url TEXT NOT NULL,
+			event_types TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
+			ON notification_endpoints(status, created_at, id)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -169,6 +181,18 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			ON job_attempts(outbox_message_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE TABLE IF NOT EXISTS notification_endpoints (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			url TEXT NOT NULL,
+			event_types TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
+			ON notification_endpoints(status, created_at, id)`,
 	}
 
 	for _, statement := range statements {

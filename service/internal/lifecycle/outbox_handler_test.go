@@ -71,3 +71,29 @@ func TestLifecycleOutboxHandlerAcceptsKnownLifecycleTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestLifecycleOutboxHandlerRoutesLifecycleTypesToWebhook(t *testing.T) {
+	ctx := context.Background()
+	handled := make([]string, 0)
+	handler := NewLifecycleOutboxHandlerWithWebhook(OutboxHandlerFunc(func(ctx context.Context, message domain.OutboxMessage) error {
+		handled = append(handled, message.Type)
+		return nil
+	}))
+
+	for _, messageType := range []string{
+		"certificate.expiration_warning",
+		"certificate.expired",
+		"certificate.revoked",
+	} {
+		if err := handler.HandleOutboxMessage(ctx, domain.OutboxMessage{
+			ID:          "outbox-" + messageType,
+			Type:        messageType,
+			PayloadJSON: `{"certificate_id":"cert-1"}`,
+		}); err != nil {
+			t.Fatalf("HandleOutboxMessage(%s) returned error: %v", messageType, err)
+		}
+	}
+	if len(handled) != 3 {
+		t.Fatalf("handled types = %#v, want three webhook deliveries", handled)
+	}
+}

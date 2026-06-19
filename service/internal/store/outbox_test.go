@@ -135,6 +135,23 @@ func TestSQLStoreCertificateExpirationScan(t *testing.T) {
 	testCertificateExpirationScan(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreNotificationEndpoints(t *testing.T) {
+	testNotificationEndpoints(t, NewMemoryStore())
+}
+
+func TestSQLStoreNotificationEndpoints(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testNotificationEndpoints(t, NewSQLStore(db))
+}
+
 func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()
@@ -200,6 +217,70 @@ func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	}
 	if len(attempts) != 1 || attempts[0].ID != attempt.ID || attempts[0].Error != "timeout" {
 		t.Fatalf("job attempts = %#v", attempts)
+	}
+}
+
+func testNotificationEndpoints(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	first := domain.NotificationEndpoint{
+		ID:         "endpoint-1",
+		Name:       "ops",
+		Type:       domain.NotificationEndpointWebhook,
+		Status:     domain.NotificationEndpointActive,
+		URL:        "https://ops.example.test/hooks/pki",
+		EventTypes: []string{"certificate.expiration_warning", "certificate.expired"},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	second := domain.NotificationEndpoint{
+		ID:         "endpoint-2",
+		Name:       "all-events",
+		Type:       domain.NotificationEndpointWebhook,
+		Status:     domain.NotificationEndpointActive,
+		URL:        "https://ops.example.test/hooks/all",
+		EventTypes: nil,
+		CreatedAt:  now.Add(time.Second),
+		UpdatedAt:  now.Add(time.Second),
+	}
+	if err := repo.CreateNotificationEndpoint(ctx, second); err != nil {
+		t.Fatalf("CreateNotificationEndpoint second returned error: %v", err)
+	}
+	if err := repo.CreateNotificationEndpoint(ctx, first); err != nil {
+		t.Fatalf("CreateNotificationEndpoint first returned error: %v", err)
+	}
+
+	listed, err := repo.ListNotificationEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("ListNotificationEndpoints returned error: %v", err)
+	}
+	if len(listed) != 2 || listed[0].ID != first.ID || listed[1].ID != second.ID {
+		t.Fatalf("notification endpoints = %#v, want creation order", listed)
+	}
+	listed[0].EventTypes[0] = "mutated"
+	stored, err := repo.GetNotificationEndpoint(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetNotificationEndpoint returned error: %v", err)
+	}
+	if stored.EventTypes[0] != "certificate.expiration_warning" {
+		t.Fatalf("stored event types mutated through list: %#v", stored.EventTypes)
+	}
+
+	stored.Status = domain.NotificationEndpointDisabled
+	stored.UpdatedAt = now.Add(time.Minute)
+	if err := repo.UpdateNotificationEndpointIfStatus(ctx, stored, domain.NotificationEndpointActive); err != nil {
+		t.Fatalf("UpdateNotificationEndpointIfStatus returned error: %v", err)
+	}
+	if err := repo.UpdateNotificationEndpointIfStatus(ctx, first, domain.NotificationEndpointActive); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("stale UpdateNotificationEndpointIfStatus error = %v, want ErrInvalidTransition", err)
+	}
+	disabled, err := repo.GetNotificationEndpoint(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetNotificationEndpoint disabled returned error: %v", err)
+	}
+	if disabled.Status != domain.NotificationEndpointDisabled {
+		t.Fatalf("disabled status = %q, want %q", disabled.Status, domain.NotificationEndpointDisabled)
 	}
 }
 
