@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
@@ -78,12 +79,20 @@ func (s *SQLStore) CreateOCSPResponder(ctx context.Context, responder domain.OCS
 	return s.repository().CreateOCSPResponder(ctx, responder)
 }
 
+func (s *SQLStore) GetOCSPResponder(ctx context.Context, id string) (domain.OCSPResponder, error) {
+	return s.repository().GetOCSPResponder(ctx, id)
+}
+
 func (s *SQLStore) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
 	return s.repository().ListOCSPRespondersByIssuer(ctx, issuerID)
 }
 
 func (s *SQLStore) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
 	return s.repository().GetActiveOCSPResponderByIssuer(ctx, issuerID)
+}
+
+func (s *SQLStore) UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
+	return s.repository().UpdateOCSPResponderIfStatus(ctx, responder, currentStatus)
 }
 
 func (s *SQLStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -327,7 +336,24 @@ INSERT INTO ocsp_responders (
 		formatSQLTime(responder.CreatedAt),
 		formatSQLTime(responder.UpdatedAt),
 	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
 	return err
+}
+
+func (r sqlRepository) GetOCSPResponder(ctx context.Context, id string) (domain.OCSPResponder, error) {
+	responder, err := scanOCSPResponder(r.exec.QueryRowContext(ctx, `
+SELECT id, issuer_id, name, status, certificate_pem, key_ref, created_at, updated_at
+FROM ocsp_responders
+WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
+	}
+	if err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	return responder, nil
 }
 
 func (r sqlRepository) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
@@ -369,6 +395,48 @@ LIMIT 1`, issuerID, string(domain.OCSPResponderActive)))
 		return domain.OCSPResponder{}, err
 	}
 	return responder, nil
+}
+
+func (r sqlRepository) UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE ocsp_responders
+SET issuer_id = $1,
+	name = $2,
+	status = $3,
+	certificate_pem = $4,
+	key_ref = $5,
+	created_at = $6,
+	updated_at = $7
+WHERE id = $8 AND status = $9`,
+		responder.IssuerID,
+		responder.Name,
+		string(responder.Status),
+		responder.CertificatePEM,
+		responder.KeyRef,
+		formatSQLTime(responder.CreatedAt),
+		formatSQLTime(responder.UpdatedAt),
+		responder.ID,
+		string(currentStatus),
+	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := affectedRows(result)
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 0 {
+		return nil
+	}
+	if _, err := r.GetOCSPResponder(ctx, responder.ID); errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		return err
+	} else if err != nil {
+		return err
+	}
+	return domain.ErrInvalidTransition
 }
 
 func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -1685,4 +1753,13 @@ func requireRowsAffected(result sql.Result, missingErr error) error {
 
 func affectedRows(result sql.Result) (int64, error) {
 	return result.RowsAffected()
+}
+
+func isUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique constraint failed") ||
+		strings.Contains(message, "duplicate key value violates unique constraint")
 }

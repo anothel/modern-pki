@@ -140,8 +140,24 @@ func (s *MemoryStore) CreateOCSPResponder(ctx context.Context, responder domain.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if responder.Status == domain.OCSPResponderActive {
+		if _, err := activeOCSPResponderByIssuer(s.ocspResponders, responder.IssuerID); err == nil {
+			return domain.ErrInvalidTransition
+		}
+	}
 	s.ocspResponders[responder.ID] = responder
 	return nil
+}
+
+func (s *MemoryStore) GetOCSPResponder(ctx context.Context, id string) (domain.OCSPResponder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	responder, ok := s.ocspResponders[id]
+	if !ok {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
+	}
+	return responder, nil
 }
 
 func (s *MemoryStore) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
@@ -156,6 +172,13 @@ func (s *MemoryStore) GetActiveOCSPResponderByIssuer(ctx context.Context, issuer
 	defer s.mu.RUnlock()
 
 	return activeOCSPResponderByIssuer(s.ocspResponders, issuerID)
+}
+
+func (s *MemoryStore) UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateOCSPResponderIfStatus(s.ocspResponders, responder, currentStatus)
 }
 
 func (s *MemoryStore) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {
@@ -432,6 +455,23 @@ func updateCertificateIfStatus(certificates map[string]domain.Certificate, certi
 	return nil
 }
 
+func updateOCSPResponderIfStatus(responders map[string]domain.OCSPResponder, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
+	current, ok := responders[responder.ID]
+	if !ok {
+		return domain.ErrOCSPResponderNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	if responder.Status == domain.OCSPResponderActive {
+		if active, err := activeOCSPResponderByIssuer(responders, responder.IssuerID); err == nil && active.ID != responder.ID {
+			return domain.ErrInvalidTransition
+		}
+	}
+	responders[responder.ID] = responder
+	return nil
+}
+
 func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Time, limit int) []domain.OutboxMessage {
 	if limit <= 0 {
 		return nil
@@ -548,8 +588,21 @@ func (tx *memoryTx) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 }
 
 func (tx *memoryTx) CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error {
+	if responder.Status == domain.OCSPResponderActive {
+		if _, err := activeOCSPResponderByIssuer(tx.ocspResponders, responder.IssuerID); err == nil {
+			return domain.ErrInvalidTransition
+		}
+	}
 	tx.ocspResponders[responder.ID] = responder
 	return nil
+}
+
+func (tx *memoryTx) GetOCSPResponder(ctx context.Context, id string) (domain.OCSPResponder, error) {
+	responder, ok := tx.ocspResponders[id]
+	if !ok {
+		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
+	}
+	return responder, nil
 }
 
 func (tx *memoryTx) ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error) {
@@ -558,6 +611,10 @@ func (tx *memoryTx) ListOCSPRespondersByIssuer(ctx context.Context, issuerID str
 
 func (tx *memoryTx) GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error) {
 	return activeOCSPResponderByIssuer(tx.ocspResponders, issuerID)
+}
+
+func (tx *memoryTx) UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error {
+	return updateOCSPResponderIfStatus(tx.ocspResponders, responder, currentStatus)
 }
 
 func (tx *memoryTx) CreateCertificateProfile(ctx context.Context, profile domain.CertificateProfile) error {

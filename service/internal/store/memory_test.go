@@ -193,15 +193,30 @@ func TestMemoryStoreOCSPResponders(t *testing.T) {
 	if err := s.CreateOCSPResponder(ctx, first); err != nil {
 		t.Fatalf("CreateOCSPResponder first returned error: %v", err)
 	}
-	if err := s.CreateOCSPResponder(ctx, second); err != nil {
-		t.Fatalf("CreateOCSPResponder second returned error: %v", err)
+	if err := s.CreateOCSPResponder(ctx, second); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("CreateOCSPResponder second error = %v, want ErrInvalidTransition", err)
 	}
 	active, err := s.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
 	if err != nil {
 		t.Fatalf("GetActiveOCSPResponderByIssuer returned error: %v", err)
 	}
-	if active.ID != second.ID {
-		t.Fatalf("active responder ID = %q, want %q", active.ID, second.ID)
+	if active.ID != first.ID {
+		t.Fatalf("active responder ID = %q, want %q", active.ID, first.ID)
+	}
+	stored, err := s.GetOCSPResponder(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetOCSPResponder returned error: %v", err)
+	}
+	stored.Status = domain.OCSPResponderDisabled
+	stored.UpdatedAt = time.Unix(25, 0)
+	if err := s.UpdateOCSPResponderIfStatus(ctx, stored, domain.OCSPResponderActive); err != nil {
+		t.Fatalf("UpdateOCSPResponderIfStatus returned error: %v", err)
+	}
+	if _, err := s.GetActiveOCSPResponderByIssuer(ctx, issuer.ID); !errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		t.Fatalf("GetActiveOCSPResponderByIssuer error = %v, want ErrOCSPResponderNotFound", err)
+	}
+	if err := s.CreateOCSPResponder(ctx, second); err != nil {
+		t.Fatalf("CreateOCSPResponder second after disable returned error: %v", err)
 	}
 	list, err := s.ListOCSPRespondersByIssuer(ctx, issuer.ID)
 	if err != nil {
@@ -209,5 +224,8 @@ func TestMemoryStoreOCSPResponders(t *testing.T) {
 	}
 	if len(list) != 2 {
 		t.Fatalf("responder count = %d, want 2", len(list))
+	}
+	if list[0].Status != domain.OCSPResponderDisabled || list[1].Status != domain.OCSPResponderActive {
+		t.Fatalf("responder statuses = %#v", list)
 	}
 }

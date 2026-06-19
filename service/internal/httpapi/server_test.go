@@ -150,6 +150,74 @@ func TestCreateOCSPResponderRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestCreateOCSPResponderRequiresDisableBeforeReplacement(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var created apiOCSPResponder
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-a-ocsp",
+		"certificate_pem": "responder-a-pem",
+		"key_ref":         "responder-a-key",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+
+	var body errorResponse
+	status = api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-b-ocsp",
+		"certificate_pem": "responder-b-pem",
+		"key_ref":         "responder-b-key",
+	}, &body)
+	assertStatus(t, status, http.StatusConflict)
+	if body.Error != domain.ErrInvalidTransition.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidTransition.Error())
+	}
+	if len(api.issuer.ocspResponderValidationRequests) != 1 {
+		t.Fatalf("ValidateOCSPResponder call count = %d, want 1", len(api.issuer.ocspResponderValidationRequests))
+	}
+}
+
+func TestDisableOCSPResponderAllowsReplacement(t *testing.T) {
+	api := newTestAPI(t)
+	issuer := api.createIssuer(t)
+
+	var first apiOCSPResponder
+	status := api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-a-ocsp",
+		"certificate_pem": "responder-a-pem",
+		"key_ref":         "responder-a-key",
+	}, &first)
+	assertStatus(t, status, http.StatusCreated)
+
+	var disabled apiOCSPResponder
+	status = api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders/"+first.ID+"/disable", "admin", nil, &disabled)
+	assertStatus(t, status, http.StatusOK)
+	if disabled.Status != domain.OCSPResponderDisabled {
+		t.Fatalf("disabled responder status = %q, want %q", disabled.Status, domain.OCSPResponderDisabled)
+	}
+
+	var second apiOCSPResponder
+	status = api.doJSON(t, http.MethodPost, "/issuers/"+issuer.ID+"/ocsp-responders", "admin", map[string]any{
+		"name":            "issuer-b-ocsp",
+		"certificate_pem": "responder-b-pem",
+		"key_ref":         "responder-b-key",
+	}, &second)
+	assertStatus(t, status, http.StatusCreated)
+	if second.Status != domain.OCSPResponderActive {
+		t.Fatalf("replacement responder status = %q, want %q", second.Status, domain.OCSPResponderActive)
+	}
+
+	var listed []apiOCSPResponder
+	status = api.doJSON(t, http.MethodGet, "/issuers/"+issuer.ID+"/ocsp-responders", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 2 {
+		t.Fatalf("OCSP responder count = %d, want 2", len(listed))
+	}
+	if listed[0].Status != domain.OCSPResponderDisabled || listed[1].Status != domain.OCSPResponderActive {
+		t.Fatalf("OCSP responder statuses = %#v", listed)
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)

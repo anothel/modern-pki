@@ -21,8 +21,10 @@ type IssuerRepository interface {
 
 type OCSPResponderRepository interface {
 	CreateOCSPResponder(ctx context.Context, responder domain.OCSPResponder) error
+	GetOCSPResponder(ctx context.Context, id string) (domain.OCSPResponder, error)
 	ListOCSPRespondersByIssuer(ctx context.Context, issuerID string) ([]domain.OCSPResponder, error)
 	GetActiveOCSPResponderByIssuer(ctx context.Context, issuerID string) (domain.OCSPResponder, error)
+	UpdateOCSPResponderIfStatus(ctx context.Context, responder domain.OCSPResponder, currentStatus domain.OCSPResponderStatus) error
 }
 
 type CertificateProfileRepository interface {

@@ -221,6 +221,11 @@ func (s *Service) CreateOCSPResponder(ctx context.Context, actor string, req Cre
 	if err != nil {
 		return domain.OCSPResponder{}, err
 	}
+	if _, err := s.repo.GetActiveOCSPResponderByIssuer(ctx, req.IssuerID); err == nil {
+		return domain.OCSPResponder{}, domain.ErrInvalidTransition
+	} else if !errors.Is(err, domain.ErrOCSPResponderNotFound) {
+		return domain.OCSPResponder{}, err
+	}
 	validation, err := s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
 	if err != nil {
 		return domain.OCSPResponder{}, mapOCSPResponseError(err)
@@ -263,6 +268,43 @@ func (s *Service) ListOCSPRespondersByIssuer(ctx context.Context, issuerID strin
 		return nil, err
 	}
 	return s.repo.ListOCSPRespondersByIssuer(ctx, issuerID)
+}
+
+func (s *Service) DisableOCSPResponder(ctx context.Context, actor string, issuerID string, responderID string) (domain.OCSPResponder, error) {
+	if isBlank(issuerID) || isBlank(responderID) {
+		return domain.OCSPResponder{}, domain.ErrInvalidRequest
+	}
+
+	var responder domain.OCSPResponder
+	now := s.clock.Now()
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if _, err := repo.GetIssuer(ctx, issuerID); err != nil {
+			return err
+		}
+		var err error
+		responder, err = repo.GetOCSPResponder(ctx, responderID)
+		if err != nil {
+			return err
+		}
+		if responder.IssuerID != issuerID {
+			return domain.ErrOCSPResponderNotFound
+		}
+		if responder.Status != domain.OCSPResponderActive {
+			return domain.ErrInvalidTransition
+		}
+		responder.Status = domain.OCSPResponderDisabled
+		responder.UpdatedAt = now
+		if err := repo.UpdateOCSPResponderIfStatus(ctx, responder, domain.OCSPResponderActive); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "ocsp_responder.disabled", "ocsp_responder", responder.ID, now, auditFields(
+			"issuer_id", responder.IssuerID,
+			"ocsp_responder_id", responder.ID,
+		))
+	}); err != nil {
+		return domain.OCSPResponder{}, err
+	}
+	return responder, nil
 }
 
 func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, req CreateCertificateProfileRequest) (domain.CertificateProfile, error) {
@@ -1104,6 +1146,8 @@ func auditErrorCode(err error) string {
 		return "identity_not_found"
 	case errors.Is(err, domain.ErrIssuerNotFound):
 		return "issuer_not_found"
+	case errors.Is(err, domain.ErrOCSPResponderNotFound):
+		return "ocsp_responder_not_found"
 	case errors.Is(err, domain.ErrCertificateProfileNotFound):
 		return "certificate_profile_not_found"
 	case errors.Is(err, domain.ErrEnrollmentNotFound):

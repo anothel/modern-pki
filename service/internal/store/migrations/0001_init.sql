@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS ocsp_responders (
 CREATE INDEX IF NOT EXISTS idx_ocsp_responders_issuer_active
     ON ocsp_responders(issuer_id, status, created_at, id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ocsp_responders_single_active
+    ON ocsp_responders(issuer_id)
+    WHERE status = 'active';
+
 CREATE TABLE IF NOT EXISTS certificate_profiles (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

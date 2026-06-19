@@ -44,6 +44,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /issuers", s.createIssuer)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders", s.createOCSPResponder)
 	s.mux.HandleFunc("GET /issuers/{id}/ocsp-responders", s.listOCSPResponders)
+	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/{responderID}/disable", s.disableOCSPResponder)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -157,6 +158,15 @@ func (s *Server) listOCSPResponders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toOCSPResponderResponses(responders))
+}
+
+func (s *Server) disableOCSPResponder(w http.ResponseWriter, r *http.Request) {
+	responder, err := s.service.DisableOCSPResponder(r.Context(), requestActor(r), r.PathValue("id"), r.PathValue("responderID"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toOCSPResponderResponse(responder))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -511,6 +521,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrIdentityNotFound.Error()
 	case errors.Is(err, domain.ErrIssuerNotFound):
 		return domain.ErrIssuerNotFound.Error()
+	case errors.Is(err, domain.ErrOCSPResponderNotFound):
+		return domain.ErrOCSPResponderNotFound.Error()
 	case errors.Is(err, domain.ErrCertificateProfileNotFound):
 		return domain.ErrCertificateProfileNotFound.Error()
 	case errors.Is(err, domain.ErrEnrollmentNotFound):
@@ -546,6 +558,7 @@ func statusForError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrIdentityNotFound),
 		errors.Is(err, domain.ErrIssuerNotFound),
+		errors.Is(err, domain.ErrOCSPResponderNotFound),
 		errors.Is(err, domain.ErrCertificateProfileNotFound),
 		errors.Is(err, domain.ErrEnrollmentNotFound),
 		errors.Is(err, domain.ErrCertificateNotFound),
