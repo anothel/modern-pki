@@ -84,6 +84,9 @@ CREATE TABLE certificates (
 		{table: "enrollments", name: "certificate_profile_id"},
 		{table: "certificates", name: "certificate_profile_id"},
 		{table: "certificates", name: "renewal_notified_at"},
+		{table: "outbox_messages", name: "attempt_count"},
+		{table: "outbox_messages", name: "max_attempts"},
+		{table: "outbox_messages", name: "last_error"},
 	} {
 		if !testSQLiteColumnExists(t, db, tt.table, tt.name) {
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)

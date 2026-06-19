@@ -84,6 +84,9 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			available_at TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -118,6 +121,26 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("execute sqlite compatibility migration: %w", err)
+		}
+	}
+	outboxColumns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "attempt_count", definition: "attempt_count INTEGER NOT NULL DEFAULT 0"},
+		{name: "max_attempts", definition: "max_attempts INTEGER NOT NULL DEFAULT 0"},
+		{name: "last_error", definition: "last_error TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range outboxColumns {
+		exists, err := sqliteColumnExists(ctx, db, "outbox_messages", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE outbox_messages ADD COLUMN %s", column.definition)); err != nil {
+			return fmt.Errorf("add sqlite column outbox_messages.%s: %w", column.name, err)
 		}
 	}
 	return nil
@@ -163,9 +186,15 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			payload_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			available_at TIMESTAMPTZ NOT NULL,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT ''",
 		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
 			ON outbox_messages(status, available_at, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS job_attempts (

@@ -203,6 +203,14 @@ func (s *SQLStore) CreateOutboxMessage(ctx context.Context, message domain.Outbo
 	return s.repository().CreateOutboxMessage(ctx, message)
 }
 
+func (s *SQLStore) GetOutboxMessage(ctx context.Context, id string) (domain.OutboxMessage, error) {
+	return s.repository().GetOutboxMessage(ctx, id)
+}
+
+func (s *SQLStore) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
+	return s.repository().ListOutboxMessages(ctx, status)
+}
+
 func (s *SQLStore) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
 	return s.repository().ListDueOutboxMessages(ctx, now, limit)
 }
@@ -1196,19 +1204,67 @@ ORDER BY created_at, id`)
 func (r sqlRepository) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
 	_, err := r.exec.ExecContext(ctx, `
 INSERT INTO outbox_messages (
-	id, type, payload_json, status, available_at, created_at, updated_at
+	id, type, payload_json, status, available_at, attempt_count, max_attempts, last_error, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 )`,
 		message.ID,
 		message.Type,
 		message.PayloadJSON,
 		string(message.Status),
 		formatSQLTime(message.AvailableAt),
+		message.AttemptCount,
+		message.MaxAttempts,
+		message.LastError,
 		formatSQLTime(message.CreatedAt),
 		formatSQLTime(message.UpdatedAt),
 	)
 	return err
+}
+
+func (r sqlRepository) GetOutboxMessage(ctx context.Context, id string) (domain.OutboxMessage, error) {
+	message, err := scanOutboxMessage(r.exec.QueryRowContext(ctx, `
+SELECT id, type, payload_json, status, available_at, attempt_count, max_attempts, last_error, created_at, updated_at
+FROM outbox_messages
+WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.OutboxMessage{}, domain.ErrOutboxMessageNotFound
+	}
+	if err != nil {
+		return domain.OutboxMessage{}, err
+	}
+	return message, nil
+}
+
+func (r sqlRepository) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
+	query := `
+SELECT id, type, payload_json, status, available_at, attempt_count, max_attempts, last_error, created_at, updated_at
+FROM outbox_messages`
+	args := []any{}
+	if status != "" {
+		query += " WHERE status = $1"
+		args = append(args, string(status))
+	}
+	query += " ORDER BY created_at, id"
+
+	rows, err := r.exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := make([]domain.OutboxMessage, 0)
+	for rows.Next() {
+		message, err := scanOutboxMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 func (r sqlRepository) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
@@ -1217,7 +1273,7 @@ func (r sqlRepository) ListDueOutboxMessages(ctx context.Context, now time.Time,
 	}
 
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, type, payload_json, status, available_at, created_at, updated_at
+SELECT id, type, payload_json, status, available_at, attempt_count, max_attempts, last_error, created_at, updated_at
 FROM outbox_messages
 WHERE status = $1 AND available_at <= $2
 ORDER BY available_at, created_at, id
@@ -1248,13 +1304,19 @@ SET type = $1,
 	payload_json = $2,
 	status = $3,
 	available_at = $4,
-	created_at = $5,
-	updated_at = $6
-WHERE id = $7 AND status = $8`,
+	attempt_count = $5,
+	max_attempts = $6,
+	last_error = $7,
+	created_at = $8,
+	updated_at = $9
+WHERE id = $10 AND status = $11`,
 		message.Type,
 		message.PayloadJSON,
 		string(message.Status),
 		formatSQLTime(message.AvailableAt),
+		message.AttemptCount,
+		message.MaxAttempts,
+		message.LastError,
 		formatSQLTime(message.CreatedAt),
 		formatSQLTime(message.UpdatedAt),
 		message.ID,
@@ -1271,7 +1333,7 @@ WHERE id = $7 AND status = $8`,
 		return nil
 	}
 	if _, err := scanOutboxMessage(r.exec.QueryRowContext(ctx, `
-SELECT id, type, payload_json, status, available_at, created_at, updated_at
+SELECT id, type, payload_json, status, available_at, attempt_count, max_attempts, last_error, created_at, updated_at
 FROM outbox_messages
 WHERE id = $1`, message.ID)); errors.Is(err, sql.ErrNoRows) {
 		return domain.ErrOutboxMessageNotFound
@@ -1726,6 +1788,9 @@ func scanOutboxMessage(scanner sqlScanner) (domain.OutboxMessage, error) {
 		&message.PayloadJSON,
 		&status,
 		&availableAt,
+		&message.AttemptCount,
+		&message.MaxAttempts,
+		&message.LastError,
 		&createdAt,
 		&updatedAt,
 	); err != nil {

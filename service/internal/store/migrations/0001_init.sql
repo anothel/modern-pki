@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL,
     available_at TIMESTAMPTZ NOT NULL,
+    attempt_count INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    last_error TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );

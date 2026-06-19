@@ -101,14 +101,98 @@ func TestOutboxDispatcherRecordsFailure(t *testing.T) {
 	if len(attempts) != 1 || attempts[0].Status != domain.JobAttemptFailed || attempts[0].Error != "notify failed" {
 		t.Fatalf("attempts = %#v, want one failed attempt", attempts)
 	}
-	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(defaultOutboxRetryDelay), 10)
+	retryDelay := outboxRetryDelayForAttempt(1)
+	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(retryDelay), 10)
 	if err != nil {
 		t.Fatalf("ListDueOutboxMessages retry returned error: %v", err)
 	}
 	if len(retryDue) != 1 || retryDue[0].ID != message.ID || retryDue[0].Status != domain.OutboxPending {
 		t.Fatalf("retry due messages = %#v, want pending message", retryDue)
 	}
-	if !retryDue[0].AvailableAt.Equal(clock.now.Add(defaultOutboxRetryDelay)) {
-		t.Fatalf("retry available_at = %s, want %s", retryDue[0].AvailableAt, clock.now.Add(defaultOutboxRetryDelay))
+	if retryDue[0].AttemptCount != 1 || retryDue[0].LastError != "notify failed" {
+		t.Fatalf("retry metadata = %#v", retryDue[0])
+	}
+	if !retryDue[0].AvailableAt.Equal(clock.now.Add(retryDelay)) {
+		t.Fatalf("retry available_at = %s, want %s", retryDue[0].AvailableAt, clock.now.Add(retryDelay))
+	}
+}
+
+func TestOutboxDispatcherUsesCappedBackoff(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	message := domain.OutboxMessage{
+		ID:           "outbox-1",
+		Type:         "certificate.expiring",
+		PayloadJSON:  `{"certificate_id":"cert-1"}`,
+		Status:       domain.OutboxPending,
+		AvailableAt:  clock.now.Add(-time.Minute),
+		AttemptCount: 2,
+		MaxAttempts:  5,
+		CreatedAt:    clock.now.Add(-time.Minute),
+		UpdatedAt:    clock.now.Add(-time.Minute),
+	}
+	if err := repo.CreateOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+	dispatcher := NewOutboxDispatcher(repo, OutboxHandlerFunc(func(ctx context.Context, message domain.OutboxMessage) error {
+		return errors.New("still down")
+	}), clock, &fakeIDGenerator{})
+
+	processed, err := dispatcher.RunOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+	retryDelay := outboxRetryDelayForAttempt(3)
+	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(retryDelay), 10)
+	if err != nil {
+		t.Fatalf("ListDueOutboxMessages retry returned error: %v", err)
+	}
+	if len(retryDue) != 1 || retryDue[0].AttemptCount != 3 || retryDue[0].LastError != "still down" {
+		t.Fatalf("retry due = %#v", retryDue)
+	}
+	if !retryDue[0].AvailableAt.Equal(clock.now.Add(retryDelay)) {
+		t.Fatalf("retry available_at = %s, want %s", retryDue[0].AvailableAt, clock.now.Add(retryDelay))
+	}
+}
+
+func TestOutboxDispatcherDeadLettersAfterMaxAttempts(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	message := domain.OutboxMessage{
+		ID:           "outbox-1",
+		Type:         "certificate.expiring",
+		PayloadJSON:  `{"certificate_id":"cert-1"}`,
+		Status:       domain.OutboxPending,
+		AvailableAt:  clock.now.Add(-time.Minute),
+		AttemptCount: 4,
+		MaxAttempts:  5,
+		CreatedAt:    clock.now.Add(-time.Minute),
+		UpdatedAt:    clock.now.Add(-time.Minute),
+	}
+	if err := repo.CreateOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+	dispatcher := NewOutboxDispatcher(repo, OutboxHandlerFunc(func(ctx context.Context, message domain.OutboxMessage) error {
+		return errors.New("permanent failure")
+	}), clock, &fakeIDGenerator{})
+
+	processed, err := dispatcher.RunOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+	dead, err := repo.ListOutboxMessages(ctx, domain.OutboxDeadLetter)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages dead letter returned error: %v", err)
+	}
+	if len(dead) != 1 || dead[0].ID != message.ID || dead[0].AttemptCount != 5 || dead[0].LastError != "permanent failure" {
+		t.Fatalf("dead letter messages = %#v", dead)
 	}
 }

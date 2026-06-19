@@ -76,6 +76,8 @@ type AuditRepository interface {
 
 type OutboxRepository interface {
 	CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error
+	GetOutboxMessage(ctx context.Context, id string) (domain.OutboxMessage, error)
+	ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error)
 	ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error)
 	UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error
 	CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error

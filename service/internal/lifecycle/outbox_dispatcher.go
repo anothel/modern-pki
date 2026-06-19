@@ -9,7 +9,14 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
-const defaultOutboxRetryDelay = time.Minute
+const defaultOutboxMaxAttempts = 5
+
+var outboxRetryDelays = []time.Duration{
+	time.Minute,
+	5 * time.Minute,
+	15 * time.Minute,
+	time.Hour,
+}
 
 type OutboxHandler interface {
 	HandleOutboxMessage(context.Context, domain.OutboxMessage) error
@@ -62,9 +69,18 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 		errorMessage := ""
 		if handlerErr != nil {
 			attemptStatus = domain.JobAttemptFailed
-			nextStatus = domain.OutboxPending
 			errorMessage = handlerErr.Error()
-			message.AvailableAt = finishedAt.Add(defaultOutboxRetryDelay)
+			message.AttemptCount++
+			message.MaxAttempts = effectiveOutboxMaxAttempts(message)
+			message.LastError = errorMessage
+			if message.AttemptCount >= message.MaxAttempts {
+				nextStatus = domain.OutboxDeadLetter
+			} else {
+				nextStatus = domain.OutboxPending
+				message.AvailableAt = finishedAt.Add(outboxRetryDelayForAttempt(message.AttemptCount))
+			}
+		} else {
+			message.LastError = ""
 		}
 
 		if err := d.finish(ctx, message, nextStatus, domain.JobAttempt{
@@ -81,6 +97,24 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 		processed++
 	}
 	return processed, nil
+}
+
+func effectiveOutboxMaxAttempts(message domain.OutboxMessage) int {
+	if message.MaxAttempts > 0 {
+		return message.MaxAttempts
+	}
+	return defaultOutboxMaxAttempts
+}
+
+func outboxRetryDelayForAttempt(attemptCount int) time.Duration {
+	if attemptCount <= 1 {
+		return outboxRetryDelays[0]
+	}
+	index := attemptCount - 1
+	if index >= len(outboxRetryDelays) {
+		index = len(outboxRetryDelays) - 1
+	}
+	return outboxRetryDelays[index]
 }
 
 func (d *OutboxDispatcher) claim(ctx context.Context, message domain.OutboxMessage) (bool, error) {

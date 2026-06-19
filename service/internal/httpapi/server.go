@@ -51,6 +51,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /notification-endpoints", s.listNotificationEndpoints)
 	s.mux.HandleFunc("POST /notification-endpoints/{id}/disable", s.disableNotificationEndpoint)
 
+	s.mux.HandleFunc("GET /outbox/messages", s.listOutboxMessages)
+	s.mux.HandleFunc("POST /outbox/messages/{id}/retry", s.retryOutboxMessage)
+
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
 	s.mux.HandleFunc("GET /certificate-profiles/{id}", s.getCertificateProfile)
@@ -230,6 +233,24 @@ func (s *Server) disableNotificationEndpoint(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, toNotificationEndpointResponse(endpoint))
+}
+
+func (s *Server) listOutboxMessages(w http.ResponseWriter, r *http.Request) {
+	messages, err := s.service.ListOutboxMessages(r.Context(), domain.OutboxMessageStatus(r.URL.Query().Get("status")))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toOutboxMessageResponses(messages))
+}
+
+func (s *Server) retryOutboxMessage(w http.ResponseWriter, r *http.Request) {
+	message, err := s.service.RetryOutboxMessage(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toOutboxMessageResponse(message))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -614,6 +635,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrCertificateNotFound.Error()
 	case errors.Is(err, domain.ErrCRLPublicationNotFound):
 		return domain.ErrCRLPublicationNotFound.Error()
+	case errors.Is(err, domain.ErrOutboxMessageNotFound):
+		return domain.ErrOutboxMessageNotFound.Error()
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return domain.ErrCSRParseFailed.Error()
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
@@ -648,7 +671,8 @@ func statusForError(err error) int {
 		errors.Is(err, domain.ErrCertificateProfileNotFound),
 		errors.Is(err, domain.ErrEnrollmentNotFound),
 		errors.Is(err, domain.ErrCertificateNotFound),
-		errors.Is(err, domain.ErrCRLPublicationNotFound):
+		errors.Is(err, domain.ErrCRLPublicationNotFound),
+		errors.Is(err, domain.ErrOutboxMessageNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return http.StatusUnprocessableEntity
@@ -794,6 +818,19 @@ type notificationEndpointResponse struct {
 	EventTypes []string                          `json:"event_types"`
 	CreatedAt  time.Time                         `json:"created_at"`
 	UpdatedAt  time.Time                         `json:"updated_at"`
+}
+
+type outboxMessageResponse struct {
+	ID           string                     `json:"id"`
+	Type         string                     `json:"type"`
+	PayloadJSON  string                     `json:"payload_json"`
+	Status       domain.OutboxMessageStatus `json:"status"`
+	AvailableAt  time.Time                  `json:"available_at"`
+	AttemptCount int                        `json:"attempt_count"`
+	MaxAttempts  int                        `json:"max_attempts"`
+	LastError    string                     `json:"last_error"`
+	CreatedAt    time.Time                  `json:"created_at"`
+	UpdatedAt    time.Time                  `json:"updated_at"`
 }
 
 type certificateProfileResponse struct {
@@ -951,6 +988,29 @@ func toNotificationEndpointResponses(endpoints []domain.NotificationEndpoint) []
 	responses := make([]notificationEndpointResponse, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		responses = append(responses, toNotificationEndpointResponse(endpoint))
+	}
+	return responses
+}
+
+func toOutboxMessageResponse(message domain.OutboxMessage) outboxMessageResponse {
+	return outboxMessageResponse{
+		ID:           message.ID,
+		Type:         message.Type,
+		PayloadJSON:  message.PayloadJSON,
+		Status:       message.Status,
+		AvailableAt:  message.AvailableAt,
+		AttemptCount: message.AttemptCount,
+		MaxAttempts:  message.MaxAttempts,
+		LastError:    message.LastError,
+		CreatedAt:    message.CreatedAt,
+		UpdatedAt:    message.UpdatedAt,
+	}
+}
+
+func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageResponse {
+	responses := make([]outboxMessageResponse, 0, len(messages))
+	for _, message := range messages {
+		responses = append(responses, toOutboxMessageResponse(message))
 	}
 	return responses
 }

@@ -436,6 +436,50 @@ func (s *Service) ListNotificationEndpoints(ctx context.Context) ([]domain.Notif
 	return s.repo.ListNotificationEndpoints(ctx)
 }
 
+func (s *Service) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
+	if status != "" && !isValidOutboxMessageStatus(status) {
+		return nil, domain.ErrInvalidRequest
+	}
+	return s.repo.ListOutboxMessages(ctx, status)
+}
+
+func (s *Service) RetryOutboxMessage(ctx context.Context, actor string, id string) (domain.OutboxMessage, error) {
+	if isBlank(id) {
+		return domain.OutboxMessage{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	message, err := s.repo.GetOutboxMessage(ctx, id)
+	if err != nil {
+		return domain.OutboxMessage{}, err
+	}
+	currentStatus := message.Status
+	if currentStatus != domain.OutboxDeadLetter && currentStatus != domain.OutboxFailed {
+		return domain.OutboxMessage{}, domain.ErrInvalidTransition
+	}
+	message.Status = domain.OutboxPending
+	message.AvailableAt = now
+	message.AttemptCount = 0
+	if message.MaxAttempts <= 0 {
+		message.MaxAttempts = defaultOutboxMaxAttempts
+	}
+	message.LastError = ""
+	message.UpdatedAt = now
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.UpdateOutboxMessageStatusIfStatus(ctx, message, currentStatus); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "outbox.retry_requested", "outbox_message", message.ID, now, auditFields(
+			"outbox_message_id", message.ID,
+			"outbox_message_type", message.Type,
+		))
+	}); err != nil {
+		return domain.OutboxMessage{}, err
+	}
+	return message, nil
+}
+
 func (s *Service) DisableNotificationEndpoint(ctx context.Context, actor string, id string) (domain.NotificationEndpoint, error) {
 	if isBlank(id) {
 		return domain.NotificationEndpoint{}, domain.ErrInvalidRequest
@@ -1315,6 +1359,7 @@ func (s *Service) createOutboxMessage(ctx context.Context, repo store.Repository
 		PayloadJSON: string(encoded),
 		Status:      domain.OutboxPending,
 		AvailableAt: createdAt,
+		MaxAttempts: defaultOutboxMaxAttempts,
 		CreatedAt:   createdAt,
 		UpdatedAt:   createdAt,
 	})
@@ -1705,6 +1750,15 @@ func isValidIdentityType(identityType domain.IdentityType) bool {
 func isValidIssuerKind(kind domain.IssuerKind) bool {
 	switch kind {
 	case domain.IssuerRootCA, domain.IssuerIntermediateCA:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidOutboxMessageStatus(status domain.OutboxMessageStatus) bool {
+	switch status {
+	case domain.OutboxPending, domain.OutboxProcessing, domain.OutboxCompleted, domain.OutboxFailed, domain.OutboxDeadLetter:
 		return true
 	default:
 		return false

@@ -78,6 +78,7 @@ const (
 	OutboxProcessing OutboxMessageStatus = "processing"
 	OutboxCompleted  OutboxMessageStatus = "completed"
 	OutboxFailed     OutboxMessageStatus = "failed"
+	OutboxDeadLetter OutboxMessageStatus = "dead_letter"
 )
 
 type JobAttemptStatus string
@@ -256,13 +257,16 @@ type AuditEvent struct {
 }
 
 type OutboxMessage struct {
-	ID          string
-	Type        string
-	PayloadJSON string
-	Status      OutboxMessageStatus
-	AvailableAt time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID           string
+	Type         string
+	PayloadJSON  string
+	Status       OutboxMessageStatus
+	AvailableAt  time.Time
+	AttemptCount int
+	MaxAttempts  int
+	LastError    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type JobAttempt struct {

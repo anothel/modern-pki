@@ -368,6 +368,46 @@ func TestCreateNotificationEndpointRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestListOutboxMessagesByStatusAndRetry(t *testing.T) {
+	api := newTestAPI(t)
+	message := domain.OutboxMessage{
+		ID:           "outbox-dead",
+		Type:         "certificate.expiration_warning",
+		PayloadJSON:  `{"certificate_id":"cert-1"}`,
+		Status:       domain.OutboxDeadLetter,
+		AvailableAt:  testNow.Add(time.Hour),
+		AttemptCount: 5,
+		MaxAttempts:  5,
+		LastError:    "webhook failed",
+		CreatedAt:    testNow,
+		UpdatedAt:    testNow,
+	}
+	if err := api.repo.CreateOutboxMessage(api.ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+
+	var listed []apiOutboxMessage
+	status := api.doJSON(t, http.MethodGet, "/outbox/messages?status=dead_letter", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 ||
+		listed[0].ID != message.ID ||
+		listed[0].Status != domain.OutboxDeadLetter ||
+		listed[0].AttemptCount != 5 ||
+		listed[0].LastError != "webhook failed" {
+		t.Fatalf("listed outbox messages = %#v", listed)
+	}
+
+	var retried apiOutboxMessage
+	status = api.doJSON(t, http.MethodPost, "/outbox/messages/"+message.ID+"/retry", "operator", nil, &retried)
+	assertStatus(t, status, http.StatusOK)
+	if retried.Status != domain.OutboxPending ||
+		retried.AttemptCount != 0 ||
+		retried.LastError != "" ||
+		!retried.AvailableAt.Equal(testNow) {
+		t.Fatalf("retried outbox message = %#v", retried)
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -936,6 +976,7 @@ type testAPI struct {
 	ctx     context.Context
 	client  *http.Client
 	url     string
+	repo    store.Repository
 	service *lifecycle.Service
 	issuer  *fakeIssuer
 }
@@ -944,8 +985,9 @@ func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
 
 	issuer := &fakeIssuer{}
+	repo := store.NewMemoryStore()
 	service := lifecycle.New(
-		store.NewMemoryStore(),
+		repo,
 		issuer,
 		fixedClock{now: testNow},
 		&fakeIDGenerator{},
@@ -957,6 +999,7 @@ func newTestAPI(t *testing.T) *testAPI {
 		ctx:     context.Background(),
 		client:  server.Client(),
 		url:     server.URL,
+		repo:    repo,
 		service: service,
 		issuer:  issuer,
 	}
@@ -1274,6 +1317,19 @@ type apiNotificationEndpoint struct {
 	EventTypes []string                          `json:"event_types"`
 	CreatedAt  time.Time                         `json:"created_at"`
 	UpdatedAt  time.Time                         `json:"updated_at"`
+}
+
+type apiOutboxMessage struct {
+	ID           string                     `json:"id"`
+	Type         string                     `json:"type"`
+	PayloadJSON  string                     `json:"payload_json"`
+	Status       domain.OutboxMessageStatus `json:"status"`
+	AvailableAt  time.Time                  `json:"available_at"`
+	AttemptCount int                        `json:"attempt_count"`
+	MaxAttempts  int                        `json:"max_attempts"`
+	LastError    string                     `json:"last_error"`
+	CreatedAt    time.Time                  `json:"created_at"`
+	UpdatedAt    time.Time                  `json:"updated_at"`
 }
 
 type apiCertificateProfile struct {

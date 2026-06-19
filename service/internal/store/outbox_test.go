@@ -28,6 +28,23 @@ func TestSQLStoreOutboxAndJobAttempts(t *testing.T) {
 	testOutboxAndJobAttempts(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreOutboxRetryMetadata(t *testing.T) {
+	testOutboxRetryMetadata(t, NewMemoryStore())
+}
+
+func TestSQLStoreOutboxRetryMetadata(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testOutboxRetryMetadata(t, NewSQLStore(db))
+}
+
 func TestSQLStoreOCSPResponders(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -217,6 +234,58 @@ func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	}
 	if len(attempts) != 1 || attempts[0].ID != attempt.ID || attempts[0].Error != "timeout" {
 		t.Fatalf("job attempts = %#v", attempts)
+	}
+}
+
+func testOutboxRetryMetadata(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	message := domain.OutboxMessage{
+		ID:           "outbox-retry",
+		Type:         "certificate.expiration_warning",
+		PayloadJSON:  `{"certificate_id":"cert-1"}`,
+		Status:       domain.OutboxPending,
+		AvailableAt:  now,
+		AttemptCount: 2,
+		MaxAttempts:  5,
+		LastError:    "previous failure",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := repo.CreateOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+
+	stored, err := repo.GetOutboxMessage(ctx, message.ID)
+	if err != nil {
+		t.Fatalf("GetOutboxMessage returned error: %v", err)
+	}
+	if stored.AttemptCount != 2 || stored.MaxAttempts != 5 || stored.LastError != "previous failure" {
+		t.Fatalf("stored retry metadata = %#v", stored)
+	}
+
+	stored.Status = domain.OutboxDeadLetter
+	stored.AttemptCount = 5
+	stored.LastError = "max attempts exceeded"
+	stored.UpdatedAt = now.Add(time.Minute)
+	if err := repo.UpdateOutboxMessageStatusIfStatus(ctx, stored, domain.OutboxPending); err != nil {
+		t.Fatalf("UpdateOutboxMessageStatusIfStatus returned error: %v", err)
+	}
+
+	pending, err := repo.ListOutboxMessages(ctx, domain.OutboxPending)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages pending returned error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending messages = %#v, want none", pending)
+	}
+	dead, err := repo.ListOutboxMessages(ctx, domain.OutboxDeadLetter)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages dead_letter returned error: %v", err)
+	}
+	if len(dead) != 1 || dead[0].ID != message.ID || dead[0].AttemptCount != 5 || dead[0].LastError != "max attempts exceeded" {
+		t.Fatalf("dead letter messages = %#v", dead)
 	}
 }
 

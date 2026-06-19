@@ -424,6 +424,24 @@ func (s *MemoryStore) CreateOutboxMessage(ctx context.Context, message domain.Ou
 	return nil
 }
 
+func (s *MemoryStore) GetOutboxMessage(ctx context.Context, id string) (domain.OutboxMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	message, ok := s.outbox[id]
+	if !ok {
+		return domain.OutboxMessage{}, domain.ErrOutboxMessageNotFound
+	}
+	return message, nil
+}
+
+func (s *MemoryStore) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listOutboxMessages(s.outbox, status), nil
+}
+
 func (s *MemoryStore) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -572,6 +590,23 @@ func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Ti
 		due = due[:limit]
 	}
 	return due
+}
+
+func listOutboxMessages(messages map[string]domain.OutboxMessage, status domain.OutboxMessageStatus) []domain.OutboxMessage {
+	result := make([]domain.OutboxMessage, 0)
+	for _, message := range messages {
+		if status != "" && message.Status != status {
+			continue
+		}
+		result = append(result, message)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
 }
 
 func updateOutboxMessageStatusIfStatus(messages map[string]domain.OutboxMessage, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
@@ -849,6 +884,18 @@ func (tx *memoryTx) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, e
 func (tx *memoryTx) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
 	tx.outbox[message.ID] = message
 	return nil
+}
+
+func (tx *memoryTx) GetOutboxMessage(ctx context.Context, id string) (domain.OutboxMessage, error) {
+	message, ok := tx.outbox[id]
+	if !ok {
+		return domain.OutboxMessage{}, domain.ErrOutboxMessageNotFound
+	}
+	return message, nil
+}
+
+func (tx *memoryTx) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
+	return listOutboxMessages(tx.outbox, status), nil
 }
 
 func (tx *memoryTx) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
