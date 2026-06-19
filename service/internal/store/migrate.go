@@ -124,6 +124,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			token_hash TEXT NOT NULL,
 			status TEXT NOT NULL,
 			actor TEXT NOT NULL,
+			scopes TEXT NOT NULL DEFAULT '["operator"]',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -160,6 +161,13 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	} else if !exists {
 		if _, err := db.ExecContext(ctx, "ALTER TABLE notification_endpoints ADD COLUMN secret TEXT NOT NULL DEFAULT ''"); err != nil {
 			return fmt.Errorf("add sqlite column notification_endpoints.secret: %w", err)
+		}
+	}
+	if exists, err := sqliteColumnExists(ctx, db, "api_keys", "scopes"); err != nil {
+		return err
+	} else if !exists {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["operator"]'`); err != nil {
+			return fmt.Errorf("add sqlite column api_keys.scopes: %w", err)
 		}
 	}
 	return nil
@@ -249,9 +257,11 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			token_hash TEXT NOT NULL,
 			status TEXT NOT NULL,
 			actor TEXT NOT NULL,
+			scopes TEXT NOT NULL DEFAULT '["operator"]',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '["operator"]'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
 	}

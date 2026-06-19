@@ -461,6 +461,7 @@ func testAPIKeys(t *testing.T, repo Repository) {
 		TokenHash: "sha256:abc",
 		Status:    domain.APIKeyActive,
 		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -471,8 +472,28 @@ func testAPIKeys(t *testing.T, repo Repository) {
 	if err != nil {
 		t.Fatalf("GetAPIKeyByTokenHash returned error: %v", err)
 	}
-	if got.ID != key.ID || got.Actor != key.Actor || got.Status != key.Status {
+	if got.ID != key.ID || got.Actor != key.Actor || got.Status != key.Status ||
+		len(got.Scopes) != 1 || got.Scopes[0] != domain.APIKeyScopeOperator {
 		t.Fatalf("api key = %#v, want %#v", got, key)
+	}
+	listed, err := repo.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListAPIKeys returned error: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != key.ID {
+		t.Fatalf("api keys = %#v, want key-1", listed)
+	}
+	key.Status = domain.APIKeyDisabled
+	key.UpdatedAt = now.Add(time.Second)
+	if err := repo.UpdateAPIKeyIfStatus(ctx, key, domain.APIKeyActive); err != nil {
+		t.Fatalf("UpdateAPIKeyIfStatus returned error: %v", err)
+	}
+	disabled, err := repo.GetAPIKey(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey returned error: %v", err)
+	}
+	if disabled.Status != domain.APIKeyDisabled {
+		t.Fatalf("api key status = %q, want disabled", disabled.Status)
 	}
 	if _, err := repo.GetAPIKeyByTokenHash(ctx, "sha256:missing"); !errors.Is(err, domain.ErrAPIKeyNotFound) {
 		t.Fatalf("GetAPIKeyByTokenHash missing error = %v, want ErrAPIKeyNotFound", err)

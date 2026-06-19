@@ -2,7 +2,9 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -61,6 +63,12 @@ type AuditRequestMetadata struct {
 	StartedAt time.Time
 }
 
+type APIKeyAuditMetadata struct {
+	ID     string
+	Name   string
+	Scopes []domain.APIKeyScope
+}
+
 type APIFailureAuditRequest struct {
 	Method     string
 	Path       string
@@ -69,6 +77,7 @@ type APIFailureAuditRequest struct {
 }
 
 type auditRequestMetadataContextKey struct{}
+type apiKeyAuditMetadataContextKey struct{}
 
 type CreateIdentityRequest struct {
 	Type       domain.IdentityType
@@ -160,9 +169,21 @@ type OCSPResponse struct {
 }
 
 type EnsureAPIKeyRequest struct {
-	Name  string
+	Name   string
+	Token  string
+	Actor  string
+	Scopes []domain.APIKeyScope
+}
+
+type CreateAPIKeyRequest struct {
+	Name   string
+	Actor  string
+	Scopes []domain.APIKeyScope
+}
+
+type CreateAPIKeyResult struct {
+	Key   domain.APIKey
 	Token string
-	Actor string
 }
 
 type ocspSigner struct {
@@ -183,6 +204,10 @@ func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDG
 
 func WithAuditRequestMetadata(ctx context.Context, metadata AuditRequestMetadata) context.Context {
 	return context.WithValue(ctx, auditRequestMetadataContextKey{}, metadata)
+}
+
+func WithAPIKeyAuditMetadata(ctx context.Context, metadata APIKeyAuditMetadata) context.Context {
+	return context.WithValue(ctx, apiKeyAuditMetadataContextKey{}, metadata)
 }
 
 func HashAPIKeyToken(token string) string {
@@ -206,12 +231,22 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.
 	if key.Status != domain.APIKeyActive || strings.TrimSpace(key.Actor) == "" {
 		return domain.APIKey{}, domain.ErrUnauthorized
 	}
+	if len(key.Scopes) == 0 {
+		return domain.APIKey{}, domain.ErrUnauthorized
+	}
 	return key, nil
 }
 
 func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIKeyRequest) (domain.APIKey, error) {
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.Actor) == "" {
 		return domain.APIKey{}, domain.ErrInvalidRequest
+	}
+	scopes := req.Scopes
+	if len(scopes) == 0 {
+		scopes = []domain.APIKeyScope{domain.APIKeyScopeOperator}
+	}
+	if err := validateAPIKeyScopes(scopes); err != nil {
+		return domain.APIKey{}, err
 	}
 
 	tokenHash := HashAPIKeyToken(req.Token)
@@ -230,6 +265,7 @@ func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIK
 		TokenHash: tokenHash,
 		Status:    domain.APIKeyActive,
 		Actor:     strings.TrimSpace(req.Actor),
+		Scopes:    append([]domain.APIKeyScope(nil), scopes...),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -242,6 +278,71 @@ func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIK
 			"api_key_name", key.Name,
 			"api_key_actor", key.Actor,
 		))
+	}); err != nil {
+		return domain.APIKey{}, err
+	}
+	return key, nil
+}
+
+func (s *Service) CreateAPIKey(ctx context.Context, actor string, req CreateAPIKeyRequest) (CreateAPIKeyResult, error) {
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Actor) == "" || len(req.Scopes) == 0 {
+		return CreateAPIKeyResult{}, domain.ErrInvalidRequest
+	}
+	if err := validateAPIKeyScopes(req.Scopes); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	token, err := generateAPIKeyToken()
+	if err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+
+	now := s.clock.Now()
+	key := domain.APIKey{
+		ID:        s.idgen.NewID(),
+		Name:      strings.TrimSpace(req.Name),
+		TokenHash: HashAPIKeyToken(token),
+		Status:    domain.APIKeyActive,
+		Actor:     strings.TrimSpace(req.Actor),
+		Scopes:    append([]domain.APIKeyScope(nil), req.Scopes...),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.CreateAPIKey(ctx, key); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "api_key.created", "api_key", key.ID, now, apiKeyAuditFields(key))
+	}); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	return CreateAPIKeyResult{Key: key, Token: token}, nil
+}
+
+func (s *Service) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	return s.repo.ListAPIKeys(ctx)
+}
+
+func (s *Service) DisableAPIKey(ctx context.Context, actor string, id string) (domain.APIKey, error) {
+	if isBlank(id) {
+		return domain.APIKey{}, domain.ErrInvalidRequest
+	}
+	now := s.clock.Now()
+	var key domain.APIKey
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		var err error
+		key, err = repo.GetAPIKey(ctx, id)
+		if err != nil {
+			return err
+		}
+		if key.Status != domain.APIKeyActive {
+			return domain.ErrInvalidTransition
+		}
+		key.Status = domain.APIKeyDisabled
+		key.UpdatedAt = now
+		if err := repo.UpdateAPIKeyIfStatus(ctx, key, domain.APIKeyActive); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "api_key.disabled", "api_key", key.ID, now, apiKeyAuditFields(key))
 	}); err != nil {
 		return domain.APIKey{}, err
 	}
@@ -1448,6 +1549,16 @@ func auditFields(pairs ...string) map[string]any {
 	return fields
 }
 
+func apiKeyAuditFields(key domain.APIKey) map[string]any {
+	fields := auditFields(
+		"api_key_id", key.ID,
+		"api_key_name", key.Name,
+		"api_key_actor", key.Actor,
+	)
+	fields["api_key_scopes"] = apiKeyScopesToStrings(key.Scopes)
+	return fields
+}
+
 func certificateExpirationAuditFields(certificate domain.Certificate, warningWindow time.Duration) map[string]any {
 	fields := auditFields(
 		"identity_id", certificate.IdentityID,
@@ -1493,6 +1604,17 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode st
 			metadata["elapsed_ms"] = time.Since(requestMetadata.StartedAt).Milliseconds()
 		}
 	}
+	if keyMetadata, ok := ctx.Value(apiKeyAuditMetadataContextKey{}).(APIKeyAuditMetadata); ok {
+		if keyMetadata.ID != "" {
+			metadata["api_key_id"] = keyMetadata.ID
+		}
+		if keyMetadata.Name != "" {
+			metadata["api_key_name"] = keyMetadata.Name
+		}
+		if len(keyMetadata.Scopes) > 0 {
+			metadata["api_key_scopes"] = apiKeyScopesToStrings(keyMetadata.Scopes)
+		}
+	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return "{}"
@@ -1508,6 +1630,8 @@ func auditErrorCode(err error) string {
 		return "unsupported_media_type"
 	case errors.Is(err, domain.ErrUnauthorized):
 		return "unauthorized"
+	case errors.Is(err, domain.ErrForbidden):
+		return "forbidden"
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return "invalid_lifecycle_transition"
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -1541,6 +1665,41 @@ func auditErrorCode(err error) string {
 	default:
 		return "internal"
 	}
+}
+
+func validateAPIKeyScopes(scopes []domain.APIKeyScope) error {
+	if len(scopes) == 0 {
+		return domain.ErrInvalidRequest
+	}
+	seen := make(map[domain.APIKeyScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		switch scope {
+		case domain.APIKeyScopeRead, domain.APIKeyScopeWrite, domain.APIKeyScopeOperator:
+		default:
+			return domain.ErrInvalidRequest
+		}
+		if _, ok := seen[scope]; ok {
+			return domain.ErrInvalidRequest
+		}
+		seen[scope] = struct{}{}
+	}
+	return nil
+}
+
+func generateAPIKeyToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func apiKeyScopesToStrings(scopes []domain.APIKeyScope) []string {
+	values := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		values = append(values, string(scope))
+	}
+	return values
 }
 
 func (s *Service) ocspCertificateStatuses(ctx context.Context, ids []corecli.OCSPCertificateID) ([]corecli.OCSPCertificateStatus, string, error) {

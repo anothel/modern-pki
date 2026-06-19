@@ -231,8 +231,20 @@ func (s *SQLStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
 	return s.repository().CreateAPIKey(ctx, key)
 }
 
+func (s *SQLStore) GetAPIKey(ctx context.Context, id string) (domain.APIKey, error) {
+	return s.repository().GetAPIKey(ctx, id)
+}
+
 func (s *SQLStore) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
 	return s.repository().GetAPIKeyByTokenHash(ctx, tokenHash)
+}
+
+func (s *SQLStore) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	return s.repository().ListAPIKeys(ctx)
+}
+
+func (s *SQLStore) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error {
+	return s.repository().UpdateAPIKeyIfStatus(ctx, key, currentStatus)
 }
 
 func (s *SQLStore) repository() sqlRepository {
@@ -1398,26 +1410,45 @@ ORDER BY created_at, id`, outboxMessageID)
 }
 
 func (r sqlRepository) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
-	_, err := r.exec.ExecContext(ctx, `
+	scopes, err := marshalAPIKeyScopes(key.Scopes)
+	if err != nil {
+		return err
+	}
+	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO api_keys (
-	id, name, token_hash, status, actor, created_at, updated_at
+	id, name, token_hash, status, actor, scopes, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7
+	$1, $2, $3, $4, $5, $6, $7, $8
 )`,
 		key.ID,
 		key.Name,
 		key.TokenHash,
 		string(key.Status),
 		key.Actor,
+		scopes,
 		formatSQLTime(key.CreatedAt),
 		formatSQLTime(key.UpdatedAt),
 	)
 	return err
 }
 
+func (r sqlRepository) GetAPIKey(ctx context.Context, id string) (domain.APIKey, error) {
+	key, err := scanAPIKey(r.exec.QueryRowContext(ctx, `
+SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
+FROM api_keys
+WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.APIKey{}, domain.ErrAPIKeyNotFound
+	}
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	return key, nil
+}
+
 func (r sqlRepository) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
 	key, err := scanAPIKey(r.exec.QueryRowContext(ctx, `
-SELECT id, name, token_hash, status, actor, created_at, updated_at
+SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
 FROM api_keys
 WHERE token_hash = $1`, tokenHash))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1427,6 +1458,64 @@ WHERE token_hash = $1`, tokenHash))
 		return domain.APIKey{}, err
 	}
 	return key, nil
+}
+
+func (r sqlRepository) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
+FROM api_keys
+ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := make([]domain.APIKey, 0)
+	for rows.Next() {
+		key, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+func (r sqlRepository) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error {
+	scopes, err := marshalAPIKeyScopes(key.Scopes)
+	if err != nil {
+		return err
+	}
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE api_keys
+SET name = $1, token_hash = $2, status = $3, actor = $4, scopes = $5, updated_at = $6
+WHERE id = $7 AND status = $8`,
+		key.Name,
+		key.TokenHash,
+		string(key.Status),
+		key.Actor,
+		scopes,
+		formatSQLTime(key.UpdatedAt),
+		key.ID,
+		string(currentStatus),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		if _, err := r.GetAPIKey(ctx, key.ID); errors.Is(err, domain.ErrAPIKeyNotFound) {
+			return domain.ErrAPIKeyNotFound
+		}
+		return domain.ErrInvalidTransition
+	}
+	return nil
 }
 
 func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
@@ -1467,6 +1556,7 @@ func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 	var key domain.APIKey
 	var status string
+	var scopes string
 	var createdAt any
 	var updatedAt any
 
@@ -1476,6 +1566,7 @@ func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 		&key.TokenHash,
 		&status,
 		&key.Actor,
+		&scopes,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1490,8 +1581,13 @@ func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 	if err != nil {
 		return domain.APIKey{}, err
 	}
+	parsedScopes, err := unmarshalAPIKeyScopes(scopes)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
 
 	key.Status = domain.APIKeyStatus(status)
+	key.Scopes = parsedScopes
 	key.CreatedAt = parsedCreatedAt
 	key.UpdatedAt = parsedUpdatedAt
 	return key, nil
@@ -2045,6 +2141,26 @@ func unmarshalStringSlice(data string) ([]string, error) {
 		return nil, err
 	}
 	return values, nil
+}
+
+func marshalAPIKeyScopes(scopes []domain.APIKeyScope) (string, error) {
+	values := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		values = append(values, string(scope))
+	}
+	return marshalStringSlice(values)
+}
+
+func unmarshalAPIKeyScopes(data string) ([]domain.APIKeyScope, error) {
+	values, err := unmarshalStringSlice(data)
+	if err != nil {
+		return nil, err
+	}
+	scopes := make([]domain.APIKeyScope, 0, len(values))
+	for _, value := range values {
+		scopes = append(scopes, domain.APIKeyScope(value))
+	}
+	return scopes, nil
 }
 
 const sqlTimeLayout = "2006-01-02T15:04:05.000000000Z"

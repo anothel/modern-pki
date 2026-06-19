@@ -31,6 +31,14 @@ type AuthConfig struct {
 	Mode AuthMode
 }
 
+type requiredScope string
+
+const (
+	requiredScopeRead     requiredScope = "read"
+	requiredScopeWrite    requiredScope = "write"
+	requiredScopeOperator requiredScope = "operator"
+)
+
 type actorContextKey struct{}
 
 func New(service *lifecycle.Service) *Server {
@@ -84,6 +92,10 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("GET /outbox/messages", s.listOutboxMessages)
 	s.mux.HandleFunc("POST /outbox/messages/{id}/retry", s.retryOutboxMessage)
+
+	s.mux.HandleFunc("POST /api-keys", s.createAPIKey)
+	s.mux.HandleFunc("GET /api-keys", s.listAPIKeys)
+	s.mux.HandleFunc("POST /api-keys/{id}/disable", s.disableAPIKey)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -283,6 +295,43 @@ func (s *Server) retryOutboxMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toOutboxMessageResponse(message))
+}
+
+func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req createAPIKeyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	result, err := s.service.CreateAPIKey(r.Context(), requestActor(r), lifecycle.CreateAPIKeyRequest{
+		Name:   req.Name,
+		Actor:  req.Actor,
+		Scopes: req.Scopes,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIKeyResponseWithToken(result.Key, result.Token))
+}
+
+func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.service.ListAPIKeys(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIKeyResponses(keys))
+}
+
+func (s *Server) disableAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, err := s.service.DisableAPIKey(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +679,21 @@ func (s *Server) authenticateRequest(r *http.Request) (context.Context, error) {
 		if err != nil {
 			return r.Context(), err
 		}
-		return context.WithValue(r.Context(), actorContextKey{}, key.Actor), nil
+		if !apiKeyAllowsScope(key, requiredScopeForRequest(r.Method, r.URL.Path)) {
+			ctx := context.WithValue(r.Context(), actorContextKey{}, key.Actor)
+			ctx = lifecycle.WithAPIKeyAuditMetadata(ctx, lifecycle.APIKeyAuditMetadata{
+				ID:     key.ID,
+				Name:   key.Name,
+				Scopes: key.Scopes,
+			})
+			return ctx, domain.ErrForbidden
+		}
+		ctx := context.WithValue(r.Context(), actorContextKey{}, key.Actor)
+		return lifecycle.WithAPIKeyAuditMetadata(ctx, lifecycle.APIKeyAuditMetadata{
+			ID:     key.ID,
+			Name:   key.Name,
+			Scopes: key.Scopes,
+		}), nil
 	default:
 		return r.Context(), domain.ErrUnauthorized
 	}
@@ -657,6 +720,34 @@ func isPublicEndpoint(method string, path string) bool {
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	return len(parts) == 3 && parts[0] == "issuers" && parts[1] != "" && parts[2] == "crl"
+}
+
+func requiredScopeForRequest(method string, path string) requiredScope {
+	if strings.HasPrefix(path, "/api-keys") || strings.HasPrefix(path, "/outbox/") || path == "/audit-events" {
+		return requiredScopeOperator
+	}
+	if method == http.MethodPost && path == "/certificates/expiration-scan" {
+		return requiredScopeOperator
+	}
+	if method == http.MethodGet {
+		return requiredScopeRead
+	}
+	return requiredScopeWrite
+}
+
+func apiKeyAllowsScope(key domain.APIKey, required requiredScope) bool {
+	for _, scope := range key.Scopes {
+		if scope == domain.APIKeyScopeOperator {
+			return true
+		}
+		if required == requiredScopeRead && scope == domain.APIKeyScopeWrite {
+			return true
+		}
+		if string(scope) == string(required) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestClientIP(r *http.Request) string {
@@ -699,6 +790,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrUnsupportedMediaType.Error()
 	case errors.Is(err, domain.ErrUnauthorized):
 		return domain.ErrUnauthorized.Error()
+	case errors.Is(err, domain.ErrForbidden):
+		return domain.ErrForbidden.Error()
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return domain.ErrInvalidTransition.Error()
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -719,6 +812,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrCRLPublicationNotFound.Error()
 	case errors.Is(err, domain.ErrOutboxMessageNotFound):
 		return domain.ErrOutboxMessageNotFound.Error()
+	case errors.Is(err, domain.ErrAPIKeyNotFound):
+		return domain.ErrAPIKeyNotFound.Error()
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return domain.ErrCSRParseFailed.Error()
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
@@ -746,6 +841,8 @@ func statusForError(err error) int {
 		return http.StatusUnsupportedMediaType
 	case errors.Is(err, domain.ErrUnauthorized):
 		return http.StatusUnauthorized
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrIdentityNotFound),
@@ -756,7 +853,8 @@ func statusForError(err error) int {
 		errors.Is(err, domain.ErrEnrollmentNotFound),
 		errors.Is(err, domain.ErrCertificateNotFound),
 		errors.Is(err, domain.ErrCRLPublicationNotFound),
-		errors.Is(err, domain.ErrOutboxMessageNotFound):
+		errors.Is(err, domain.ErrOutboxMessageNotFound),
+		errors.Is(err, domain.ErrAPIKeyNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return http.StatusUnprocessableEntity
@@ -852,6 +950,12 @@ type scanCertificateExpirationsRequest struct {
 	Limit                int   `json:"limit"`
 }
 
+type createAPIKeyRequest struct {
+	Name   string               `json:"name"`
+	Actor  string               `json:"actor"`
+	Scopes []domain.APIKeyScope `json:"scopes"`
+}
+
 type publishCRLRequest struct {
 	IssuerID          string    `json:"issuer_id"`
 	DistributionPoint string    `json:"distribution_point"`
@@ -916,6 +1020,18 @@ type outboxMessageResponse struct {
 	LastError    string                     `json:"last_error"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
+}
+
+type apiKeyResponse struct {
+	ID        string               `json:"id"`
+	Name      string               `json:"name"`
+	Actor     string               `json:"actor"`
+	Status    domain.APIKeyStatus  `json:"status"`
+	Scopes    []domain.APIKeyScope `json:"scopes"`
+	Token     string               `json:"token,omitempty"`
+	TokenHash string               `json:"token_hash,omitempty"`
+	CreatedAt time.Time            `json:"created_at"`
+	UpdatedAt time.Time            `json:"updated_at"`
 }
 
 type certificateProfileResponse struct {
@@ -1096,6 +1212,32 @@ func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageRe
 	responses := make([]outboxMessageResponse, 0, len(messages))
 	for _, message := range messages {
 		responses = append(responses, toOutboxMessageResponse(message))
+	}
+	return responses
+}
+
+func toAPIKeyResponse(key domain.APIKey) apiKeyResponse {
+	return apiKeyResponse{
+		ID:        key.ID,
+		Name:      key.Name,
+		Actor:     key.Actor,
+		Status:    key.Status,
+		Scopes:    key.Scopes,
+		CreatedAt: key.CreatedAt,
+		UpdatedAt: key.UpdatedAt,
+	}
+}
+
+func toAPIKeyResponseWithToken(key domain.APIKey, token string) apiKeyResponse {
+	response := toAPIKeyResponse(key)
+	response.Token = token
+	return response
+}
+
+func toAPIKeyResponses(keys []domain.APIKey) []apiKeyResponse {
+	responses := make([]apiKeyResponse, 0, len(keys))
+	for _, key := range keys {
+		responses = append(responses, toAPIKeyResponse(key))
 	}
 	return responses
 }

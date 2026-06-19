@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     token_hash TEXT NOT NULL,
     status TEXT NOT NULL,
     actor TEXT NOT NULL,
+    scopes TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );

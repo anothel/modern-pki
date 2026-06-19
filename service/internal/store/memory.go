@@ -479,8 +479,19 @@ func (s *MemoryStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.apiKeys[key.ID] = key
+	s.apiKeys[key.ID] = copyAPIKey(key)
 	return nil
+}
+
+func (s *MemoryStore) GetAPIKey(ctx context.Context, id string) (domain.APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key, ok := s.apiKeys[id]
+	if !ok {
+		return domain.APIKey{}, domain.ErrAPIKeyNotFound
+	}
+	return copyAPIKey(key), nil
 }
 
 func (s *MemoryStore) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
@@ -488,6 +499,20 @@ func (s *MemoryStore) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string
 	defer s.mu.RUnlock()
 
 	return apiKeyByTokenHash(s.apiKeys, tokenHash)
+}
+
+func (s *MemoryStore) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listAPIKeys(s.apiKeys), nil
+}
+
+func (s *MemoryStore) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateAPIKeyIfStatus(s.apiKeys, key, currentStatus)
 }
 
 func copyEnrollment(enrollment domain.Enrollment) domain.Enrollment {
@@ -515,6 +540,11 @@ func copyCertificate(certificate domain.Certificate) domain.Certificate {
 func copyNotificationEndpoint(endpoint domain.NotificationEndpoint) domain.NotificationEndpoint {
 	endpoint.EventTypes = append([]string(nil), endpoint.EventTypes...)
 	return endpoint
+}
+
+func copyAPIKey(key domain.APIKey) domain.APIKey {
+	key.Scopes = append([]domain.APIKeyScope(nil), key.Scopes...)
+	return key
 }
 
 func updateEnrollmentIfStatus(enrollments map[string]domain.Enrollment, enrollment domain.Enrollment, currentStatus domain.EnrollmentStatus) error {
@@ -654,6 +684,32 @@ func listJobAttemptsByOutboxMessage(attempts map[string]domain.JobAttempt, outbo
 		return result[i].ID < result[j].ID
 	})
 	return result
+}
+
+func listAPIKeys(keys map[string]domain.APIKey) []domain.APIKey {
+	result := make([]domain.APIKey, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, copyAPIKey(key))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func updateAPIKeyIfStatus(keys map[string]domain.APIKey, key domain.APIKey, currentStatus domain.APIKeyStatus) error {
+	current, ok := keys[key.ID]
+	if !ok {
+		return domain.ErrAPIKeyNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	keys[key.ID] = copyAPIKey(key)
+	return nil
 }
 
 type memoryTx struct {
@@ -936,12 +992,28 @@ func (tx *memoryTx) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMe
 }
 
 func (tx *memoryTx) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
-	tx.apiKeys[key.ID] = key
+	tx.apiKeys[key.ID] = copyAPIKey(key)
 	return nil
+}
+
+func (tx *memoryTx) GetAPIKey(ctx context.Context, id string) (domain.APIKey, error) {
+	key, ok := tx.apiKeys[id]
+	if !ok {
+		return domain.APIKey{}, domain.ErrAPIKeyNotFound
+	}
+	return copyAPIKey(key), nil
 }
 
 func (tx *memoryTx) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
 	return apiKeyByTokenHash(tx.apiKeys, tokenHash)
+}
+
+func (tx *memoryTx) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
+	return listAPIKeys(tx.apiKeys), nil
+}
+
+func (tx *memoryTx) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error {
+	return updateAPIKeyIfStatus(tx.apiKeys, key, currentStatus)
 }
 
 func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity {
@@ -1152,7 +1224,7 @@ func cloneJobAttempts(src map[string]domain.JobAttempt) map[string]domain.JobAtt
 func cloneAPIKeys(src map[string]domain.APIKey) map[string]domain.APIKey {
 	dst := make(map[string]domain.APIKey, len(src))
 	for id, key := range src {
-		dst[id] = key
+		dst[id] = copyAPIKey(key)
 	}
 	return dst
 }
@@ -1160,7 +1232,7 @@ func cloneAPIKeys(src map[string]domain.APIKey) map[string]domain.APIKey {
 func apiKeyByTokenHash(keys map[string]domain.APIKey, tokenHash string) (domain.APIKey, error) {
 	for _, key := range keys {
 		if key.TokenHash == tokenHash {
-			return key, nil
+			return copyAPIKey(key), nil
 		}
 	}
 	return domain.APIKey{}, domain.ErrAPIKeyNotFound

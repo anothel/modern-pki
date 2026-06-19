@@ -6,6 +6,7 @@ var (
 	ErrInvalidRequest                = errors.New("invalid request")
 	ErrUnsupportedMediaType          = errors.New("unsupported media type")
 	ErrUnauthorized                  = errors.New("unauthorized")
+	ErrForbidden                     = errors.New("forbidden")
 	ErrIdentityNotFound              = errors.New("identity not found")
 	ErrIssuerNotFound                = errors.New("issuer not found")
 	ErrOCSPResponderNotFound         = errors.New("ocsp responder not found")

@@ -1065,6 +1065,141 @@ func TestAPIKeyAuthAllowsPublicCRLReads(t *testing.T) {
 	}
 }
 
+func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
+
+	var created apiKeyResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/api-keys", "", map[string]any{
+		"name":   "reader",
+		"actor":  "read-client",
+		"scopes": []string{string(domain.APIKeyScopeRead)},
+	}, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.ID == "" || created.Token == "" {
+		t.Fatalf("created api key missing id/token: %#v", created)
+	}
+	if created.Name != "reader" || created.Actor != "read-client" || created.Status != domain.APIKeyActive {
+		t.Fatalf("created api key = %#v", created)
+	}
+	if len(created.Scopes) != 1 || created.Scopes[0] != domain.APIKeyScopeRead {
+		t.Fatalf("created scopes = %#v, want [read]", created.Scopes)
+	}
+	if created.TokenHash != "" {
+		t.Fatalf("created response exposed token hash: %#v", created)
+	}
+
+	var identities []apiIdentity
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer " + created.Token,
+	}, &identities)
+	assertStatus(t, status, http.StatusOK)
+
+	var listed []apiKeyResponse
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/api-keys", "", nil, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 2 {
+		t.Fatalf("api key count = %d, want 2: %#v", len(listed), listed)
+	}
+	for _, key := range listed {
+		if key.Token != "" || key.TokenHash != "" {
+			t.Fatalf("list response exposed token material: %#v", key)
+		}
+	}
+}
+
+func TestAPIKeyScopeRejectsReadKeyMutations(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKey(t, api.repo, "read-key", "read-token", "read-client", domain.APIKeyActive, domain.APIKeyScopeRead)
+
+	var body errorResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, map[string]string{
+		"Authorization": "Bearer read-token",
+	}, &body)
+	assertStatus(t, status, http.StatusForbidden)
+	if body.Error != domain.ErrForbidden.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrForbidden.Error())
+	}
+}
+
+func TestAPIKeyScopeAllowsWriteAndRejectsOperatorRoutes(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKey(t, api.repo, "write-key", "write-token", "writer", domain.APIKeyActive, domain.APIKeyScopeWrite)
+
+	var created apiIdentity
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, map[string]string{
+		"Authorization": "Bearer write-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	events, err := api.repo.ListAuditEvents(api.ctx)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(events[0].MetadataJSON), &metadata); err != nil {
+		t.Fatalf("unmarshal audit metadata: %v", err)
+	}
+	if metadata["api_key_id"] != "write-key" || metadata["api_key_name"] != "write-key" {
+		t.Fatalf("audit metadata missing api key identity: %#v", metadata)
+	}
+	scopes, ok := metadata["api_key_scopes"].([]any)
+	if !ok || len(scopes) != 1 || scopes[0] != string(domain.APIKeyScopeWrite) {
+		t.Fatalf("audit scopes = %#v, want [write]", metadata["api_key_scopes"])
+	}
+
+	var body errorResponse
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/outbox/messages", "", nil, map[string]string{
+		"Authorization": "Bearer write-token",
+	}, &body)
+	assertStatus(t, status, http.StatusForbidden)
+	if body.Error != domain.ErrForbidden.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrForbidden.Error())
+	}
+}
+
+func TestAPIKeyManagementDisablesKeys(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
+
+	var created apiKeyResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/api-keys", "", map[string]any{
+		"name":   "reader",
+		"actor":  "read-client",
+		"scopes": []string{string(domain.APIKeyScopeRead)},
+	}, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+
+	var disabled apiKeyResponse
+	status = api.doJSONWithHeaders(t, http.MethodPost, "/api-keys/"+created.ID+"/disable", "", nil, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &disabled)
+	assertStatus(t, status, http.StatusOK)
+	if disabled.Status != domain.APIKeyDisabled || disabled.Token != "" || disabled.TokenHash != "" {
+		t.Fatalf("disabled api key response = %#v", disabled)
+	}
+
+	var body errorResponse
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer " + created.Token,
+	}, &body)
+	assertStatus(t, status, http.StatusUnauthorized)
+}
+
 type testAPI struct {
 	ctx     context.Context
 	client  *http.Client
@@ -1105,12 +1240,18 @@ func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 
 func createTestAPIKey(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus) {
 	t.Helper()
+	createScopedTestAPIKey(t, repo, id, token, actor, status, domain.APIKeyScopeOperator)
+}
+
+func createScopedTestAPIKey(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus, scopes ...domain.APIKeyScope) {
+	t.Helper()
 	if err := repo.CreateAPIKey(context.Background(), domain.APIKey{
 		ID:        id,
 		Name:      id,
 		TokenHash: lifecycle.HashAPIKeyToken(token),
 		Status:    status,
 		Actor:     actor,
+		Scopes:    scopes,
 		CreatedAt: testNow,
 		UpdatedAt: testNow,
 	}); err != nil {

@@ -95,6 +95,14 @@ const (
 	APIKeyDisabled APIKeyStatus = "disabled"
 )
 
+type APIKeyScope string
+
+const (
+	APIKeyScopeRead     APIKeyScope = "read"
+	APIKeyScopeWrite    APIKeyScope = "write"
+	APIKeyScopeOperator APIKeyScope = "operator"
+)
+
 type RevocationReason string
 
 const (
@@ -293,6 +301,7 @@ type APIKey struct {
 	TokenHash string
 	Status    APIKeyStatus
 	Actor     string
+	Scopes    []APIKeyScope
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

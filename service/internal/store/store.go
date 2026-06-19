@@ -86,7 +86,10 @@ type OutboxRepository interface {
 
 type APIKeyRepository interface {
 	CreateAPIKey(ctx context.Context, key domain.APIKey) error
+	GetAPIKey(ctx context.Context, id string) (domain.APIKey, error)
 	GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error)
+	ListAPIKeys(ctx context.Context) ([]domain.APIKey, error)
+	UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error
 }
 
 type Repository interface {

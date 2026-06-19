@@ -61,7 +61,15 @@ Responder certificates are validated by the core CLI before storage and must be 
 
 Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.
 
-API authentication defaults to `dev` mode for local compatibility. In `dev` mode, the service uses `X-Actor` as the audit actor and allows requests without credentials. Set `MODERN_PKI_AUTH_MODE=api_key` to require `Authorization: Bearer <token>` for lifecycle and operator APIs. `POST /ocsp`, `GET /crls/{id}`, and `GET /issuers/{id}/crl` remain public distribution endpoints. Bootstrap an initial key by setting `MODERN_PKI_BOOTSTRAP_API_KEY`; the service stores only a SHA-256 token hash.
+API authentication defaults to `dev` mode for local compatibility. In `dev` mode, the service uses `X-Actor` as the audit actor and allows requests without credentials. Set `MODERN_PKI_AUTH_MODE=api_key` to require `Authorization: Bearer <token>` for lifecycle and operator APIs. `POST /ocsp`, `GET /crls/{id}`, and `GET /issuers/{id}/crl` remain public distribution endpoints. Bootstrap an initial operator key by setting `MODERN_PKI_BOOTSTRAP_API_KEY`; the service stores only a SHA-256 token hash.
+
+API keys are managed by operator-scoped keys:
+
+- `POST /api-keys`
+- `GET /api-keys`
+- `POST /api-keys/{id}/disable`
+
+Scopes are ordered as `operator`, `write`, and `read`. `operator` can access all protected APIs, including API key management, outbox operations, audit events, and expiration scans. `write` can read and mutate lifecycle resources. `read` can only read non-operator APIs. Created API keys return the generated token once in the creation response. List and disable responses never include token material.
 
 Example:
 
@@ -72,6 +80,11 @@ $env:MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR = "ops-admin"
 go run ./cmd/modern-pki-service
 
 curl.exe -H "Authorization: Bearer change-me" http://localhost:8080/identities
+
+curl.exe -X POST http://localhost:8080/api-keys `
+  -H "Authorization: Bearer change-me" `
+  -H "Content-Type: application/json" `
+  -d '{"name":"reader","actor":"read-client","scopes":["read"]}'
 ```
 
 ## Configuration
