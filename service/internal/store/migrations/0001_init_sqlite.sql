@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS certificates (
     not_after TEXT NOT NULL,
     status TEXT NOT NULL,
     certificate_pem TEXT NOT NULL,
+    renewal_notified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

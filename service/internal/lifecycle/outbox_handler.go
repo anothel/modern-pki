@@ -39,11 +39,13 @@ func (NoopOutboxHandler) HandleOutboxMessage(ctx context.Context, message domain
 func NewLifecycleOutboxHandler() OutboxHandler {
 	noop := NoopOutboxHandler{}
 	return NewOutboxHandlerRegistry(map[string]OutboxHandler{
-		"certificate.suspended":         noop,
-		"certificate.resumed":           noop,
-		"certificate.renewal_requested": noop,
-		"certificate.reissue_requested": noop,
-		"certificate.revoked":           noop,
-		"certificate.force_revoked":     noop,
+		"certificate.suspended":          noop,
+		"certificate.resumed":            noop,
+		"certificate.renewal_requested":  noop,
+		"certificate.reissue_requested":  noop,
+		"certificate.expiration_warning": noop,
+		"certificate.expired":            noop,
+		"certificate.revoked":            noop,
+		"certificate.force_revoked":      noop,
 	})
 }

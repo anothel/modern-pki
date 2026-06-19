@@ -478,6 +478,34 @@ func TestIssueCertificate(t *testing.T) {
 	}
 }
 
+func TestScanCertificateExpirations(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var result apiExpirationScanResult
+	status := api.doJSON(t, http.MethodPost, "/certificates/expiration-scan", "scanner", map[string]any{
+		"warning_window_seconds": int64((48 * time.Hour).Seconds()),
+		"limit":                  10,
+	}, &result)
+	assertStatus(t, status, http.StatusOK)
+	if len(result.Expired) != 0 {
+		t.Fatalf("expired certificates = %#v, want none", result.Expired)
+	}
+	if len(result.ExpirationWarnings) != 1 || result.ExpirationWarnings[0].ID != certificate.ID {
+		t.Fatalf("expiration warnings = %#v, want certificate %q", result.ExpirationWarnings, certificate.ID)
+	}
+	if result.ExpirationWarnings[0].RenewalNotifiedAt.IsZero() {
+		t.Fatalf("warning RenewalNotifiedAt is zero: %#v", result.ExpirationWarnings[0])
+	}
+
+	var listed []apiCertificate
+	status = api.doJSON(t, http.MethodGet, "/certificates", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 || listed[0].ID != certificate.ID || listed[0].RenewalNotifiedAt.IsZero() {
+		t.Fatalf("listed certificate after expiration scan = %#v", listed)
+	}
+}
+
 func TestIssueCertificateHidesIssuerErrorCause(t *testing.T) {
 	api := newTestAPI(t)
 	api.issuer.err = errors.New("fake issuer detail")
@@ -1238,8 +1266,14 @@ type apiCertificate struct {
 	NotAfter             time.Time                `json:"not_after"`
 	Status               domain.CertificateStatus `json:"status"`
 	CertificatePEM       string                   `json:"certificate_pem"`
+	RenewalNotifiedAt    time.Time                `json:"renewal_notified_at"`
 	CreatedAt            time.Time                `json:"created_at"`
 	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type apiExpirationScanResult struct {
+	Expired            []apiCertificate `json:"expired"`
+	ExpirationWarnings []apiCertificate `json:"expiration_warnings"`
 }
 
 type apiCRLPublication struct {

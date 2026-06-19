@@ -2207,6 +2207,139 @@ func TestOnlyValidCertificateCanBeRenewed(t *testing.T) {
 	}
 }
 
+func TestScanCertificateExpirationsExpiresAndWarnsOnce(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, &fakeIssuer{}, clock, &fakeIDGenerator{})
+
+	certificates := []domain.Certificate{
+		expirationLifecycleCertificate("expired-valid", domain.CertificateValid, clock.now.Add(-time.Hour), time.Time{}),
+		expirationLifecycleCertificate("expired-suspended", domain.CertificateSuspended, clock.now.Add(-2*time.Hour), time.Time{}),
+		expirationLifecycleCertificate("warning-valid", domain.CertificateValid, clock.now.Add(2*time.Hour), time.Time{}),
+		expirationLifecycleCertificate("warning-notified", domain.CertificateValid, clock.now.Add(3*time.Hour), clock.now.Add(-time.Hour)),
+		expirationLifecycleCertificate("outside-valid", domain.CertificateValid, clock.now.Add(72*time.Hour), time.Time{}),
+		expirationLifecycleCertificate("expired-revoked", domain.CertificateRevoked, clock.now.Add(-time.Hour), time.Time{}),
+	}
+	for _, certificate := range certificates {
+		if err := repo.CreateCertificate(ctx, certificate); err != nil {
+			t.Fatalf("CreateCertificate(%s) returned error: %v", certificate.ID, err)
+		}
+	}
+
+	result, err := service.ScanCertificateExpirations(ctx, "scanner", ScanCertificateExpirationsRequest{
+		WarningWindow: 24 * time.Hour,
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("ScanCertificateExpirations returned error: %v", err)
+	}
+	if len(result.Expired) != 2 || result.Expired[0].ID != "expired-suspended" || result.Expired[1].ID != "expired-valid" {
+		t.Fatalf("expired result = %#v", result.Expired)
+	}
+	if len(result.ExpirationWarnings) != 1 || result.ExpirationWarnings[0].ID != "warning-valid" {
+		t.Fatalf("warning result = %#v", result.ExpirationWarnings)
+	}
+
+	for _, id := range []string{"expired-valid", "expired-suspended"} {
+		stored, err := repo.GetCertificate(ctx, id)
+		if err != nil {
+			t.Fatalf("GetCertificate(%s) returned error: %v", id, err)
+		}
+		if stored.Status != domain.CertificateExpired {
+			t.Fatalf("%s status = %q, want expired", id, stored.Status)
+		}
+	}
+	warning, err := repo.GetCertificate(ctx, "warning-valid")
+	if err != nil {
+		t.Fatalf("GetCertificate warning-valid returned error: %v", err)
+	}
+	if warning.Status != domain.CertificateValid || !warning.RenewalNotifiedAt.Equal(clock.now) {
+		t.Fatalf("warning-valid after scan = %#v", warning)
+	}
+	alreadyNotified, err := repo.GetCertificate(ctx, "warning-notified")
+	if err != nil {
+		t.Fatalf("GetCertificate warning-notified returned error: %v", err)
+	}
+	if !alreadyNotified.RenewalNotifiedAt.Equal(clock.now.Add(-time.Hour)) {
+		t.Fatalf("warning-notified RenewalNotifiedAt = %s", alreadyNotified.RenewalNotifiedAt)
+	}
+
+	events, err := service.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	wantActions := []string{"certificate.expired", "certificate.expired", "certificate.expiration_warning"}
+	if len(events) != len(wantActions) {
+		t.Fatalf("audit event count = %d, want %d: %#v", len(events), len(wantActions), events)
+	}
+	for i, want := range wantActions {
+		if events[i].Action != want {
+			t.Fatalf("audit event %d action = %q, want %q", i, events[i].Action, want)
+		}
+		metadata := auditMetadata(t, events[i])
+		if metadata["certificate_id"] == "" || metadata["serial_number"] == "" || metadata["not_after"] == "" {
+			t.Fatalf("audit event %d metadata = %#v", i, metadata)
+		}
+	}
+
+	messages, err := repo.ListDueOutboxMessages(ctx, clock.now, 10)
+	if err != nil {
+		t.Fatalf("ListDueOutboxMessages returned error: %v", err)
+	}
+	if len(messages) != len(wantActions) {
+		t.Fatalf("outbox message count = %d, want %d: %#v", len(messages), len(wantActions), messages)
+	}
+	for i, want := range wantActions {
+		if messages[i].Type != want {
+			t.Fatalf("outbox message %d type = %q, want %q", i, messages[i].Type, want)
+		}
+	}
+
+	second, err := service.ScanCertificateExpirations(ctx, "scanner", ScanCertificateExpirationsRequest{
+		WarningWindow: 24 * time.Hour,
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("second ScanCertificateExpirations returned error: %v", err)
+	}
+	if len(second.Expired) != 0 || len(second.ExpirationWarnings) != 0 {
+		t.Fatalf("second scan result = %#v", second)
+	}
+	messages, err = repo.ListDueOutboxMessages(ctx, clock.now, 10)
+	if err != nil {
+		t.Fatalf("second ListDueOutboxMessages returned error: %v", err)
+	}
+	if len(messages) != len(wantActions) {
+		t.Fatalf("outbox messages after second scan = %#v", messages)
+	}
+}
+
+func TestScanCertificateExpirationsRejectsInvalidRequest(t *testing.T) {
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	_, err := service.ScanCertificateExpirations(context.Background(), "scanner", ScanCertificateExpirationsRequest{
+		WarningWindow: -time.Second,
+		Limit:         10,
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("negative window error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = service.ScanCertificateExpirations(context.Background(), "scanner", ScanCertificateExpirationsRequest{
+		WarningWindow: 24 * time.Hour,
+		Limit:         0,
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("zero limit error = %v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestReissueCertificateCreatesPendingEnrollmentWithOriginalNotAfter(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -2251,6 +2384,25 @@ func TestReissueCertificateCreatesPendingEnrollmentWithOriginalNotAfter(t *testi
 	last := events[len(events)-1]
 	if last.Action != "certificate.reissue_requested" {
 		t.Fatalf("last audit action = %q, want certificate.reissue_requested", last.Action)
+	}
+}
+
+func expirationLifecycleCertificate(id string, status domain.CertificateStatus, notAfter time.Time, renewalNotifiedAt time.Time) domain.Certificate {
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	return domain.Certificate{
+		ID:                id,
+		IdentityID:        "identity-" + id,
+		IssuerID:          "issuer-1",
+		EnrollmentID:      "enrollment-" + id,
+		SerialNumber:      "serial-" + id,
+		Subject:           "CN=" + id,
+		NotBefore:         createdAt,
+		NotAfter:          notAfter,
+		Status:            status,
+		CertificatePEM:    "cert-pem-" + id,
+		RenewalNotifiedAt: renewalNotifiedAt,
+		CreatedAt:         createdAt,
+		UpdatedAt:         createdAt,
 	}
 }
 

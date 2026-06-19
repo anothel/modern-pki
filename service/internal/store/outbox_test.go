@@ -118,6 +118,23 @@ func TestSQLStoreOCSPResponders(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreCertificateExpirationScan(t *testing.T) {
+	testCertificateExpirationScan(t, NewMemoryStore())
+}
+
+func TestSQLStoreCertificateExpirationScan(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testCertificateExpirationScan(t, NewSQLStore(db))
+}
+
 func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()
@@ -183,5 +200,81 @@ func testOutboxAndJobAttempts(t *testing.T, repo Repository) {
 	}
 	if len(attempts) != 1 || attempts[0].ID != attempt.ID || attempts[0].Error != "timeout" {
 		t.Fatalf("job attempts = %#v", attempts)
+	}
+}
+
+func testCertificateExpirationScan(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	warningBefore := now.Add(24 * time.Hour)
+
+	certificates := []domain.Certificate{
+		expirationScanCertificate("expired-suspended", domain.CertificateSuspended, now.Add(-2*time.Hour), time.Time{}),
+		expirationScanCertificate("expired-valid", domain.CertificateValid, now.Add(-time.Hour), time.Time{}),
+		expirationScanCertificate("warning-valid", domain.CertificateValid, now.Add(2*time.Hour), time.Time{}),
+		expirationScanCertificate("warning-notified", domain.CertificateValid, now.Add(3*time.Hour), now.Add(-time.Hour)),
+		expirationScanCertificate("outside-valid", domain.CertificateValid, now.Add(72*time.Hour), time.Time{}),
+		expirationScanCertificate("expired-revoked", domain.CertificateRevoked, now.Add(-time.Hour), time.Time{}),
+	}
+	for _, certificate := range certificates {
+		if err := repo.CreateCertificate(ctx, certificate); err != nil {
+			t.Fatalf("CreateCertificate(%s) returned error: %v", certificate.ID, err)
+		}
+	}
+
+	candidates, err := repo.ListCertificatesForExpirationScan(ctx, now, warningBefore, 10)
+	if err != nil {
+		t.Fatalf("ListCertificatesForExpirationScan returned error: %v", err)
+	}
+	wantIDs := []string{"expired-suspended", "expired-valid", "warning-valid"}
+	if len(candidates) != len(wantIDs) {
+		t.Fatalf("candidate count = %d, want %d: %#v", len(candidates), len(wantIDs), candidates)
+	}
+	for i, want := range wantIDs {
+		if candidates[i].ID != want {
+			t.Fatalf("candidate %d ID = %q, want %q; candidates=%#v", i, candidates[i].ID, want, candidates)
+		}
+	}
+
+	limited, err := repo.ListCertificatesForExpirationScan(ctx, now, warningBefore, 2)
+	if err != nil {
+		t.Fatalf("limited ListCertificatesForExpirationScan returned error: %v", err)
+	}
+	if len(limited) != 2 || limited[0].ID != "expired-suspended" || limited[1].ID != "expired-valid" {
+		t.Fatalf("limited candidates = %#v", limited)
+	}
+
+	warning := candidates[2]
+	warning.RenewalNotifiedAt = now
+	warning.UpdatedAt = now
+	if err := repo.UpdateCertificateIfStatus(ctx, warning, domain.CertificateValid); err != nil {
+		t.Fatalf("UpdateCertificateIfStatus warning returned error: %v", err)
+	}
+	stored, err := repo.GetCertificate(ctx, warning.ID)
+	if err != nil {
+		t.Fatalf("GetCertificate warning returned error: %v", err)
+	}
+	if !stored.RenewalNotifiedAt.Equal(now) {
+		t.Fatalf("RenewalNotifiedAt = %s, want %s", stored.RenewalNotifiedAt, now)
+	}
+}
+
+func expirationScanCertificate(id string, status domain.CertificateStatus, notAfter time.Time, renewalNotifiedAt time.Time) domain.Certificate {
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	return domain.Certificate{
+		ID:                id,
+		IdentityID:        "identity-" + id,
+		IssuerID:          "issuer-1",
+		EnrollmentID:      "enrollment-" + id,
+		SerialNumber:      "serial-" + id,
+		Subject:           "CN=" + id,
+		NotBefore:         createdAt,
+		NotAfter:          notAfter,
+		Status:            status,
+		CertificatePEM:    "cert-pem-" + id,
+		RenewalNotifiedAt: renewalNotifiedAt,
+		CreatedAt:         createdAt,
+		UpdatedAt:         createdAt,
 	}
 }

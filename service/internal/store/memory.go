@@ -289,6 +289,13 @@ func (s *MemoryStore) ListCertificates(ctx context.Context) ([]domain.Certificat
 	return certificates, nil
 }
 
+func (s *MemoryStore) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listCertificatesForExpirationScan(s.certificates, now, warningBefore, limit), nil
+}
+
 func (s *MemoryStore) UpdateCertificate(ctx context.Context, certificate domain.Certificate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -692,6 +699,10 @@ func (tx *memoryTx) ListCertificates(ctx context.Context) ([]domain.Certificate,
 	return certificates, nil
 }
 
+func (tx *memoryTx) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
+	return listCertificatesForExpirationScan(tx.certificates, now, warningBefore, limit), nil
+}
+
 func (tx *memoryTx) UpdateCertificate(ctx context.Context, certificate domain.Certificate) error {
 	if _, ok := tx.certificates[certificate.ID]; !ok {
 		return domain.ErrCertificateNotFound
@@ -890,6 +901,38 @@ func activeOCSPResponderByIssuer(responders map[string]domain.OCSPResponder, iss
 		return domain.OCSPResponder{}, domain.ErrOCSPResponderNotFound
 	}
 	return active, nil
+}
+
+func listCertificatesForExpirationScan(certificates map[string]domain.Certificate, now time.Time, warningBefore time.Time, limit int) []domain.Certificate {
+	if limit <= 0 {
+		return nil
+	}
+	result := make([]domain.Certificate, 0)
+	for _, certificate := range certificates {
+		if certificateNeedsExpirationScan(certificate, now, warningBefore) {
+			result = append(result, copyCertificate(certificate))
+		}
+	}
+	sort.Slice(result, func(i int, j int) bool {
+		if !result[i].NotAfter.Equal(result[j].NotAfter) {
+			return result[i].NotAfter.Before(result[j].NotAfter)
+		}
+		return result[i].ID < result[j].ID
+	})
+	if len(result) > limit {
+		return result[:limit]
+	}
+	return result
+}
+
+func certificateNeedsExpirationScan(certificate domain.Certificate, now time.Time, warningBefore time.Time) bool {
+	if (certificate.Status == domain.CertificateValid || certificate.Status == domain.CertificateSuspended) && !certificate.NotAfter.After(now) {
+		return true
+	}
+	return certificate.Status == domain.CertificateValid &&
+		certificate.NotAfter.After(now) &&
+		!certificate.NotAfter.After(warningBefore) &&
+		certificate.RenewalNotifiedAt.IsZero()
 }
 
 func latestCRLPublicationByIssuer(publications map[string]domain.CRLPublication, issuerID string) (domain.CRLPublication, error) {

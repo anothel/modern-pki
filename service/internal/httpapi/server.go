@@ -59,6 +59,7 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("POST /certificates", s.issueCertificate)
 	s.mux.HandleFunc("GET /certificates", s.listCertificates)
+	s.mux.HandleFunc("POST /certificates/expiration-scan", s.scanCertificateExpirations)
 	s.mux.HandleFunc("GET /certificates/{id}", s.getCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/revoke", s.revokeCertificate)
 	s.mux.HandleFunc("POST /certificates/{id}/suspend", s.suspendCertificate)
@@ -318,6 +319,24 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponses(certificates))
+}
+
+func (s *Server) scanCertificateExpirations(w http.ResponseWriter, r *http.Request) {
+	var req scanCertificateExpirationsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	result, err := s.service.ScanCertificateExpirations(r.Context(), requestActor(r), lifecycle.ScanCertificateExpirationsRequest{
+		WarningWindow: time.Duration(req.WarningWindowSeconds) * time.Second,
+		Limit:         req.Limit,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCertificateExpirationScanResponse(result))
 }
 
 func (s *Server) getCertificate(w http.ResponseWriter, r *http.Request) {
@@ -669,6 +688,11 @@ type reissueCertificateRequest struct {
 	CSRPEM string `json:"csr_pem"`
 }
 
+type scanCertificateExpirationsRequest struct {
+	WarningWindowSeconds int64 `json:"warning_window_seconds"`
+	Limit                int   `json:"limit"`
+}
+
 type publishCRLRequest struct {
 	IssuerID          string    `json:"issuer_id"`
 	DistributionPoint string    `json:"distribution_point"`
@@ -762,8 +786,14 @@ type certificateResponse struct {
 	NotAfter             time.Time                `json:"not_after"`
 	Status               domain.CertificateStatus `json:"status"`
 	CertificatePEM       string                   `json:"certificate_pem"`
+	RenewalNotifiedAt    time.Time                `json:"renewal_notified_at"`
 	CreatedAt            time.Time                `json:"created_at"`
 	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type certificateExpirationScanResponse struct {
+	Expired            []certificateResponse `json:"expired"`
+	ExpirationWarnings []certificateResponse `json:"expiration_warnings"`
 }
 
 type crlPublicationResponse struct {
@@ -915,6 +945,7 @@ func toCertificateResponse(certificate domain.Certificate) certificateResponse {
 		NotAfter:             certificate.NotAfter,
 		Status:               certificate.Status,
 		CertificatePEM:       certificate.CertificatePEM,
+		RenewalNotifiedAt:    certificate.RenewalNotifiedAt,
 		CreatedAt:            certificate.CreatedAt,
 		UpdatedAt:            certificate.UpdatedAt,
 	}
@@ -926,6 +957,13 @@ func toCertificateResponses(certificates []domain.Certificate) []certificateResp
 		responses = append(responses, toCertificateResponse(certificate))
 	}
 	return responses
+}
+
+func toCertificateExpirationScanResponse(result lifecycle.CertificateExpirationScanResult) certificateExpirationScanResponse {
+	return certificateExpirationScanResponse{
+		Expired:            toCertificateResponses(result.Expired),
+		ExpirationWarnings: toCertificateResponses(result.ExpirationWarnings),
+	}
 }
 
 func toCRLPublicationResponse(publication domain.CRLPublication) crlPublicationResponse {

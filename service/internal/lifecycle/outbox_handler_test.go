@@ -56,6 +56,8 @@ func TestLifecycleOutboxHandlerAcceptsKnownLifecycleTypes(t *testing.T) {
 		"certificate.resumed",
 		"certificate.renewal_requested",
 		"certificate.reissue_requested",
+		"certificate.expiration_warning",
+		"certificate.expired",
 		"certificate.revoked",
 		"certificate.force_revoked",
 	} {

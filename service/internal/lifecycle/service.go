@@ -129,6 +129,16 @@ type ReissueCertificateRequest struct {
 	CSRPEM string
 }
 
+type ScanCertificateExpirationsRequest struct {
+	WarningWindow time.Duration
+	Limit         int
+}
+
+type CertificateExpirationScanResult struct {
+	Expired            []domain.Certificate
+	ExpirationWarnings []domain.Certificate
+}
+
 type PublishCRLRequest struct {
 	IssuerID          string
 	DistributionPoint string
@@ -507,6 +517,70 @@ func (s *Service) ReissueCertificate(ctx context.Context, actor string, certific
 		return domain.Enrollment{}, err
 	}
 	return s.createCertificateReplacementEnrollment(ctx, actor, certificateID, req.CSRPEM, certificate.NotAfter, "certificate.reissue_requested")
+}
+
+func (s *Service) ScanCertificateExpirations(ctx context.Context, actor string, req ScanCertificateExpirationsRequest) (CertificateExpirationScanResult, error) {
+	if req.WarningWindow < 0 || req.Limit <= 0 {
+		return CertificateExpirationScanResult{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	warningBefore := now.Add(req.WarningWindow)
+	result := CertificateExpirationScanResult{
+		Expired:            make([]domain.Certificate, 0),
+		ExpirationWarnings: make([]domain.Certificate, 0),
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		candidates, err := repo.ListCertificatesForExpirationScan(ctx, now, warningBefore, req.Limit)
+		if err != nil {
+			return err
+		}
+		for _, certificate := range candidates {
+			switch {
+			case certificateIsExpiredCandidate(certificate, now):
+				updated := certificate
+				updated.Status = domain.CertificateExpired
+				updated.UpdatedAt = now
+				if err := repo.UpdateCertificateIfStatus(ctx, updated, certificate.Status); err != nil {
+					if errors.Is(err, domain.ErrInvalidTransition) {
+						continue
+					}
+					return err
+				}
+				fields := certificateExpirationAuditFields(updated, req.WarningWindow)
+				if err := s.createAuditEvent(ctx, repo, actor, "certificate.expired", "certificate", updated.ID, now, fields); err != nil {
+					return err
+				}
+				if err := s.createOutboxMessage(ctx, repo, "certificate.expired", now, fields); err != nil {
+					return err
+				}
+				result.Expired = append(result.Expired, updated)
+			case certificateNeedsRenewalWarning(certificate, now, warningBefore):
+				updated := certificate
+				updated.RenewalNotifiedAt = now
+				updated.UpdatedAt = now
+				if err := repo.UpdateCertificateIfStatus(ctx, updated, domain.CertificateValid); err != nil {
+					if errors.Is(err, domain.ErrInvalidTransition) {
+						continue
+					}
+					return err
+				}
+				fields := certificateExpirationAuditFields(updated, req.WarningWindow)
+				if err := s.createAuditEvent(ctx, repo, actor, "certificate.expiration_warning", "certificate", updated.ID, now, fields); err != nil {
+					return err
+				}
+				if err := s.createOutboxMessage(ctx, repo, "certificate.expiration_warning", now, fields); err != nil {
+					return err
+				}
+				result.ExpirationWarnings = append(result.ExpirationWarnings, updated)
+			}
+		}
+		return nil
+	}); err != nil {
+		return CertificateExpirationScanResult{}, err
+	}
+	return result, nil
 }
 
 func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, actor string, certificateID string, csrPEM string, requestedNotAfter time.Time, action string) (domain.Enrollment, error) {
@@ -1182,6 +1256,31 @@ func auditFields(pairs ...string) map[string]any {
 		}
 	}
 	return fields
+}
+
+func certificateExpirationAuditFields(certificate domain.Certificate, warningWindow time.Duration) map[string]any {
+	fields := auditFields(
+		"identity_id", certificate.IdentityID,
+		"issuer_id", certificate.IssuerID,
+		"enrollment_id", certificate.EnrollmentID,
+		"certificate_id", certificate.ID,
+		"serial_number", certificate.SerialNumber,
+		"profile_id", certificate.CertificateProfileID,
+	)
+	fields["not_after"] = certificate.NotAfter.Format(time.RFC3339)
+	fields["warning_window_seconds"] = int64(warningWindow.Seconds())
+	return fields
+}
+
+func certificateIsExpiredCandidate(certificate domain.Certificate, now time.Time) bool {
+	return (certificate.Status == domain.CertificateValid || certificate.Status == domain.CertificateSuspended) && !certificate.NotAfter.After(now)
+}
+
+func certificateNeedsRenewalWarning(certificate domain.Certificate, now time.Time, warningBefore time.Time) bool {
+	return certificate.Status == domain.CertificateValid &&
+		certificate.NotAfter.After(now) &&
+		!certificate.NotAfter.After(warningBefore) &&
+		certificate.RenewalNotifiedAt.IsZero()
 }
 
 func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode string, errorCode string) string {

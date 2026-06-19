@@ -25,10 +25,12 @@ Certificate lifecycle operations include revocation, suspension, and resumption:
 - `POST /certificates/{id}/resume`
 - `POST /certificates/{id}/renew`
 - `POST /certificates/{id}/reissue`
+- `POST /certificates/expiration-scan`
 
 Normal revocation accepts only `valid` certificates. Forced revocation accepts `valid` and `suspended` certificates by posting `{"force": true}` with the revocation reason.
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.
+Expiration scans mark `valid` and `suspended` certificates as `expired` when `not_after` is in the past. They emit one renewal warning for each `valid` certificate inside the requested warning window, tracked by `renewal_notified_at`.
 
 OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders`, listed with `GET /issuers/{id}/ocsp-responders`, disabled with `POST /issuers/{id}/ocsp-responders/{responderID}/disable`, and atomically rotated with `POST /issuers/{id}/ocsp-responders/rotate`.
 

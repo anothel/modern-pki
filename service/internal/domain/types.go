@@ -187,6 +187,7 @@ type Certificate struct {
 	NotAfter             time.Time
 	Status               CertificateStatus
 	CertificatePEM       string
+	RenewalNotifiedAt    time.Time
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 }

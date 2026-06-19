@@ -139,6 +139,10 @@ func (s *SQLStore) ListCertificates(ctx context.Context) ([]domain.Certificate, 
 	return s.repository().ListCertificates(ctx)
 }
 
+func (s *SQLStore) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
+	return s.repository().ListCertificatesForExpirationScan(ctx, now, warningBefore, limit)
+}
+
 func (s *SQLStore) UpdateCertificate(ctx context.Context, certificate domain.Certificate) error {
 	return s.repository().UpdateCertificate(ctx, certificate)
 }
@@ -722,9 +726,9 @@ func (r sqlRepository) CreateCertificate(ctx context.Context, certificate domain
 INSERT INTO certificates (
 	id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
-	created_at, updated_at
+	renewal_notified_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )`,
 		certificate.ID,
 		certificate.IdentityID,
@@ -739,6 +743,7 @@ INSERT INTO certificates (
 		formatSQLTime(certificate.NotAfter),
 		string(certificate.Status),
 		certificate.CertificatePEM,
+		formatNullableSQLTime(certificate.RenewalNotifiedAt),
 		formatSQLTime(certificate.CreatedAt),
 		formatSQLTime(certificate.UpdatedAt),
 	)
@@ -749,7 +754,7 @@ func (r sqlRepository) GetCertificate(ctx context.Context, id string) (domain.Ce
 	certificate, err := scanCertificate(r.exec.QueryRowContext(ctx, `
 SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
-	created_at, updated_at
+	renewal_notified_at, created_at, updated_at
 FROM certificates
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -765,9 +770,47 @@ func (r sqlRepository) ListCertificates(ctx context.Context) ([]domain.Certifica
 	rows, err := r.exec.QueryContext(ctx, `
 SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
 	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
-	created_at, updated_at
+	renewal_notified_at, created_at, updated_at
 FROM certificates
 ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	certificates := make([]domain.Certificate, 0)
+	for rows.Next() {
+		certificate, err := scanCertificate(rows)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return certificates, nil
+}
+
+func (r sqlRepository) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
+	rows, err := r.exec.QueryContext(ctx, `
+SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
+	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
+	renewal_notified_at, created_at, updated_at
+FROM certificates
+WHERE (
+	status IN ($1, $2) AND not_after <= $3
+) OR (
+	status = $1 AND not_after > $3 AND not_after <= $4 AND renewal_notified_at IS NULL
+)
+ORDER BY not_after, id
+LIMIT $5`,
+		string(domain.CertificateValid),
+		string(domain.CertificateSuspended),
+		formatSQLTime(now),
+		formatSQLTime(warningBefore),
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -839,9 +882,10 @@ SET identity_id = $1,
 	not_after = $10,
 	status = $11,
 	certificate_pem = $12,
-	created_at = $13,
-	updated_at = $14
-WHERE id = $15`
+	renewal_notified_at = $13,
+	created_at = $14,
+	updated_at = $15
+WHERE id = $16`
 	args := []any{
 		certificate.IdentityID,
 		certificate.IssuerID,
@@ -855,13 +899,14 @@ WHERE id = $15`
 		formatSQLTime(certificate.NotAfter),
 		string(certificate.Status),
 		certificate.CertificatePEM,
+		formatNullableSQLTime(certificate.RenewalNotifiedAt),
 		formatSQLTime(certificate.CreatedAt),
 		formatSQLTime(certificate.UpdatedAt),
 		certificate.ID,
 	}
 	if requireStatus {
 		query += `
-AND status = $16`
+AND status = $17`
 		args = append(args, string(currentStatus))
 	}
 	return r.exec.ExecContext(ctx, query, args...)
@@ -1416,6 +1461,7 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 	var ipAddresses string
 	var notBefore any
 	var notAfter any
+	var renewalNotifiedAt any
 	var createdAt any
 	var updatedAt any
 
@@ -1433,6 +1479,7 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 		&notAfter,
 		&status,
 		&certificate.CertificatePEM,
+		&renewalNotifiedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1455,6 +1502,10 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 	if err != nil {
 		return domain.Certificate{}, err
 	}
+	parsedRenewalNotifiedAt, err := parseSQLTime(renewalNotifiedAt)
+	if err != nil {
+		return domain.Certificate{}, err
+	}
 	parsedCreatedAt, err := parseSQLTime(createdAt)
 	if err != nil {
 		return domain.Certificate{}, err
@@ -1469,6 +1520,7 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 	certificate.NotBefore = parsedNotBefore
 	certificate.NotAfter = parsedNotAfter
 	certificate.Status = domain.CertificateStatus(status)
+	certificate.RenewalNotifiedAt = parsedRenewalNotifiedAt
 	certificate.CreatedAt = parsedCreatedAt
 	certificate.UpdatedAt = parsedUpdatedAt
 	return certificate, nil

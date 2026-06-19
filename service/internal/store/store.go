@@ -45,6 +45,7 @@ type CertificateRepository interface {
 	CreateCertificate(ctx context.Context, certificate domain.Certificate) error
 	GetCertificate(ctx context.Context, id string) (domain.Certificate, error)
 	ListCertificates(ctx context.Context) ([]domain.Certificate, error)
+	ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error)
 	UpdateCertificate(ctx context.Context, certificate domain.Certificate) error
 	UpdateCertificateIfStatus(ctx context.Context, certificate domain.Certificate, currentStatus domain.CertificateStatus) error
 }

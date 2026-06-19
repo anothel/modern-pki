@@ -62,6 +62,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		{table: "certificate_profiles", name: "authority_key_identifier", definition: "authority_key_identifier INTEGER NOT NULL DEFAULT 0"},
 		{table: "enrollments", name: "certificate_profile_id", definition: "certificate_profile_id TEXT NOT NULL DEFAULT ''"},
 		{table: "certificates", name: "certificate_profile_id", definition: "certificate_profile_id TEXT NOT NULL DEFAULT ''"},
+		{table: "certificates", name: "renewal_notified_at", definition: "renewal_notified_at TEXT"},
 	}
 
 	for _, column := range columns {
@@ -99,6 +100,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
 			ON job_attempts(outbox_message_id, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
+			ON certificates(status, not_after, renewal_notified_at, id)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -141,6 +144,7 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS authority_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE certificates ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE certificates ADD COLUMN IF NOT EXISTS renewal_notified_at TIMESTAMPTZ",
 		`CREATE TABLE IF NOT EXISTS outbox_messages (
 			id TEXT PRIMARY KEY,
 			type TEXT NOT NULL,
@@ -163,6 +167,8 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
 			ON job_attempts(outbox_message_id, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
+			ON certificates(status, not_after, renewal_notified_at, id)`,
 	}
 
 	for _, statement := range statements {
