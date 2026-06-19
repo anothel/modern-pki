@@ -20,6 +20,11 @@ CRL publications are service-owned artifacts generated from certificate inventor
 - `GET /crls/{id}`
 - `GET /issuers/{id}/crl`
 
+Issuers can record parent issuer links, AIA URLs, CRL distribution points, and trust anchor status. Root CAs are trust anchors by default. Operator and clients can export issuer chains and active trust anchors:
+
+- `GET /issuers/{id}/chain`
+- `GET /trust/anchors`
+
 Certificate lifecycle operations include revocation, suspension, and resumption:
 
 - `POST /certificates/{id}/revoke`

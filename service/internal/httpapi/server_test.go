@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,6 +85,50 @@ func TestCreateIssuer(t *testing.T) {
 	}
 	if created.Status != domain.IssuerActive {
 		t.Fatalf("created issuer status = %q, want %q", created.Status, domain.IssuerActive)
+	}
+}
+
+func TestIssuerTrustDistributionAPI(t *testing.T) {
+	api := newTestAPI(t)
+
+	var root apiIssuer
+	status := api.doJSON(t, http.MethodPost, "/issuers", "admin", map[string]any{
+		"name":            "root-ca",
+		"kind":            string(domain.IssuerRootCA),
+		"certificate_pem": "root-cert-pem",
+		"key_ref":         "root-key-ref",
+		"trust_anchor":    true,
+	}, &root)
+	assertStatus(t, status, http.StatusCreated)
+
+	var intermediate apiIssuer
+	status = api.doJSON(t, http.MethodPost, "/issuers", "admin", map[string]any{
+		"name":                    "intermediate-ca",
+		"kind":                    string(domain.IssuerIntermediateCA),
+		"parent_issuer_id":        root.ID,
+		"certificate_pem":         "intermediate-cert-pem",
+		"key_ref":                 "intermediate-key-ref",
+		"aia_url":                 "https://pki.example.test/issuers/intermediate-ca.pem",
+		"crl_distribution_points": []string{"https://pki.example.test/crl/intermediate-ca.pem"},
+	}, &intermediate)
+	assertStatus(t, status, http.StatusCreated)
+	if intermediate.ParentIssuerID != root.ID || intermediate.AIAURL == "" ||
+		!reflect.DeepEqual(intermediate.CRLDistributionPoints, []string{"https://pki.example.test/crl/intermediate-ca.pem"}) {
+		t.Fatalf("intermediate issuer = %#v", intermediate)
+	}
+
+	var chain []apiIssuer
+	status = api.doJSON(t, http.MethodGet, "/issuers/"+intermediate.ID+"/chain", "", nil, &chain)
+	assertStatus(t, status, http.StatusOK)
+	if len(chain) != 2 || chain[0].ID != intermediate.ID || chain[1].ID != root.ID {
+		t.Fatalf("issuer chain = %#v", chain)
+	}
+
+	var anchors []apiIssuer
+	status = api.doJSON(t, http.MethodGet, "/trust/anchors", "", nil, &anchors)
+	assertStatus(t, status, http.StatusOK)
+	if len(anchors) != 1 || anchors[0].ID != root.ID || !anchors[0].TrustAnchor {
+		t.Fatalf("trust anchors = %#v", anchors)
 	}
 }
 
@@ -1541,14 +1586,18 @@ type apiIdentity struct {
 }
 
 type apiIssuer struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	Kind           domain.IssuerKind   `json:"kind"`
-	Status         domain.IssuerStatus `json:"status"`
-	CertificatePEM string              `json:"certificate_pem"`
-	KeyRef         string              `json:"key_ref"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
+	ID                    string              `json:"id"`
+	Name                  string              `json:"name"`
+	Kind                  domain.IssuerKind   `json:"kind"`
+	Status                domain.IssuerStatus `json:"status"`
+	ParentIssuerID        string              `json:"parent_issuer_id"`
+	CertificatePEM        string              `json:"certificate_pem"`
+	KeyRef                string              `json:"key_ref"`
+	AIAURL                string              `json:"aia_url"`
+	CRLDistributionPoints []string            `json:"crl_distribution_points"`
+	TrustAnchor           bool                `json:"trust_anchor"`
+	CreatedAt             time.Time           `json:"created_at"`
+	UpdatedAt             time.Time           `json:"updated_at"`
 }
 
 type apiOCSPResponder struct {

@@ -58,6 +58,10 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		name       string
 		definition string
 	}{
+		{table: "issuers", name: "parent_issuer_id", definition: "parent_issuer_id TEXT NOT NULL DEFAULT ''"},
+		{table: "issuers", name: "aia_url", definition: "aia_url TEXT NOT NULL DEFAULT ''"},
+		{table: "issuers", name: "crl_distribution_points", definition: "crl_distribution_points TEXT NOT NULL DEFAULT '[]'"},
+		{table: "issuers", name: "trust_anchor", definition: "trust_anchor INTEGER NOT NULL DEFAULT 0"},
 		{table: "certificate_profiles", name: "subject_key_identifier", definition: "subject_key_identifier INTEGER NOT NULL DEFAULT 0"},
 		{table: "certificate_profiles", name: "authority_key_identifier", definition: "authority_key_identifier INTEGER NOT NULL DEFAULT 0"},
 		{table: "enrollments", name: "certificate_profile_id", definition: "certificate_profile_id TEXT NOT NULL DEFAULT ''"},
@@ -130,6 +134,9 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
+		`UPDATE issuers
+			SET trust_anchor = 1
+			WHERE kind = 'root_ca' AND trust_anchor = 0`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -203,6 +210,10 @@ func sqliteColumnExists(ctx context.Context, db *sql.DB, table string, name stri
 func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	statements := []string{
 		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS subject_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS parent_issuer_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS aia_url TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS crl_distribution_points TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS trust_anchor BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS authority_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE certificates ADD COLUMN IF NOT EXISTS certificate_profile_id TEXT NOT NULL DEFAULT ''",
@@ -264,6 +275,9 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '["operator"]'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
+		`UPDATE issuers
+			SET trust_anchor = TRUE
+			WHERE kind = 'root_ca' AND trust_anchor = FALSE`,
 	}
 
 	for _, statement := range statements {

@@ -1607,6 +1607,130 @@ func TestCreateIssuerRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestCreateIssuerRecordsTrustDistributionMetadata(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	root, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "root-ca",
+		Kind:           domain.IssuerRootCA,
+		CertificatePEM: "root-cert-pem",
+		KeyRef:         "root-key-ref",
+		TrustAnchor:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer root returned error: %v", err)
+	}
+
+	intermediate, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:                  "intermediate-ca",
+		Kind:                  domain.IssuerIntermediateCA,
+		ParentIssuerID:        root.ID,
+		CertificatePEM:        "intermediate-cert-pem",
+		KeyRef:                "intermediate-key-ref",
+		AIAURL:                "https://pki.example.test/issuers/intermediate-ca.pem",
+		CRLDistributionPoints: []string{"https://pki.example.test/crl/intermediate-ca.pem"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer intermediate returned error: %v", err)
+	}
+	if intermediate.ParentIssuerID != root.ID || intermediate.AIAURL == "" ||
+		!reflect.DeepEqual(intermediate.CRLDistributionPoints, []string{"https://pki.example.test/crl/intermediate-ca.pem"}) {
+		t.Fatalf("intermediate issuer metadata = %#v", intermediate)
+	}
+}
+
+func TestCreateIssuerRejectsInvalidParent(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	root, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "root-ca",
+		Kind:           domain.IssuerRootCA,
+		CertificatePEM: "root-cert-pem",
+		KeyRef:         "root-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer root returned error: %v", err)
+	}
+
+	_, err = service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "bad-root",
+		Kind:           domain.IssuerRootCA,
+		ParentIssuerID: root.ID,
+		CertificatePEM: "bad-root-cert-pem",
+		KeyRef:         "bad-root-key-ref",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("root parent error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "missing-parent",
+		Kind:           domain.IssuerIntermediateCA,
+		ParentIssuerID: "missing",
+		CertificatePEM: "intermediate-cert-pem",
+		KeyRef:         "intermediate-key-ref",
+	})
+	if !errors.Is(err, domain.ErrIssuerNotFound) {
+		t.Fatalf("missing parent error = %v, want ErrIssuerNotFound", err)
+	}
+}
+
+func TestIssuerChainAndTrustAnchors(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	root, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "root-ca",
+		Kind:           domain.IssuerRootCA,
+		CertificatePEM: "root-cert-pem",
+		KeyRef:         "root-key-ref",
+		TrustAnchor:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer root returned error: %v", err)
+	}
+	intermediate, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		ParentIssuerID: root.ID,
+		CertificatePEM: "intermediate-cert-pem",
+		KeyRef:         "intermediate-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer intermediate returned error: %v", err)
+	}
+
+	chain, err := service.GetIssuerChain(ctx, intermediate.ID)
+	if err != nil {
+		t.Fatalf("GetIssuerChain returned error: %v", err)
+	}
+	if len(chain) != 2 || chain[0].ID != intermediate.ID || chain[1].ID != root.ID {
+		t.Fatalf("issuer chain = %#v", chain)
+	}
+
+	anchors, err := service.ListTrustAnchors(ctx)
+	if err != nil {
+		t.Fatalf("ListTrustAnchors returned error: %v", err)
+	}
+	if len(anchors) != 1 || anchors[0].ID != root.ID {
+		t.Fatalf("trust anchors = %#v", anchors)
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	ctx := context.Background()
 	service := New(

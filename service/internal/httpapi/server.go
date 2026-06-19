@@ -81,6 +81,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /identities/{id}", s.getIdentity)
 
 	s.mux.HandleFunc("POST /issuers", s.createIssuer)
+	s.mux.HandleFunc("GET /issuers/{id}/chain", s.getIssuerChain)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders", s.createOCSPResponder)
 	s.mux.HandleFunc("GET /issuers/{id}/ocsp-responders", s.listOCSPResponders)
 	s.mux.HandleFunc("POST /issuers/{id}/ocsp-responders/rotate", s.rotateOCSPResponder)
@@ -124,6 +125,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /ocsp", s.respondOCSP)
 
 	s.mux.HandleFunc("GET /audit-events", s.listAuditEvents)
+	s.mux.HandleFunc("GET /trust/anchors", s.listTrustAnchors)
 }
 
 func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
@@ -171,16 +173,29 @@ func (s *Server) createIssuer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issuer, err := s.service.CreateIssuer(r.Context(), requestActor(r), lifecycle.CreateIssuerRequest{
-		Name:           req.Name,
-		Kind:           req.Kind,
-		CertificatePEM: req.CertificatePEM,
-		KeyRef:         req.KeyRef,
+		Name:                  req.Name,
+		Kind:                  req.Kind,
+		ParentIssuerID:        req.ParentIssuerID,
+		CertificatePEM:        req.CertificatePEM,
+		KeyRef:                req.KeyRef,
+		AIAURL:                req.AIAURL,
+		CRLDistributionPoints: req.CRLDistributionPoints,
+		TrustAnchor:           req.TrustAnchor,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toIssuerResponse(issuer))
+}
+
+func (s *Server) getIssuerChain(w http.ResponseWriter, r *http.Request) {
+	chain, err := s.service.GetIssuerChain(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toIssuerResponses(chain))
 }
 
 func (s *Server) createOCSPResponder(w http.ResponseWriter, r *http.Request) {
@@ -640,6 +655,15 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAuditEventResponses(events))
 }
 
+func (s *Server) listTrustAnchors(w http.ResponseWriter, r *http.Request) {
+	anchors, err := s.service.ListTrustAnchors(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toIssuerResponses(anchors))
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -882,10 +906,14 @@ type createIdentityRequest struct {
 }
 
 type createIssuerRequest struct {
-	Name           string            `json:"name"`
-	Kind           domain.IssuerKind `json:"kind"`
-	CertificatePEM string            `json:"certificate_pem"`
-	KeyRef         string            `json:"key_ref"`
+	Name                  string            `json:"name"`
+	Kind                  domain.IssuerKind `json:"kind"`
+	ParentIssuerID        string            `json:"parent_issuer_id"`
+	CertificatePEM        string            `json:"certificate_pem"`
+	KeyRef                string            `json:"key_ref"`
+	AIAURL                string            `json:"aia_url"`
+	CRLDistributionPoints []string          `json:"crl_distribution_points"`
+	TrustAnchor           bool              `json:"trust_anchor"`
 }
 
 type createOCSPResponderRequest struct {
@@ -977,14 +1005,18 @@ type identityResponse struct {
 }
 
 type issuerResponse struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	Kind           domain.IssuerKind   `json:"kind"`
-	Status         domain.IssuerStatus `json:"status"`
-	CertificatePEM string              `json:"certificate_pem"`
-	KeyRef         string              `json:"key_ref"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
+	ID                    string              `json:"id"`
+	Name                  string              `json:"name"`
+	Kind                  domain.IssuerKind   `json:"kind"`
+	Status                domain.IssuerStatus `json:"status"`
+	ParentIssuerID        string              `json:"parent_issuer_id"`
+	CertificatePEM        string              `json:"certificate_pem"`
+	KeyRef                string              `json:"key_ref"`
+	AIAURL                string              `json:"aia_url"`
+	CRLDistributionPoints []string            `json:"crl_distribution_points"`
+	TrustAnchor           bool                `json:"trust_anchor"`
+	CreatedAt             time.Time           `json:"created_at"`
+	UpdatedAt             time.Time           `json:"updated_at"`
 }
 
 type ocspResponderResponse struct {
@@ -1140,15 +1172,27 @@ func toIdentityResponses(identities []domain.Identity) []identityResponse {
 
 func toIssuerResponse(issuer domain.Issuer) issuerResponse {
 	return issuerResponse{
-		ID:             issuer.ID,
-		Name:           issuer.Name,
-		Kind:           issuer.Kind,
-		Status:         issuer.Status,
-		CertificatePEM: issuer.CertificatePEM,
-		KeyRef:         issuer.KeyRef,
-		CreatedAt:      issuer.CreatedAt,
-		UpdatedAt:      issuer.UpdatedAt,
+		ID:                    issuer.ID,
+		Name:                  issuer.Name,
+		Kind:                  issuer.Kind,
+		Status:                issuer.Status,
+		ParentIssuerID:        issuer.ParentIssuerID,
+		CertificatePEM:        issuer.CertificatePEM,
+		KeyRef:                issuer.KeyRef,
+		AIAURL:                issuer.AIAURL,
+		CRLDistributionPoints: issuer.CRLDistributionPoints,
+		TrustAnchor:           issuer.TrustAnchor,
+		CreatedAt:             issuer.CreatedAt,
+		UpdatedAt:             issuer.UpdatedAt,
 	}
+}
+
+func toIssuerResponses(issuers []domain.Issuer) []issuerResponse {
+	responses := make([]issuerResponse, 0, len(issuers))
+	for _, issuer := range issuers {
+		responses = append(responses, toIssuerResponse(issuer))
+	}
+	return responses
 }
 
 func toOCSPResponderResponse(responder domain.OCSPResponder) ocspResponderResponse {

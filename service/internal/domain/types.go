@@ -133,14 +133,18 @@ type Identity struct {
 }
 
 type Issuer struct {
-	ID             string
-	Name           string
-	Kind           IssuerKind
-	Status         IssuerStatus
-	CertificatePEM string
-	KeyRef         string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                    string
+	Name                  string
+	Kind                  IssuerKind
+	Status                IssuerStatus
+	ParentIssuerID        string
+	CertificatePEM        string
+	KeyRef                string
+	AIAURL                string
+	CRLDistributionPoints []string
+	TrustAnchor           bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type OCSPResponder struct {

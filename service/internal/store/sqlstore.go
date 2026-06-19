@@ -312,18 +312,26 @@ ORDER BY created_at, id`)
 }
 
 func (r sqlRepository) CreateIssuer(ctx context.Context, issuer domain.Issuer) error {
-	_, err := r.exec.ExecContext(ctx, `
+	distributionPoints, err := marshalStringSlice(issuer.CRLDistributionPoints)
+	if err != nil {
+		return err
+	}
+	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO issuers (
-	id, name, kind, status, certificate_pem, key_ref, created_at, updated_at
+	id, name, kind, status, parent_issuer_id, certificate_pem, key_ref, aia_url, crl_distribution_points, trust_anchor, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )`,
 		issuer.ID,
 		issuer.Name,
 		string(issuer.Kind),
 		string(issuer.Status),
+		issuer.ParentIssuerID,
 		issuer.CertificatePEM,
 		issuer.KeyRef,
+		issuer.AIAURL,
+		distributionPoints,
+		issuer.TrustAnchor,
 		formatSQLTime(issuer.CreatedAt),
 		formatSQLTime(issuer.UpdatedAt),
 	)
@@ -332,7 +340,7 @@ INSERT INTO issuers (
 
 func (r sqlRepository) GetIssuer(ctx context.Context, id string) (domain.Issuer, error) {
 	issuer, err := scanIssuer(r.exec.QueryRowContext(ctx, `
-SELECT id, name, kind, status, certificate_pem, key_ref, created_at, updated_at
+SELECT id, name, kind, status, parent_issuer_id, certificate_pem, key_ref, aia_url, crl_distribution_points, trust_anchor, created_at, updated_at
 FROM issuers
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -346,7 +354,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, name, kind, status, certificate_pem, key_ref, created_at, updated_at
+SELECT id, name, kind, status, parent_issuer_id, certificate_pem, key_ref, aia_url, crl_distribution_points, trust_anchor, created_at, updated_at
 FROM issuers
 ORDER BY created_at, id`)
 	if err != nil {
@@ -1597,6 +1605,7 @@ func scanIssuer(scanner sqlScanner) (domain.Issuer, error) {
 	var issuer domain.Issuer
 	var kind string
 	var status string
+	var distributionPoints string
 	var createdAt any
 	var updatedAt any
 
@@ -1605,8 +1614,12 @@ func scanIssuer(scanner sqlScanner) (domain.Issuer, error) {
 		&issuer.Name,
 		&kind,
 		&status,
+		&issuer.ParentIssuerID,
 		&issuer.CertificatePEM,
 		&issuer.KeyRef,
+		&issuer.AIAURL,
+		&distributionPoints,
+		&issuer.TrustAnchor,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1621,9 +1634,14 @@ func scanIssuer(scanner sqlScanner) (domain.Issuer, error) {
 	if err != nil {
 		return domain.Issuer{}, err
 	}
+	parsedDistributionPoints, err := unmarshalStringSlice(distributionPoints)
+	if err != nil {
+		return domain.Issuer{}, err
+	}
 
 	issuer.Kind = domain.IssuerKind(kind)
 	issuer.Status = domain.IssuerStatus(status)
+	issuer.CRLDistributionPoints = parsedDistributionPoints
 	issuer.CreatedAt = parsedCreatedAt
 	issuer.UpdatedAt = parsedUpdatedAt
 	return issuer, nil

@@ -13,8 +13,12 @@ CREATE TABLE IF NOT EXISTS issuers (
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
+    parent_issuer_id TEXT NOT NULL,
     certificate_pem TEXT NOT NULL,
     key_ref TEXT NOT NULL,
+    aia_url TEXT NOT NULL,
+    crl_distribution_points TEXT NOT NULL,
+    trust_anchor INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

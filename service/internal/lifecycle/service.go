@@ -87,10 +87,14 @@ type CreateIdentityRequest struct {
 }
 
 type CreateIssuerRequest struct {
-	Name           string
-	Kind           domain.IssuerKind
-	CertificatePEM string
-	KeyRef         string
+	Name                  string
+	Kind                  domain.IssuerKind
+	ParentIssuerID        string
+	CertificatePEM        string
+	KeyRef                string
+	AIAURL                string
+	CRLDistributionPoints []string
+	TrustAnchor           bool
 }
 
 type CreateOCSPResponderRequest struct {
@@ -386,22 +390,32 @@ func (s *Service) CreateIssuer(ctx context.Context, actor string, req CreateIssu
 
 	now := s.clock.Now()
 	issuer := domain.Issuer{
-		ID:             s.idgen.NewID(),
-		Name:           req.Name,
-		Kind:           req.Kind,
-		Status:         domain.IssuerActive,
-		CertificatePEM: req.CertificatePEM,
-		KeyRef:         req.KeyRef,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                    s.idgen.NewID(),
+		Name:                  req.Name,
+		Kind:                  req.Kind,
+		Status:                domain.IssuerActive,
+		ParentIssuerID:        req.ParentIssuerID,
+		CertificatePEM:        req.CertificatePEM,
+		KeyRef:                req.KeyRef,
+		AIAURL:                req.AIAURL,
+		CRLDistributionPoints: append([]string(nil), req.CRLDistributionPoints...),
+		TrustAnchor:           req.TrustAnchor || req.Kind == domain.IssuerRootCA,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if req.ParentIssuerID != "" {
+			if _, err := repo.GetIssuer(ctx, req.ParentIssuerID); err != nil {
+				return err
+			}
+		}
 		if err := repo.CreateIssuer(ctx, issuer); err != nil {
 			return err
 		}
 		return s.createAuditEvent(ctx, repo, actor, "issuer.created", "issuer", issuer.ID, now, auditFields(
 			"issuer_id", issuer.ID,
+			"parent_issuer_id", issuer.ParentIssuerID,
 		))
 	}); err != nil {
 		return domain.Issuer{}, err
@@ -609,6 +623,42 @@ func (s *Service) CreateNotificationEndpoint(ctx context.Context, actor string, 
 
 func (s *Service) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
 	return s.repo.ListNotificationEndpoints(ctx)
+}
+
+func (s *Service) GetIssuerChain(ctx context.Context, id string) ([]domain.Issuer, error) {
+	if isBlank(id) {
+		return nil, domain.ErrInvalidRequest
+	}
+	chain := make([]domain.Issuer, 0)
+	seen := make(map[string]struct{})
+	currentID := id
+	for currentID != "" {
+		if _, ok := seen[currentID]; ok {
+			return nil, domain.ErrInvalidRequest
+		}
+		seen[currentID] = struct{}{}
+		issuer, err := s.repo.GetIssuer(ctx, currentID)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, issuer)
+		currentID = issuer.ParentIssuerID
+	}
+	return chain, nil
+}
+
+func (s *Service) ListTrustAnchors(ctx context.Context) ([]domain.Issuer, error) {
+	issuers, err := s.repo.ListIssuers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	anchors := make([]domain.Issuer, 0)
+	for _, issuer := range issuers {
+		if issuer.Status == domain.IssuerActive && issuer.TrustAnchor {
+			anchors = append(anchors, issuer)
+		}
+	}
+	return anchors, nil
 }
 
 func (s *Service) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
@@ -1910,6 +1960,14 @@ func validateCreateIdentityRequest(req CreateIdentityRequest) error {
 func validateCreateIssuerRequest(req CreateIssuerRequest) error {
 	if isBlank(req.Name) || !isValidIssuerKind(req.Kind) || isBlank(req.CertificatePEM) || isBlank(req.KeyRef) {
 		return domain.ErrInvalidRequest
+	}
+	if req.Kind == domain.IssuerRootCA && !isBlank(req.ParentIssuerID) {
+		return domain.ErrInvalidRequest
+	}
+	for _, distributionPoint := range req.CRLDistributionPoints {
+		if isBlank(distributionPoint) {
+			return domain.ErrInvalidRequest
+		}
 	}
 	return nil
 }

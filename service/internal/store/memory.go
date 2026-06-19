@@ -118,7 +118,7 @@ func (s *MemoryStore) CreateIssuer(ctx context.Context, issuer domain.Issuer) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.issuers[issuer.ID] = issuer
+	s.issuers[issuer.ID] = copyIssuer(issuer)
 	return nil
 }
 
@@ -130,7 +130,7 @@ func (s *MemoryStore) GetIssuer(ctx context.Context, id string) (domain.Issuer, 
 	if !ok {
 		return domain.Issuer{}, domain.ErrIssuerNotFound
 	}
-	return issuer, nil
+	return copyIssuer(issuer), nil
 }
 
 func (s *MemoryStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
@@ -139,7 +139,7 @@ func (s *MemoryStore) ListIssuers(ctx context.Context) ([]domain.Issuer, error) 
 
 	issuers := make([]domain.Issuer, 0, len(s.issuers))
 	for _, issuer := range s.issuers {
-		issuers = append(issuers, issuer)
+		issuers = append(issuers, copyIssuer(issuer))
 	}
 	return issuers, nil
 }
@@ -523,6 +523,11 @@ func copyEnrollment(enrollment domain.Enrollment) domain.Enrollment {
 	return enrollment
 }
 
+func copyIssuer(issuer domain.Issuer) domain.Issuer {
+	issuer.CRLDistributionPoints = append([]string(nil), issuer.CRLDistributionPoints...)
+	return issuer
+}
+
 func copyCertificateProfile(profile domain.CertificateProfile) domain.CertificateProfile {
 	profile.AllowedDNSPatterns = append([]string(nil), profile.AllowedDNSPatterns...)
 	profile.AllowedIPRanges = append([]string(nil), profile.AllowedIPRanges...)
@@ -754,7 +759,7 @@ func (tx *memoryTx) ListIdentities(ctx context.Context) ([]domain.Identity, erro
 }
 
 func (tx *memoryTx) CreateIssuer(ctx context.Context, issuer domain.Issuer) error {
-	tx.issuers[issuer.ID] = issuer
+	tx.issuers[issuer.ID] = copyIssuer(issuer)
 	return nil
 }
 
@@ -763,13 +768,13 @@ func (tx *memoryTx) GetIssuer(ctx context.Context, id string) (domain.Issuer, er
 	if !ok {
 		return domain.Issuer{}, domain.ErrIssuerNotFound
 	}
-	return issuer, nil
+	return copyIssuer(issuer), nil
 }
 
 func (tx *memoryTx) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 	issuers := make([]domain.Issuer, 0, len(tx.issuers))
 	for _, issuer := range tx.issuers {
-		issuers = append(issuers, issuer)
+		issuers = append(issuers, copyIssuer(issuer))
 	}
 	return issuers, nil
 }
@@ -1027,7 +1032,7 @@ func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity 
 func cloneIssuers(src map[string]domain.Issuer) map[string]domain.Issuer {
 	dst := make(map[string]domain.Issuer, len(src))
 	for id, issuer := range src {
-		dst[id] = issuer
+		dst[id] = copyIssuer(issuer)
 	}
 	return dst
 }

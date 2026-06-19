@@ -152,6 +152,23 @@ func TestSQLStoreOCSPResponders(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreIssuerTrustMetadata(t *testing.T) {
+	testIssuerTrustMetadata(t, NewMemoryStore())
+}
+
+func TestSQLStoreIssuerTrustMetadata(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testIssuerTrustMetadata(t, NewSQLStore(db))
+}
+
 func TestMemoryStoreCertificateExpirationScan(t *testing.T) {
 	testCertificateExpirationScan(t, NewMemoryStore())
 }
@@ -497,5 +514,39 @@ func testAPIKeys(t *testing.T, repo Repository) {
 	}
 	if _, err := repo.GetAPIKeyByTokenHash(ctx, "sha256:missing"); !errors.Is(err, domain.ErrAPIKeyNotFound) {
 		t.Fatalf("GetAPIKeyByTokenHash missing error = %v, want ErrAPIKeyNotFound", err)
+	}
+}
+
+func testIssuerTrustMetadata(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Unix(10, 0)
+	issuer := domain.Issuer{
+		ID:                    "issuer-1",
+		Name:                  "intermediate",
+		Kind:                  domain.IssuerIntermediateCA,
+		Status:                domain.IssuerActive,
+		ParentIssuerID:        "root-1",
+		CertificatePEM:        "issuer-pem",
+		KeyRef:                "issuer-key",
+		AIAURL:                "https://pki.example.test/issuers/intermediate.pem",
+		CRLDistributionPoints: []string{"https://pki.example.test/crl/intermediate.pem"},
+		TrustAnchor:           false,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	if err := repo.CreateIssuer(ctx, issuer); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	got, err := repo.GetIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetIssuer returned error: %v", err)
+	}
+	if got.ParentIssuerID != issuer.ParentIssuerID ||
+		got.AIAURL != issuer.AIAURL ||
+		got.TrustAnchor != issuer.TrustAnchor ||
+		len(got.CRLDistributionPoints) != 1 ||
+		got.CRLDistributionPoints[0] != issuer.CRLDistributionPoints[0] {
+		t.Fatalf("issuer metadata = %#v, want %#v", got, issuer)
 	}
 }
