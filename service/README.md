@@ -12,6 +12,8 @@ Certificate profiles are first-class service records at:
 
 Profiles currently model typed policy fields for validity, subject templates, allowed DNS/IP constraints, key usage, extended key usage, basic constraints, subject key identifiers, and authority key identifiers. Profile-driven X.509 extension emission is wired through the core CLI for basic constraints, key usage, extended key usage, subject key identifier, authority key identifier, and subject alternative name.
 
+Profile policy is enforced when creating enrollments, creating renewal/reissue enrollments, and immediately before signing approved enrollments. Requested expiration cannot exceed `validity_period_seconds` from the current service clock. Requested DNS names must match allowed exact names or `*.example.test`-style suffix patterns when `allowed_dns_patterns` is set. Requested IP addresses must fall inside configured CIDR ranges when `allowed_ip_ranges` is set.
+
 CRL publications are service-owned artifacts generated from certificate inventory and revocation records. The service selects revoked certificates for an issuer, assigns the next CRL number, calls the core CLI to build and sign the CRL, stores the PEM artifact, and publishes the latest issuer CRL over HTTP.
 
 - `POST /crls`

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -737,8 +738,10 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 	if _, err := s.repo.GetIssuer(ctx, req.IssuerID); err != nil {
 		return domain.Enrollment{}, err
 	}
+	var profile domain.CertificateProfile
 	if req.CertificateProfileID != "" {
-		profile, err := s.repo.GetCertificateProfile(ctx, req.CertificateProfileID)
+		var err error
+		profile, err = s.repo.GetCertificateProfile(ctx, req.CertificateProfileID)
 		if err != nil {
 			return domain.Enrollment{}, err
 		}
@@ -753,6 +756,9 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 	}
 	if !sameStringSet(req.RequestedDNSNames, csrInfo.DNSNames) || !sameStringSet(req.RequestedIPAddresses, csrInfo.IPAddresses) {
 		return domain.Enrollment{}, domain.ErrInvalidRequest
+	}
+	if err := validateEnrollmentProfilePolicy(req, profile, now); err != nil {
+		return domain.Enrollment{}, err
 	}
 
 	enrollment := domain.Enrollment{
@@ -906,6 +912,20 @@ func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, ac
 	}
 	if !sameStringSet(createReq.RequestedDNSNames, csrInfo.DNSNames) || !sameStringSet(createReq.RequestedIPAddresses, csrInfo.IPAddresses) {
 		return domain.Enrollment{}, domain.ErrInvalidRequest
+	}
+	var profile domain.CertificateProfile
+	if createReq.CertificateProfileID != "" {
+		var err error
+		profile, err = s.repo.GetCertificateProfile(ctx, createReq.CertificateProfileID)
+		if err != nil {
+			return domain.Enrollment{}, err
+		}
+		if profile.IssuerID != createReq.IssuerID {
+			return domain.Enrollment{}, domain.ErrInvalidRequest
+		}
+	}
+	if err := validateEnrollmentProfilePolicy(createReq, profile, now); err != nil {
+		return domain.Enrollment{}, err
 	}
 
 	enrollment := domain.Enrollment{
@@ -1067,6 +1087,9 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	}
 
 	now := s.clock.Now()
+	if err := validateEnrollmentProfilePolicy(enrollmentProfilePolicyRequest(enrollment), profile, now); err != nil {
+		return domain.Certificate{}, err
+	}
 	// MVP limit: signing precedes DB commit; conditional finalization below prevents stale issuers from persisting duplicates.
 	result, err := s.issuer.Issue(ctx, corecli.IssueRequest{
 		CSRPEM:                     enrollment.CSRPEM,
@@ -1927,6 +1950,88 @@ func validateCreateEnrollmentRequest(req CreateEnrollmentRequest, now time.Time)
 		return domain.ErrInvalidRequest
 	}
 	return nil
+}
+
+func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain.CertificateProfile, now time.Time) error {
+	if profile.ID == "" {
+		return nil
+	}
+	if profile.ValidityPeriodSeconds > 0 {
+		maxNotAfter := now.Add(time.Duration(profile.ValidityPeriodSeconds) * time.Second)
+		if req.RequestedNotAfter.After(maxNotAfter) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, dnsName := range req.RequestedDNSNames {
+		if !dnsAllowedByProfile(dnsName, profile.AllowedDNSPatterns) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, ipAddress := range req.RequestedIPAddresses {
+		if !ipAllowedByProfile(ipAddress, profile.AllowedIPRanges) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
+func enrollmentProfilePolicyRequest(enrollment domain.Enrollment) CreateEnrollmentRequest {
+	return CreateEnrollmentRequest{
+		IdentityID:           enrollment.IdentityID,
+		IssuerID:             enrollment.IssuerID,
+		CertificateProfileID: enrollment.CertificateProfileID,
+		CSRPEM:               enrollment.CSRPEM,
+		RequestedSubject:     enrollment.RequestedSubject,
+		RequestedDNSNames:    append([]string(nil), enrollment.RequestedDNSNames...),
+		RequestedIPAddresses: append([]string(nil), enrollment.RequestedIPAddresses...),
+		RequestedNotAfter:    enrollment.RequestedNotAfter,
+	}
+}
+
+func dnsAllowedByProfile(name string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			return false
+		}
+		if pattern == name {
+			return true
+		}
+		if strings.HasPrefix(pattern, "*.") {
+			suffix := strings.TrimPrefix(pattern, "*")
+			if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ipAllowedByProfile(address string, ranges []string) bool {
+	if len(ranges) == 0 {
+		return true
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	for _, rawRange := range ranges {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(rawRange))
+		if err != nil {
+			return false
+		}
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePublishCRLRequest(req PublishCRLRequest, now time.Time) error {

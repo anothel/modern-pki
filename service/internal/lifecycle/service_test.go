@@ -1887,6 +1887,115 @@ func TestCreateEnrollmentRejectsSANMismatch(t *testing.T) {
 	}
 }
 
+func TestCreateEnrollmentEnforcesCertificateProfilePolicy(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name    string
+		csrInfo corecli.CSRInfo
+		mutate  func(*CreateEnrollmentRequest)
+	}{
+		{
+			name: "dns outside allowed pattern",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"edge-01.other.test"},
+				IPAddresses: []string{"192.0.2.10"},
+			},
+			mutate: func(req *CreateEnrollmentRequest) {
+				req.RequestedDNSNames = []string{"edge-01.other.test"}
+			},
+		},
+		{
+			name: "ip outside allowed range",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"edge-01.example.test"},
+				IPAddresses: []string{"10.0.0.10"},
+			},
+			mutate: func(req *CreateEnrollmentRequest) {
+				req.RequestedIPAddresses = []string{"10.0.0.10"}
+			},
+		},
+		{
+			name: "not after exceeds profile validity",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"edge-01.example.test"},
+				IPAddresses: []string{"192.0.2.10"},
+			},
+			mutate: func(req *CreateEnrollmentRequest) {
+				req.RequestedNotAfter = now.Add(25 * time.Hour)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := New(
+				store.NewMemoryStore(),
+				&fakeIssuer{
+					csrInfo: tt.csrInfo,
+				},
+				fixedClock{now: now},
+				&fakeIDGenerator{},
+			)
+			identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+			req := CreateEnrollmentRequest{
+				IdentityID:           identity.ID,
+				IssuerID:             issuer.ID,
+				CertificateProfileID: profile.ID,
+				CSRPEM:               "csr-pem",
+				RequestedSubject:     "CN=edge-01",
+				RequestedDNSNames:    []string{"edge-01.example.test"},
+				RequestedIPAddresses: []string{"192.0.2.10"},
+				RequestedNotAfter:    now.Add(24 * time.Hour),
+			}
+			tt.mutate(&req)
+
+			_, err := service.CreateEnrollment(ctx, "operator", req)
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("CreateEnrollment error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
+func TestIssueCertificateEnforcesProfilePolicyBeforeSigning(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	service := New(repo, issuerClient, fixedClock{now: now}, &fakeIDGenerator{})
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	enrollment := domain.Enrollment{
+		ID:                   "enrollment-1",
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		CSRPEM:               "csr-pem",
+		Status:               domain.EnrollmentApproved,
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.other.test"},
+		RequestedIPAddresses: []string{"192.0.2.10"},
+		RequestedNotAfter:    now.Add(24 * time.Hour),
+		ApprovedBy:           "approver",
+		ApprovedAt:           now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
+		t.Fatalf("CreateEnrollment fixture returned error: %v", err)
+	}
+
+	_, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("IssueCertificate error = %v, want ErrInvalidRequest", err)
+	}
+	if len(issuerClient.requests) != 0 {
+		t.Fatalf("Issue call count = %d, want 0", len(issuerClient.requests))
+	}
+}
+
 func TestIssueCertificateMapsCSRParseFailure(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -2173,6 +2282,52 @@ func TestRenewCertificateCreatesPendingEnrollmentFromCertificate(t *testing.T) {
 	metadata := auditMetadata(t, last)
 	if metadata["certificate_id"] != certificate.ID || metadata["enrollment_id"] != renewal.ID {
 		t.Fatalf("renewal audit metadata = %#v", metadata)
+	}
+}
+
+func TestRenewCertificateEnforcesProfileValidity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"edge-01.example.test"},
+				IPAddresses: []string{"192.0.2.10"},
+			},
+		},
+		fixedClock{now: now},
+		&fakeIDGenerator{},
+	)
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"192.0.2.10"},
+		RequestedNotAfter:    now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+
+	_, err = service.RenewCertificate(ctx, "operator", certificate.ID, RenewCertificateRequest{
+		CSRPEM:            "renewal-csr-pem",
+		RequestedNotAfter: now.Add(25 * time.Hour),
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("RenewCertificate error = %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -2511,6 +2666,41 @@ func createPendingEnrollment(t *testing.T, ctx context.Context, service *Service
 		t.Fatalf("CreateEnrollment returned error: %v", err)
 	}
 	return enrollment
+}
+
+func createProfilePolicyFixture(t *testing.T, ctx context.Context, service *Service) (domain.Identity, domain.Issuer, domain.CertificateProfile) {
+	t.Helper()
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityMachine,
+		Name: "edge-01",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	profile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "machine-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		AllowedDNSPatterns:    []string{"*.example.test"},
+		AllowedIPRanges:       []string{"192.0.2.0/24"},
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			CA: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+	return identity, issuer, profile
 }
 
 type fakeIssuer struct {
