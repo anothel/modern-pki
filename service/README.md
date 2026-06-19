@@ -31,6 +31,7 @@ Normal revocation accepts only `valid` certificates. Forced revocation accepts `
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.
 Expiration scans mark `valid` and `suspended` certificates as `expired` when `not_after` is in the past. They emit one renewal warning for each `valid` certificate inside the requested warning window, tracked by `renewal_notified_at`.
+The expiration scan worker is disabled by default. Set `MODERN_PKI_EXPIRATION_SCAN_ENABLED=true` to run scans automatically on startup and then at the configured interval.
 
 OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders`, listed with `GET /issuers/{id}/ocsp-responders`, disabled with `POST /issuers/{id}/ocsp-responders/{responderID}/disable`, and atomically rotated with `POST /issuers/{id}/ocsp-responders/rotate`.
 
@@ -54,6 +55,13 @@ Environment variables:
 | `MODERN_PKI_DB_DRIVER` | `sqlite` | Database driver name. Use `sqlite` locally or `pgx` for PostgreSQL. |
 | `MODERN_PKI_DB_DSN` | `modern-pki.db` | Database DSN passed to `database/sql`. |
 | `MODERN_PKI_CORE_BIN` | `modern-pki-core` | Path or command name for the core CLI. |
+| `MODERN_PKI_OUTBOX_ENABLED` | `true` | Enables lifecycle outbox dispatch worker. |
+| `MODERN_PKI_OUTBOX_INTERVAL` | `5s` | Outbox dispatch worker interval. |
+| `MODERN_PKI_OUTBOX_BATCH_SIZE` | `10` | Max outbox messages dispatched per worker run. |
+| `MODERN_PKI_EXPIRATION_SCAN_ENABLED` | `false` | Enables automatic certificate expiration scans. |
+| `MODERN_PKI_EXPIRATION_SCAN_INTERVAL` | `1h` | Expiration scan worker interval. |
+| `MODERN_PKI_EXPIRATION_WARNING_WINDOW` | `720h` | Renewal warning window for valid certificates. |
+| `MODERN_PKI_EXPIRATION_SCAN_BATCH_SIZE` | `100` | Max certificates processed per expiration scan. |
 
 Initial schema migration runs on startup before the HTTP server starts. SQLite uses `internal/store/migrations/0001_init_sqlite.sql`; `pgx` uses `internal/store/migrations/0001_init.sql`.
 

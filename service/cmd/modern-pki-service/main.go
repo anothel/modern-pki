@@ -28,12 +28,24 @@ const (
 	defaultOutboxEnabled   = true
 	defaultOutboxInterval  = 5 * time.Second
 	defaultOutboxBatchSize = 10
+
+	defaultExpirationScanEnabled       = false
+	defaultExpirationScanInterval      = time.Hour
+	defaultExpirationScanWarningWindow = 30 * 24 * time.Hour
+	defaultExpirationScanBatchSize     = 100
 )
 
 type outboxConfig struct {
 	Enabled   bool
 	Interval  time.Duration
 	BatchSize int
+}
+
+type expirationScanConfig struct {
+	Enabled       bool
+	Interval      time.Duration
+	WarningWindow time.Duration
+	BatchSize     int
 }
 
 func main() {
@@ -44,6 +56,10 @@ func main() {
 	outboxCfg, err := loadOutboxConfig()
 	if err != nil {
 		log.Fatalf("load outbox config: %v", err)
+	}
+	expirationScanCfg, err := loadExpirationScanConfig()
+	if err != nil {
+		log.Fatalf("load expiration scan config: %v", err)
 	}
 
 	db, err := sql.Open(dbDriver, dbDSN)
@@ -64,6 +80,11 @@ func main() {
 		worker := lifecycle.NewOutboxWorker(dispatcher, outboxCfg.Interval, outboxCfg.BatchSize, log.Printf)
 		go worker.Run(context.Background())
 		log.Printf("modern-pki outbox worker enabled interval=%s batch=%d", outboxCfg.Interval, outboxCfg.BatchSize)
+	}
+	if expirationScanCfg.Enabled {
+		worker := lifecycle.NewExpirationScanWorker(svc, expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize, log.Printf)
+		go worker.Run(context.Background())
+		log.Printf("modern-pki expiration scan worker enabled interval=%s warning_window=%s batch=%d", expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize)
 	}
 
 	log.Printf("modern-pki service listening on %s", addr)
@@ -100,6 +121,31 @@ func loadOutboxConfig() (outboxConfig, error) {
 	}, nil
 }
 
+func loadExpirationScanConfig() (expirationScanConfig, error) {
+	enabled, err := parseBoolEnv("MODERN_PKI_EXPIRATION_SCAN_ENABLED", defaultExpirationScanEnabled)
+	if err != nil {
+		return expirationScanConfig{}, err
+	}
+	interval, err := parseDurationEnv("MODERN_PKI_EXPIRATION_SCAN_INTERVAL", defaultExpirationScanInterval)
+	if err != nil {
+		return expirationScanConfig{}, err
+	}
+	warningWindow, err := parseNonNegativeDurationEnv("MODERN_PKI_EXPIRATION_WARNING_WINDOW", defaultExpirationScanWarningWindow)
+	if err != nil {
+		return expirationScanConfig{}, err
+	}
+	batchSize, err := parsePositiveIntEnv("MODERN_PKI_EXPIRATION_SCAN_BATCH_SIZE", defaultExpirationScanBatchSize)
+	if err != nil {
+		return expirationScanConfig{}, err
+	}
+	return expirationScanConfig{
+		Enabled:       enabled,
+		Interval:      interval,
+		WarningWindow: warningWindow,
+		BatchSize:     batchSize,
+	}, nil
+}
+
 func parseBoolEnv(name string, fallback bool) (bool, error) {
 	value := os.Getenv(name)
 	if value == "" {
@@ -123,6 +169,21 @@ func parseDurationEnv(name string, fallback time.Duration) (time.Duration, error
 	}
 	if parsed <= 0 {
 		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return parsed, nil
+}
+
+func parseNonNegativeDurationEnv(name string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
 	}
 	return parsed, nil
 }
