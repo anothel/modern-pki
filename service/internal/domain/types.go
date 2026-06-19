@@ -145,6 +145,7 @@ type NotificationEndpoint struct {
 	Type       NotificationEndpointType
 	Status     NotificationEndpointStatus
 	URL        string
+	Secret     string
 	EventTypes []string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

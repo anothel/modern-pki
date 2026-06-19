@@ -208,6 +208,7 @@ func (s *Server) createNotificationEndpoint(w http.ResponseWriter, r *http.Reque
 	endpoint, err := s.service.CreateNotificationEndpoint(r.Context(), requestActor(r), lifecycle.CreateNotificationEndpointRequest{
 		Name:       req.Name,
 		URL:        req.URL,
+		Secret:     req.Secret,
 		EventTypes: req.EventTypes,
 	})
 	if err != nil {
@@ -715,6 +716,7 @@ type createOCSPResponderRequest struct {
 type createNotificationEndpointRequest struct {
 	Name       string   `json:"name"`
 	URL        string   `json:"url"`
+	Secret     string   `json:"secret"`
 	EventTypes []string `json:"event_types"`
 }
 

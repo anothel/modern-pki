@@ -39,7 +39,7 @@ Notification endpoints deliver lifecycle outbox events to operator webhooks:
 - `GET /notification-endpoints`
 - `POST /notification-endpoints/{id}/disable`
 
-Webhook endpoints receive JSON with `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
+Webhook endpoints require a shared secret when created. Deliveries receive JSON with `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
 
 Outbox operations expose delivery state for operators:
 

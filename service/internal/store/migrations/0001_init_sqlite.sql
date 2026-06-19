@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS notification_endpoints (
     type TEXT NOT NULL,
     status TEXT NOT NULL,
     url TEXT NOT NULL,
+    secret TEXT NOT NULL,
     event_types TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

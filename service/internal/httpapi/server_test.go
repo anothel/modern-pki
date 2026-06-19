@@ -325,6 +325,7 @@ func TestCreateListAndDisableNotificationEndpoints(t *testing.T) {
 	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
 		"name":        "ops-webhook",
 		"url":         "https://ops.example.test/hooks/pki",
+		"secret":      "super-secret",
 		"event_types": []string{"certificate.expiration_warning", "certificate.expired"},
 	}, &created)
 	assertStatus(t, status, http.StatusCreated)
@@ -354,13 +355,43 @@ func TestCreateListAndDisableNotificationEndpoints(t *testing.T) {
 	}
 }
 
-func TestCreateNotificationEndpointRejectsInvalidURL(t *testing.T) {
+func TestCreateNotificationEndpointRequiresSecret(t *testing.T) {
 	api := newTestAPI(t)
 
 	var body errorResponse
 	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
 		"name": "ops-webhook",
-		"url":  "ftp://ops.example.test/hooks/pki",
+		"url":  "https://ops.example.test/hooks/pki",
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
+func TestCreateNotificationEndpointDoesNotExposeSecret(t *testing.T) {
+	api := newTestAPI(t)
+
+	var created map[string]any
+	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
+		"name":   "ops-webhook",
+		"url":    "https://ops.example.test/hooks/pki",
+		"secret": "super-secret",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if _, ok := created["secret"]; ok {
+		t.Fatalf("notification endpoint response exposed secret: %#v", created)
+	}
+}
+
+func TestCreateNotificationEndpointRejectsInvalidURL(t *testing.T) {
+	api := newTestAPI(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
+		"name":   "ops-webhook",
+		"url":    "ftp://ops.example.test/hooks/pki",
+		"secret": "super-secret",
 	}, &body)
 	assertStatus(t, status, http.StatusBadRequest)
 	if body.Error != domain.ErrInvalidRequest.Error() {

@@ -98,6 +98,7 @@ type RotateOCSPResponderRequest struct {
 type CreateNotificationEndpointRequest struct {
 	Name       string
 	URL        string
+	Secret     string
 	EventTypes []string
 }
 
@@ -413,6 +414,7 @@ func (s *Service) CreateNotificationEndpoint(ctx context.Context, actor string, 
 		Type:       domain.NotificationEndpointWebhook,
 		Status:     domain.NotificationEndpointActive,
 		URL:        req.URL,
+		Secret:     req.Secret,
 		EventTypes: append([]string(nil), req.EventTypes...),
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -1658,7 +1660,7 @@ func validateCreateIssuerRequest(req CreateIssuerRequest) error {
 }
 
 func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointRequest) error {
-	if isBlank(req.Name) || isBlank(req.URL) {
+	if isBlank(req.Name) || isBlank(req.URL) || isBlank(req.Secret) {
 		return domain.ErrInvalidRequest
 	}
 	parsed, err := url.Parse(req.URL)

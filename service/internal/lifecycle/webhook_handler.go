@@ -3,6 +3,9 @@ package lifecycle
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,19 +62,26 @@ func (h *WebhookOutboxHandler) HandleOutboxMessage(ctx context.Context, message 
 		if !webhookEndpointMatches(endpoint, message.Type) {
 			continue
 		}
-		if err := h.postWebhook(ctx, endpoint.URL, data); err != nil {
+		if err := h.postWebhook(ctx, endpoint, message, data); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *WebhookOutboxHandler) postWebhook(ctx context.Context, endpointURL string, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(data))
+func (h *WebhookOutboxHandler) postWebhook(ctx context.Context, endpoint domain.NotificationEndpoint, message domain.OutboxMessage, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.URL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Modern-PKI-Event", message.Type)
+	req.Header.Set("X-Modern-PKI-Delivery", message.ID)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	req.Header.Set("X-Modern-PKI-Timestamp", timestamp)
+	if endpoint.Secret != "" {
+		req.Header.Set("X-Modern-PKI-Signature", signWebhookPayload(endpoint.Secret, timestamp, data))
+	}
 
 	res, err := h.httpClient.Do(req)
 	if err != nil {
@@ -82,6 +92,14 @@ func (h *WebhookOutboxHandler) postWebhook(ctx context.Context, endpointURL stri
 		return fmt.Errorf("webhook delivery failed: %s", res.Status)
 	}
 	return nil
+}
+
+func signWebhookPayload(secret string, timestamp string, data []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(data)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func webhookEndpointMatches(endpoint domain.NotificationEndpoint, eventType string) bool {

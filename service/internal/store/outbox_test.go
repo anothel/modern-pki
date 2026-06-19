@@ -299,6 +299,7 @@ func testNotificationEndpoints(t *testing.T, repo Repository) {
 		Type:       domain.NotificationEndpointWebhook,
 		Status:     domain.NotificationEndpointActive,
 		URL:        "https://ops.example.test/hooks/pki",
+		Secret:     "secret-1",
 		EventTypes: []string{"certificate.expiration_warning", "certificate.expired"},
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -309,6 +310,7 @@ func testNotificationEndpoints(t *testing.T, repo Repository) {
 		Type:       domain.NotificationEndpointWebhook,
 		Status:     domain.NotificationEndpointActive,
 		URL:        "https://ops.example.test/hooks/all",
+		Secret:     "secret-2",
 		EventTypes: nil,
 		CreatedAt:  now.Add(time.Second),
 		UpdatedAt:  now.Add(time.Second),
@@ -334,6 +336,9 @@ func testNotificationEndpoints(t *testing.T, repo Repository) {
 	}
 	if stored.EventTypes[0] != "certificate.expiration_warning" {
 		t.Fatalf("stored event types mutated through list: %#v", stored.EventTypes)
+	}
+	if stored.Secret != "secret-1" {
+		t.Fatalf("stored secret = %q, want secret-1", stored.Secret)
 	}
 
 	stored.Status = domain.NotificationEndpointDisabled

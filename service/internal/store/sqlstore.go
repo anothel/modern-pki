@@ -474,15 +474,16 @@ func (r sqlRepository) CreateNotificationEndpoint(ctx context.Context, endpoint 
 	}
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO notification_endpoints (
-	id, name, type, status, url, event_types, created_at, updated_at
+	id, name, type, status, url, secret, event_types, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8
+	$1, $2, $3, $4, $5, $6, $7, $8, $9
 )`,
 		endpoint.ID,
 		endpoint.Name,
 		string(endpoint.Type),
 		string(endpoint.Status),
 		endpoint.URL,
+		endpoint.Secret,
 		eventTypes,
 		formatSQLTime(endpoint.CreatedAt),
 		formatSQLTime(endpoint.UpdatedAt),
@@ -492,7 +493,7 @@ INSERT INTO notification_endpoints (
 
 func (r sqlRepository) GetNotificationEndpoint(ctx context.Context, id string) (domain.NotificationEndpoint, error) {
 	endpoint, err := scanNotificationEndpoint(r.exec.QueryRowContext(ctx, `
-SELECT id, name, type, status, url, event_types, created_at, updated_at
+SELECT id, name, type, status, url, secret, event_types, created_at, updated_at
 FROM notification_endpoints
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -506,7 +507,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListNotificationEndpoints(ctx context.Context) ([]domain.NotificationEndpoint, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, name, type, status, url, event_types, created_at, updated_at
+SELECT id, name, type, status, url, secret, event_types, created_at, updated_at
 FROM notification_endpoints
 ORDER BY created_at, id`)
 	if err != nil {
@@ -539,14 +540,16 @@ SET name = $1,
 	type = $2,
 	status = $3,
 	url = $4,
-	event_types = $5,
-	created_at = $6,
-	updated_at = $7
-WHERE id = $8 AND status = $9`,
+	secret = $5,
+	event_types = $6,
+	created_at = $7,
+	updated_at = $8
+WHERE id = $9 AND status = $10`,
 		endpoint.Name,
 		string(endpoint.Type),
 		string(endpoint.Status),
 		endpoint.URL,
+		endpoint.Secret,
 		eventTypes,
 		formatSQLTime(endpoint.CreatedAt),
 		formatSQLTime(endpoint.UpdatedAt),
@@ -1505,6 +1508,7 @@ func scanNotificationEndpoint(scanner sqlScanner) (domain.NotificationEndpoint, 
 		&endpointType,
 		&status,
 		&endpoint.URL,
+		&endpoint.Secret,
 		&eventTypes,
 		&createdAt,
 		&updatedAt,
