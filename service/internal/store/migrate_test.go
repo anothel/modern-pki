@@ -93,7 +93,7 @@ CREATE TABLE certificates (
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)
 		}
 	}
-	for _, table := range []string{"ocsp_responders", "outbox_messages", "job_attempts", "notification_endpoints"} {
+	for _, table := range []string{"ocsp_responders", "outbox_messages", "job_attempts", "notification_endpoints", "acme_accounts", "acme_orders", "acme_authorizations", "acme_challenges"} {
 		if !testSQLiteTableExists(t, db, table) {
 			t.Fatalf("table %s does not exist after migration", table)
 		}

@@ -134,6 +134,56 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
+		`CREATE TABLE IF NOT EXISTS acme_accounts (
+			id TEXT PRIMARY KEY,
+			contacts TEXT NOT NULL,
+			status TEXT NOT NULL,
+			terms_of_service_agreed INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS acme_orders (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL REFERENCES acme_accounts(id),
+			identity_id TEXT NOT NULL REFERENCES identities(id),
+			issuer_id TEXT NOT NULL REFERENCES issuers(id),
+			certificate_profile_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			csr_pem TEXT NOT NULL,
+			requested_subject TEXT NOT NULL,
+			requested_dns_names TEXT NOT NULL,
+			requested_ip_addresses TEXT NOT NULL,
+			requested_not_after TEXT NOT NULL,
+			enrollment_id TEXT NOT NULL,
+			certificate_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account
+			ON acme_orders(account_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS acme_authorizations (
+			id TEXT PRIMARY KEY,
+			order_id TEXT NOT NULL REFERENCES acme_orders(id),
+			identifier_type TEXT NOT NULL,
+			identifier_value TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_authorizations_order
+			ON acme_authorizations(order_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS acme_challenges (
+			id TEXT PRIMARY KEY,
+			authorization_id TEXT NOT NULL REFERENCES acme_authorizations(id),
+			type TEXT NOT NULL,
+			token TEXT NOT NULL,
+			status TEXT NOT NULL,
+			validated_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_challenges_authorization
+			ON acme_challenges(authorization_id, created_at, id)`,
 		`UPDATE issuers
 			SET trust_anchor = 1
 			WHERE kind = 'root_ca' AND trust_anchor = 0`,
@@ -275,6 +325,56 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '["operator"]'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
+		`CREATE TABLE IF NOT EXISTS acme_accounts (
+			id TEXT PRIMARY KEY,
+			contacts TEXT NOT NULL,
+			status TEXT NOT NULL,
+			terms_of_service_agreed BOOLEAN NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS acme_orders (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL REFERENCES acme_accounts(id),
+			identity_id TEXT NOT NULL REFERENCES identities(id),
+			issuer_id TEXT NOT NULL REFERENCES issuers(id),
+			certificate_profile_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			csr_pem TEXT NOT NULL,
+			requested_subject TEXT NOT NULL,
+			requested_dns_names TEXT NOT NULL,
+			requested_ip_addresses TEXT NOT NULL,
+			requested_not_after TIMESTAMPTZ NOT NULL,
+			enrollment_id TEXT NOT NULL,
+			certificate_id TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account
+			ON acme_orders(account_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS acme_authorizations (
+			id TEXT PRIMARY KEY,
+			order_id TEXT NOT NULL REFERENCES acme_orders(id),
+			identifier_type TEXT NOT NULL,
+			identifier_value TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_authorizations_order
+			ON acme_authorizations(order_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS acme_challenges (
+			id TEXT PRIMARY KEY,
+			authorization_id TEXT NOT NULL REFERENCES acme_authorizations(id),
+			type TEXT NOT NULL,
+			token TEXT NOT NULL,
+			status TEXT NOT NULL,
+			validated_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_challenges_authorization
+			ON acme_challenges(authorization_id, created_at, id)`,
 		`UPDATE issuers
 			SET trust_anchor = TRUE
 			WHERE kind = 'root_ca' AND trust_anchor = FALSE`,

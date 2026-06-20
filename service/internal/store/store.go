@@ -92,6 +92,24 @@ type APIKeyRepository interface {
 	UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey, currentStatus domain.APIKeyStatus) error
 }
 
+type ACMERepository interface {
+	CreateACMEAccount(ctx context.Context, account domain.ACMEAccount) error
+	GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error)
+	ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error)
+	CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error
+	GetACMEOrder(ctx context.Context, id string) (domain.ACMEOrder, error)
+	ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error)
+	UpdateACMEOrderIfStatus(ctx context.Context, order domain.ACMEOrder, currentStatus domain.ACMEOrderStatus) error
+	CreateACMEAuthorization(ctx context.Context, authorization domain.ACMEAuthorization) error
+	GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error)
+	ListACMEAuthorizationsByOrder(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error)
+	UpdateACMEAuthorizationIfStatus(ctx context.Context, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error
+	CreateACMEChallenge(ctx context.Context, challenge domain.ACMEChallenge) error
+	GetACMEChallenge(ctx context.Context, id string) (domain.ACMEChallenge, error)
+	ListACMEChallengesByAuthorization(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error)
+	UpdateACMEChallengeIfStatus(ctx context.Context, challenge domain.ACMEChallenge, currentStatus domain.ACMEChallengeStatus) error
+}
+
 type Repository interface {
 	IdentityRepository
 	IssuerRepository
@@ -105,5 +123,6 @@ type Repository interface {
 	AuditRepository
 	OutboxRepository
 	APIKeyRepository
+	ACMERepository
 	WithinTx(ctx context.Context, fn func(Repository) error) error
 }

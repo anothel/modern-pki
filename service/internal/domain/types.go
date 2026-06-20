@@ -103,6 +103,45 @@ const (
 	APIKeyScopeOperator APIKeyScope = "operator"
 )
 
+type ACMEAccountStatus string
+
+const (
+	ACMEAccountValid       ACMEAccountStatus = "valid"
+	ACMEAccountDeactivated ACMEAccountStatus = "deactivated"
+)
+
+type ACMEOrderStatus string
+
+const (
+	ACMEOrderPending ACMEOrderStatus = "pending"
+	ACMEOrderReady   ACMEOrderStatus = "ready"
+	ACMEOrderValid   ACMEOrderStatus = "valid"
+	ACMEOrderInvalid ACMEOrderStatus = "invalid"
+)
+
+type ACMEAuthorizationStatus string
+
+const (
+	ACMEAuthorizationPending ACMEAuthorizationStatus = "pending"
+	ACMEAuthorizationValid   ACMEAuthorizationStatus = "valid"
+	ACMEAuthorizationInvalid ACMEAuthorizationStatus = "invalid"
+)
+
+type ACMEChallengeType string
+
+const (
+	ACMEChallengeHTTP01 ACMEChallengeType = "http-01"
+	ACMEChallengeDNS01  ACMEChallengeType = "dns-01"
+)
+
+type ACMEChallengeStatus string
+
+const (
+	ACMEChallengePending ACMEChallengeStatus = "pending"
+	ACMEChallengeValid   ACMEChallengeStatus = "valid"
+	ACMEChallengeInvalid ACMEChallengeStatus = "invalid"
+)
+
 type RevocationReason string
 
 const (
@@ -308,4 +347,52 @@ type APIKey struct {
 	Scopes    []APIKeyScope
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type ACMEAccount struct {
+	ID                   string
+	Contacts             []string
+	Status               ACMEAccountStatus
+	TermsOfServiceAgreed bool
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ACMEOrder struct {
+	ID                   string
+	AccountID            string
+	IdentityID           string
+	IssuerID             string
+	CertificateProfileID string
+	Status               ACMEOrderStatus
+	CSRPEM               string
+	RequestedSubject     string
+	RequestedDNSNames    []string
+	RequestedIPAddresses []string
+	RequestedNotAfter    time.Time
+	EnrollmentID         string
+	CertificateID        string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ACMEAuthorization struct {
+	ID              string
+	OrderID         string
+	IdentifierType  string
+	IdentifierValue string
+	Status          ACMEAuthorizationStatus
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ACMEChallenge struct {
+	ID              string
+	AuthorizationID string
+	Type            ACMEChallengeType
+	Token           string
+	Status          ACMEChallengeStatus
+	ValidatedAt     time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }

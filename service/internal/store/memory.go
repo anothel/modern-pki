@@ -25,6 +25,10 @@ type MemoryStore struct {
 	outbox         map[string]domain.OutboxMessage
 	jobAttempts    map[string]domain.JobAttempt
 	apiKeys        map[string]domain.APIKey
+	acmeAccounts   map[string]domain.ACMEAccount
+	acmeOrders     map[string]domain.ACMEOrder
+	acmeAuthzs     map[string]domain.ACMEAuthorization
+	acmeChallenges map[string]domain.ACMEChallenge
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -42,6 +46,10 @@ func NewMemoryStore() *MemoryStore {
 		outbox:         make(map[string]domain.OutboxMessage),
 		jobAttempts:    make(map[string]domain.JobAttempt),
 		apiKeys:        make(map[string]domain.APIKey),
+		acmeAccounts:   make(map[string]domain.ACMEAccount),
+		acmeOrders:     make(map[string]domain.ACMEOrder),
+		acmeAuthzs:     make(map[string]domain.ACMEAuthorization),
+		acmeChallenges: make(map[string]domain.ACMEChallenge),
 	}
 }
 
@@ -63,6 +71,10 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		outbox:         cloneOutboxMessages(s.outbox),
 		jobAttempts:    cloneJobAttempts(s.jobAttempts),
 		apiKeys:        cloneAPIKeys(s.apiKeys),
+		acmeAccounts:   cloneACMEAccounts(s.acmeAccounts),
+		acmeOrders:     cloneACMEOrders(s.acmeOrders),
+		acmeAuthzs:     cloneACMEAuthorizations(s.acmeAuthzs),
+		acmeChallenges: cloneACMEChallenges(s.acmeChallenges),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -81,6 +93,10 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.outbox = tx.outbox
 	s.jobAttempts = tx.jobAttempts
 	s.apiKeys = tx.apiKeys
+	s.acmeAccounts = tx.acmeAccounts
+	s.acmeOrders = tx.acmeOrders
+	s.acmeAuthzs = tx.acmeAuthzs
+	s.acmeChallenges = tx.acmeChallenges
 	return nil
 }
 
@@ -515,6 +531,131 @@ func (s *MemoryStore) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKe
 	return updateAPIKeyIfStatus(s.apiKeys, key, currentStatus)
 }
 
+func (s *MemoryStore) CreateACMEAccount(ctx context.Context, account domain.ACMEAccount) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.acmeAccounts[account.ID] = copyACMEAccount(account)
+	return nil
+}
+
+func (s *MemoryStore) GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	account, ok := s.acmeAccounts[id]
+	if !ok {
+		return domain.ACMEAccount{}, domain.ErrACMEAccountNotFound
+	}
+	return copyACMEAccount(account), nil
+}
+
+func (s *MemoryStore) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listACMEAccounts(s.acmeAccounts), nil
+}
+
+func (s *MemoryStore) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.acmeOrders[order.ID] = copyACMEOrder(order)
+	return nil
+}
+
+func (s *MemoryStore) GetACMEOrder(ctx context.Context, id string) (domain.ACMEOrder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	order, ok := s.acmeOrders[id]
+	if !ok {
+		return domain.ACMEOrder{}, domain.ErrACMEOrderNotFound
+	}
+	return copyACMEOrder(order), nil
+}
+
+func (s *MemoryStore) ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listACMEOrdersByAccount(s.acmeOrders, accountID), nil
+}
+
+func (s *MemoryStore) UpdateACMEOrderIfStatus(ctx context.Context, order domain.ACMEOrder, currentStatus domain.ACMEOrderStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateACMEOrderIfStatus(s.acmeOrders, order, currentStatus)
+}
+
+func (s *MemoryStore) CreateACMEAuthorization(ctx context.Context, authorization domain.ACMEAuthorization) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.acmeAuthzs[authorization.ID] = authorization
+	return nil
+}
+
+func (s *MemoryStore) GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	authorization, ok := s.acmeAuthzs[id]
+	if !ok {
+		return domain.ACMEAuthorization{}, domain.ErrACMEAuthorizationNotFound
+	}
+	return authorization, nil
+}
+
+func (s *MemoryStore) ListACMEAuthorizationsByOrder(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listACMEAuthorizationsByOrder(s.acmeAuthzs, orderID), nil
+}
+
+func (s *MemoryStore) UpdateACMEAuthorizationIfStatus(ctx context.Context, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateACMEAuthorizationIfStatus(s.acmeAuthzs, authorization, currentStatus)
+}
+
+func (s *MemoryStore) CreateACMEChallenge(ctx context.Context, challenge domain.ACMEChallenge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.acmeChallenges[challenge.ID] = challenge
+	return nil
+}
+
+func (s *MemoryStore) GetACMEChallenge(ctx context.Context, id string) (domain.ACMEChallenge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	challenge, ok := s.acmeChallenges[id]
+	if !ok {
+		return domain.ACMEChallenge{}, domain.ErrACMEChallengeNotFound
+	}
+	return challenge, nil
+}
+
+func (s *MemoryStore) ListACMEChallengesByAuthorization(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listACMEChallengesByAuthorization(s.acmeChallenges, authorizationID), nil
+}
+
+func (s *MemoryStore) UpdateACMEChallengeIfStatus(ctx context.Context, challenge domain.ACMEChallenge, currentStatus domain.ACMEChallengeStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateACMEChallengeIfStatus(s.acmeChallenges, challenge, currentStatus)
+}
+
 func copyEnrollment(enrollment domain.Enrollment) domain.Enrollment {
 	enrollment.RequestedDNSNames = append([]string(nil), enrollment.RequestedDNSNames...)
 	enrollment.RequestedIPAddresses = append([]string(nil), enrollment.RequestedIPAddresses...)
@@ -550,6 +691,17 @@ func copyNotificationEndpoint(endpoint domain.NotificationEndpoint) domain.Notif
 func copyAPIKey(key domain.APIKey) domain.APIKey {
 	key.Scopes = append([]domain.APIKeyScope(nil), key.Scopes...)
 	return key
+}
+
+func copyACMEAccount(account domain.ACMEAccount) domain.ACMEAccount {
+	account.Contacts = append([]string(nil), account.Contacts...)
+	return account
+}
+
+func copyACMEOrder(order domain.ACMEOrder) domain.ACMEOrder {
+	order.RequestedDNSNames = append([]string(nil), order.RequestedDNSNames...)
+	order.RequestedIPAddresses = append([]string(nil), order.RequestedIPAddresses...)
+	return order
 }
 
 func updateEnrollmentIfStatus(enrollments map[string]domain.Enrollment, enrollment domain.Enrollment, currentStatus domain.EnrollmentStatus) error {
@@ -717,6 +869,104 @@ func updateAPIKeyIfStatus(keys map[string]domain.APIKey, key domain.APIKey, curr
 	return nil
 }
 
+func updateACMEOrderIfStatus(orders map[string]domain.ACMEOrder, order domain.ACMEOrder, currentStatus domain.ACMEOrderStatus) error {
+	current, ok := orders[order.ID]
+	if !ok {
+		return domain.ErrACMEOrderNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	orders[order.ID] = copyACMEOrder(order)
+	return nil
+}
+
+func updateACMEAuthorizationIfStatus(authorizations map[string]domain.ACMEAuthorization, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error {
+	current, ok := authorizations[authorization.ID]
+	if !ok {
+		return domain.ErrACMEAuthorizationNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	authorizations[authorization.ID] = authorization
+	return nil
+}
+
+func updateACMEChallengeIfStatus(challenges map[string]domain.ACMEChallenge, challenge domain.ACMEChallenge, currentStatus domain.ACMEChallengeStatus) error {
+	current, ok := challenges[challenge.ID]
+	if !ok {
+		return domain.ErrACMEChallengeNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	challenges[challenge.ID] = challenge
+	return nil
+}
+
+func listACMEAccounts(accounts map[string]domain.ACMEAccount) []domain.ACMEAccount {
+	result := make([]domain.ACMEAccount, 0, len(accounts))
+	for _, account := range accounts {
+		result = append(result, copyACMEAccount(account))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func listACMEOrdersByAccount(orders map[string]domain.ACMEOrder, accountID string) []domain.ACMEOrder {
+	result := make([]domain.ACMEOrder, 0)
+	for _, order := range orders {
+		if order.AccountID == accountID {
+			result = append(result, copyACMEOrder(order))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func listACMEAuthorizationsByOrder(authorizations map[string]domain.ACMEAuthorization, orderID string) []domain.ACMEAuthorization {
+	result := make([]domain.ACMEAuthorization, 0)
+	for _, authorization := range authorizations {
+		if authorization.OrderID == orderID {
+			result = append(result, authorization)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func listACMEChallengesByAuthorization(challenges map[string]domain.ACMEChallenge, authorizationID string) []domain.ACMEChallenge {
+	result := make([]domain.ACMEChallenge, 0)
+	for _, challenge := range challenges {
+		if challenge.AuthorizationID == authorizationID {
+			result = append(result, challenge)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
 type memoryTx struct {
 	identities     map[string]domain.Identity
 	issuers        map[string]domain.Issuer
@@ -731,6 +981,10 @@ type memoryTx struct {
 	outbox         map[string]domain.OutboxMessage
 	jobAttempts    map[string]domain.JobAttempt
 	apiKeys        map[string]domain.APIKey
+	acmeAccounts   map[string]domain.ACMEAccount
+	acmeOrders     map[string]domain.ACMEOrder
+	acmeAuthzs     map[string]domain.ACMEAuthorization
+	acmeChallenges map[string]domain.ACMEChallenge
 }
 
 func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) error {
@@ -1021,6 +1275,86 @@ func (tx *memoryTx) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey,
 	return updateAPIKeyIfStatus(tx.apiKeys, key, currentStatus)
 }
 
+func (tx *memoryTx) CreateACMEAccount(ctx context.Context, account domain.ACMEAccount) error {
+	tx.acmeAccounts[account.ID] = copyACMEAccount(account)
+	return nil
+}
+
+func (tx *memoryTx) GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error) {
+	account, ok := tx.acmeAccounts[id]
+	if !ok {
+		return domain.ACMEAccount{}, domain.ErrACMEAccountNotFound
+	}
+	return copyACMEAccount(account), nil
+}
+
+func (tx *memoryTx) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error) {
+	return listACMEAccounts(tx.acmeAccounts), nil
+}
+
+func (tx *memoryTx) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {
+	tx.acmeOrders[order.ID] = copyACMEOrder(order)
+	return nil
+}
+
+func (tx *memoryTx) GetACMEOrder(ctx context.Context, id string) (domain.ACMEOrder, error) {
+	order, ok := tx.acmeOrders[id]
+	if !ok {
+		return domain.ACMEOrder{}, domain.ErrACMEOrderNotFound
+	}
+	return copyACMEOrder(order), nil
+}
+
+func (tx *memoryTx) ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error) {
+	return listACMEOrdersByAccount(tx.acmeOrders, accountID), nil
+}
+
+func (tx *memoryTx) UpdateACMEOrderIfStatus(ctx context.Context, order domain.ACMEOrder, currentStatus domain.ACMEOrderStatus) error {
+	return updateACMEOrderIfStatus(tx.acmeOrders, order, currentStatus)
+}
+
+func (tx *memoryTx) CreateACMEAuthorization(ctx context.Context, authorization domain.ACMEAuthorization) error {
+	tx.acmeAuthzs[authorization.ID] = authorization
+	return nil
+}
+
+func (tx *memoryTx) GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error) {
+	authorization, ok := tx.acmeAuthzs[id]
+	if !ok {
+		return domain.ACMEAuthorization{}, domain.ErrACMEAuthorizationNotFound
+	}
+	return authorization, nil
+}
+
+func (tx *memoryTx) ListACMEAuthorizationsByOrder(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error) {
+	return listACMEAuthorizationsByOrder(tx.acmeAuthzs, orderID), nil
+}
+
+func (tx *memoryTx) UpdateACMEAuthorizationIfStatus(ctx context.Context, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error {
+	return updateACMEAuthorizationIfStatus(tx.acmeAuthzs, authorization, currentStatus)
+}
+
+func (tx *memoryTx) CreateACMEChallenge(ctx context.Context, challenge domain.ACMEChallenge) error {
+	tx.acmeChallenges[challenge.ID] = challenge
+	return nil
+}
+
+func (tx *memoryTx) GetACMEChallenge(ctx context.Context, id string) (domain.ACMEChallenge, error) {
+	challenge, ok := tx.acmeChallenges[id]
+	if !ok {
+		return domain.ACMEChallenge{}, domain.ErrACMEChallengeNotFound
+	}
+	return challenge, nil
+}
+
+func (tx *memoryTx) ListACMEChallengesByAuthorization(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error) {
+	return listACMEChallengesByAuthorization(tx.acmeChallenges, authorizationID), nil
+}
+
+func (tx *memoryTx) UpdateACMEChallengeIfStatus(ctx context.Context, challenge domain.ACMEChallenge, currentStatus domain.ACMEChallengeStatus) error {
+	return updateACMEChallengeIfStatus(tx.acmeChallenges, challenge, currentStatus)
+}
+
 func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity {
 	dst := make(map[string]domain.Identity, len(src))
 	for id, identity := range src {
@@ -1230,6 +1564,38 @@ func cloneAPIKeys(src map[string]domain.APIKey) map[string]domain.APIKey {
 	dst := make(map[string]domain.APIKey, len(src))
 	for id, key := range src {
 		dst[id] = copyAPIKey(key)
+	}
+	return dst
+}
+
+func cloneACMEAccounts(src map[string]domain.ACMEAccount) map[string]domain.ACMEAccount {
+	dst := make(map[string]domain.ACMEAccount, len(src))
+	for id, account := range src {
+		dst[id] = copyACMEAccount(account)
+	}
+	return dst
+}
+
+func cloneACMEOrders(src map[string]domain.ACMEOrder) map[string]domain.ACMEOrder {
+	dst := make(map[string]domain.ACMEOrder, len(src))
+	for id, order := range src {
+		dst[id] = copyACMEOrder(order)
+	}
+	return dst
+}
+
+func cloneACMEAuthorizations(src map[string]domain.ACMEAuthorization) map[string]domain.ACMEAuthorization {
+	dst := make(map[string]domain.ACMEAuthorization, len(src))
+	for id, authorization := range src {
+		dst[id] = authorization
+	}
+	return dst
+}
+
+func cloneACMEChallenges(src map[string]domain.ACMEChallenge) map[string]domain.ACMEChallenge {
+	dst := make(map[string]domain.ACMEChallenge, len(src))
+	for id, challenge := range src {
+		dst[id] = challenge
 	}
 	return dst
 }

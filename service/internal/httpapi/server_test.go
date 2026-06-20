@@ -88,6 +88,85 @@ func TestCreateIssuer(t *testing.T) {
 	}
 }
 
+func TestACMEOrderAPI(t *testing.T) {
+	api := newTestAPI(t)
+
+	var account apiACMEAccount
+	status := api.doJSON(t, http.MethodPost, "/acme/accounts", "acme-client", map[string]any{
+		"contacts":                []string{"mailto:ops@example.test"},
+		"terms_of_service_agreed": true,
+	}, &account)
+	assertStatus(t, status, http.StatusCreated)
+	if account.ID == "" || account.Status != domain.ACMEAccountValid {
+		t.Fatalf("account = %#v", account)
+	}
+
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status = api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"allowed_ip_ranges":       []string{"127.0.0.0/8"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	var order apiACMEOrder
+	status = api.doJSON(t, http.MethodPost, "/acme/orders", "acme-client", map[string]any{
+		"account_id":             account.ID,
+		"identity_id":            identity.ID,
+		"issuer_id":              issuer.ID,
+		"profile_id":             profile.ID,
+		"requested_dns_names":    []string{"edge-01.example.test"},
+		"requested_ip_addresses": []string{"127.0.0.1"},
+		"requested_not_after":    testNow.Add(12 * time.Hour),
+	}, &order)
+	assertStatus(t, status, http.StatusCreated)
+	if order.Status != domain.ACMEOrderPending {
+		t.Fatalf("order = %#v", order)
+	}
+
+	var authzs []apiACMEAuthorization
+	status = api.doJSON(t, http.MethodGet, "/acme/orders/"+order.ID+"/authorizations", "", nil, &authzs)
+	assertStatus(t, status, http.StatusOK)
+	if len(authzs) != 2 {
+		t.Fatalf("authorizations = %#v", authzs)
+	}
+	for _, authz := range authzs {
+		var challenges []apiACMEChallenge
+		status = api.doJSON(t, http.MethodGet, "/acme/authorizations/"+authz.ID+"/challenges", "", nil, &challenges)
+		assertStatus(t, status, http.StatusOK)
+		if len(challenges) != 1 || challenges[0].Token == "" {
+			t.Fatalf("challenges = %#v", challenges)
+		}
+		var completed apiACMEChallenge
+		status = api.doJSON(t, http.MethodPost, "/acme/challenges/"+challenges[0].ID+"/complete", "validator", nil, &completed)
+		assertStatus(t, status, http.StatusOK)
+		if completed.Status != domain.ACMEChallengeValid {
+			t.Fatalf("completed challenge = %#v", completed)
+		}
+	}
+
+	var ready apiACMEOrder
+	status = api.doJSON(t, http.MethodGet, "/acme/orders/"+order.ID, "", nil, &ready)
+	assertStatus(t, status, http.StatusOK)
+	if ready.Status != domain.ACMEOrderReady {
+		t.Fatalf("ready order = %#v", ready)
+	}
+
+	var finalized apiACMEOrder
+	status = api.doJSON(t, http.MethodPost, "/acme/orders/"+order.ID+"/finalize", "acme-client", map[string]any{
+		"csr_pem":           "csr-pem",
+		"requested_subject": "CN=edge-01",
+	}, &finalized)
+	assertStatus(t, status, http.StatusOK)
+	if finalized.Status != domain.ACMEOrderValid || finalized.CertificateID == "" || finalized.EnrollmentID == "" {
+		t.Fatalf("finalized order = %#v", finalized)
+	}
+}
+
 func TestIssuerTrustDistributionAPI(t *testing.T) {
 	api := newTestAPI(t)
 
@@ -1598,6 +1677,54 @@ type apiIssuer struct {
 	TrustAnchor           bool                `json:"trust_anchor"`
 	CreatedAt             time.Time           `json:"created_at"`
 	UpdatedAt             time.Time           `json:"updated_at"`
+}
+
+type apiACMEAccount struct {
+	ID                   string                   `json:"id"`
+	Contacts             []string                 `json:"contacts"`
+	Status               domain.ACMEAccountStatus `json:"status"`
+	TermsOfServiceAgreed bool                     `json:"terms_of_service_agreed"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type apiACMEOrder struct {
+	ID                   string                 `json:"id"`
+	AccountID            string                 `json:"account_id"`
+	IdentityID           string                 `json:"identity_id"`
+	IssuerID             string                 `json:"issuer_id"`
+	CertificateProfileID string                 `json:"profile_id"`
+	Status               domain.ACMEOrderStatus `json:"status"`
+	CSRPEM               string                 `json:"csr_pem"`
+	RequestedSubject     string                 `json:"requested_subject"`
+	RequestedDNSNames    []string               `json:"requested_dns_names"`
+	RequestedIPAddresses []string               `json:"requested_ip_addresses"`
+	RequestedNotAfter    time.Time              `json:"requested_not_after"`
+	EnrollmentID         string                 `json:"enrollment_id"`
+	CertificateID        string                 `json:"certificate_id"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
+}
+
+type apiACMEAuthorization struct {
+	ID              string                         `json:"id"`
+	OrderID         string                         `json:"order_id"`
+	IdentifierType  string                         `json:"identifier_type"`
+	IdentifierValue string                         `json:"identifier_value"`
+	Status          domain.ACMEAuthorizationStatus `json:"status"`
+	CreatedAt       time.Time                      `json:"created_at"`
+	UpdatedAt       time.Time                      `json:"updated_at"`
+}
+
+type apiACMEChallenge struct {
+	ID              string                     `json:"id"`
+	AuthorizationID string                     `json:"authorization_id"`
+	Type            domain.ACMEChallengeType   `json:"type"`
+	Token           string                     `json:"token"`
+	Status          domain.ACMEChallengeStatus `json:"status"`
+	ValidatedAt     time.Time                  `json:"validated_at"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
 }
 
 type apiOCSPResponder struct {

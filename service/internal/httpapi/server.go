@@ -98,6 +98,15 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api-keys", s.listAPIKeys)
 	s.mux.HandleFunc("POST /api-keys/{id}/disable", s.disableAPIKey)
 
+	s.mux.HandleFunc("POST /acme/accounts", s.createACMEAccount)
+	s.mux.HandleFunc("GET /acme/accounts", s.listACMEAccounts)
+	s.mux.HandleFunc("POST /acme/orders", s.createACMEOrder)
+	s.mux.HandleFunc("GET /acme/orders/{id}", s.getACMEOrder)
+	s.mux.HandleFunc("GET /acme/orders/{id}/authorizations", s.listACMEAuthorizations)
+	s.mux.HandleFunc("POST /acme/orders/{id}/finalize", s.finalizeACMEOrder)
+	s.mux.HandleFunc("GET /acme/authorizations/{id}/challenges", s.listACMEChallenges)
+	s.mux.HandleFunc("POST /acme/challenges/{id}/complete", s.completeACMEChallenge)
+
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
 	s.mux.HandleFunc("GET /certificate-profiles/{id}", s.getCertificateProfile)
@@ -347,6 +356,107 @@ func (s *Server) disableAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (s *Server) createACMEAccount(w http.ResponseWriter, r *http.Request) {
+	var req createACMEAccountRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	account, err := s.service.CreateACMEAccount(r.Context(), requestActor(r), lifecycle.CreateACMEAccountRequest{
+		Contacts:             req.Contacts,
+		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toACMEAccountResponse(account))
+}
+
+func (s *Server) listACMEAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.service.ListACMEAccounts(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEAccountResponses(accounts))
+}
+
+func (s *Server) createACMEOrder(w http.ResponseWriter, r *http.Request) {
+	var req createACMEOrderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	order, err := s.service.CreateACMEOrder(r.Context(), requestActor(r), lifecycle.CreateACMEOrderRequest{
+		AccountID:            req.AccountID,
+		IdentityID:           req.IdentityID,
+		IssuerID:             req.IssuerID,
+		CertificateProfileID: req.CertificateProfileID,
+		RequestedDNSNames:    req.RequestedDNSNames,
+		RequestedIPAddresses: req.RequestedIPAddresses,
+		RequestedNotAfter:    req.RequestedNotAfter,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toACMEOrderResponse(order))
+}
+
+func (s *Server) getACMEOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := s.service.GetACMEOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEOrderResponse(order))
+}
+
+func (s *Server) listACMEAuthorizations(w http.ResponseWriter, r *http.Request) {
+	authorizations, err := s.service.ListACMEAuthorizations(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEAuthorizationResponses(authorizations))
+}
+
+func (s *Server) listACMEChallenges(w http.ResponseWriter, r *http.Request) {
+	challenges, err := s.service.ListACMEChallenges(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEChallengeResponses(challenges))
+}
+
+func (s *Server) completeACMEChallenge(w http.ResponseWriter, r *http.Request) {
+	challenge, err := s.service.CompleteACMEChallenge(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEChallengeResponse(challenge))
+}
+
+func (s *Server) finalizeACMEOrder(w http.ResponseWriter, r *http.Request) {
+	var req finalizeACMEOrderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	order, err := s.service.FinalizeACMEOrder(r.Context(), requestActor(r), r.PathValue("id"), lifecycle.FinalizeACMEOrderRequest{
+		CSRPEM:           req.CSRPEM,
+		RequestedSubject: req.RequestedSubject,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toACMEOrderResponse(order))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -838,6 +948,14 @@ func publicErrorMessage(err error) string {
 		return domain.ErrOutboxMessageNotFound.Error()
 	case errors.Is(err, domain.ErrAPIKeyNotFound):
 		return domain.ErrAPIKeyNotFound.Error()
+	case errors.Is(err, domain.ErrACMEAccountNotFound):
+		return domain.ErrACMEAccountNotFound.Error()
+	case errors.Is(err, domain.ErrACMEOrderNotFound):
+		return domain.ErrACMEOrderNotFound.Error()
+	case errors.Is(err, domain.ErrACMEAuthorizationNotFound):
+		return domain.ErrACMEAuthorizationNotFound.Error()
+	case errors.Is(err, domain.ErrACMEChallengeNotFound):
+		return domain.ErrACMEChallengeNotFound.Error()
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return domain.ErrCSRParseFailed.Error()
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
@@ -878,7 +996,11 @@ func statusForError(err error) int {
 		errors.Is(err, domain.ErrCertificateNotFound),
 		errors.Is(err, domain.ErrCRLPublicationNotFound),
 		errors.Is(err, domain.ErrOutboxMessageNotFound),
-		errors.Is(err, domain.ErrAPIKeyNotFound):
+		errors.Is(err, domain.ErrAPIKeyNotFound),
+		errors.Is(err, domain.ErrACMEAccountNotFound),
+		errors.Is(err, domain.ErrACMEOrderNotFound),
+		errors.Is(err, domain.ErrACMEAuthorizationNotFound),
+		errors.Is(err, domain.ErrACMEChallengeNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return http.StatusUnprocessableEntity
@@ -984,6 +1106,26 @@ type createAPIKeyRequest struct {
 	Scopes []domain.APIKeyScope `json:"scopes"`
 }
 
+type createACMEAccountRequest struct {
+	Contacts             []string `json:"contacts"`
+	TermsOfServiceAgreed bool     `json:"terms_of_service_agreed"`
+}
+
+type createACMEOrderRequest struct {
+	AccountID            string    `json:"account_id"`
+	IdentityID           string    `json:"identity_id"`
+	IssuerID             string    `json:"issuer_id"`
+	CertificateProfileID string    `json:"profile_id"`
+	RequestedDNSNames    []string  `json:"requested_dns_names"`
+	RequestedIPAddresses []string  `json:"requested_ip_addresses"`
+	RequestedNotAfter    time.Time `json:"requested_not_after"`
+}
+
+type finalizeACMEOrderRequest struct {
+	CSRPEM           string `json:"csr_pem"`
+	RequestedSubject string `json:"requested_subject"`
+}
+
 type publishCRLRequest struct {
 	IssuerID          string    `json:"issuer_id"`
 	DistributionPoint string    `json:"distribution_point"`
@@ -1064,6 +1206,54 @@ type apiKeyResponse struct {
 	TokenHash string               `json:"token_hash,omitempty"`
 	CreatedAt time.Time            `json:"created_at"`
 	UpdatedAt time.Time            `json:"updated_at"`
+}
+
+type acmeAccountResponse struct {
+	ID                   string                   `json:"id"`
+	Contacts             []string                 `json:"contacts"`
+	Status               domain.ACMEAccountStatus `json:"status"`
+	TermsOfServiceAgreed bool                     `json:"terms_of_service_agreed"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+}
+
+type acmeOrderResponse struct {
+	ID                   string                 `json:"id"`
+	AccountID            string                 `json:"account_id"`
+	IdentityID           string                 `json:"identity_id"`
+	IssuerID             string                 `json:"issuer_id"`
+	CertificateProfileID string                 `json:"profile_id"`
+	Status               domain.ACMEOrderStatus `json:"status"`
+	CSRPEM               string                 `json:"csr_pem"`
+	RequestedSubject     string                 `json:"requested_subject"`
+	RequestedDNSNames    []string               `json:"requested_dns_names"`
+	RequestedIPAddresses []string               `json:"requested_ip_addresses"`
+	RequestedNotAfter    time.Time              `json:"requested_not_after"`
+	EnrollmentID         string                 `json:"enrollment_id"`
+	CertificateID        string                 `json:"certificate_id"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
+}
+
+type acmeAuthorizationResponse struct {
+	ID              string                         `json:"id"`
+	OrderID         string                         `json:"order_id"`
+	IdentifierType  string                         `json:"identifier_type"`
+	IdentifierValue string                         `json:"identifier_value"`
+	Status          domain.ACMEAuthorizationStatus `json:"status"`
+	CreatedAt       time.Time                      `json:"created_at"`
+	UpdatedAt       time.Time                      `json:"updated_at"`
+}
+
+type acmeChallengeResponse struct {
+	ID              string                     `json:"id"`
+	AuthorizationID string                     `json:"authorization_id"`
+	Type            domain.ACMEChallengeType   `json:"type"`
+	Token           string                     `json:"token"`
+	Status          domain.ACMEChallengeStatus `json:"status"`
+	ValidatedAt     time.Time                  `json:"validated_at"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
 }
 
 type certificateProfileResponse struct {
@@ -1282,6 +1472,94 @@ func toAPIKeyResponses(keys []domain.APIKey) []apiKeyResponse {
 	responses := make([]apiKeyResponse, 0, len(keys))
 	for _, key := range keys {
 		responses = append(responses, toAPIKeyResponse(key))
+	}
+	return responses
+}
+
+func toACMEAccountResponse(account domain.ACMEAccount) acmeAccountResponse {
+	return acmeAccountResponse{
+		ID:                   account.ID,
+		Contacts:             account.Contacts,
+		Status:               account.Status,
+		TermsOfServiceAgreed: account.TermsOfServiceAgreed,
+		CreatedAt:            account.CreatedAt,
+		UpdatedAt:            account.UpdatedAt,
+	}
+}
+
+func toACMEAccountResponses(accounts []domain.ACMEAccount) []acmeAccountResponse {
+	responses := make([]acmeAccountResponse, 0, len(accounts))
+	for _, account := range accounts {
+		responses = append(responses, toACMEAccountResponse(account))
+	}
+	return responses
+}
+
+func toACMEOrderResponse(order domain.ACMEOrder) acmeOrderResponse {
+	return acmeOrderResponse{
+		ID:                   order.ID,
+		AccountID:            order.AccountID,
+		IdentityID:           order.IdentityID,
+		IssuerID:             order.IssuerID,
+		CertificateProfileID: order.CertificateProfileID,
+		Status:               order.Status,
+		CSRPEM:               order.CSRPEM,
+		RequestedSubject:     order.RequestedSubject,
+		RequestedDNSNames:    order.RequestedDNSNames,
+		RequestedIPAddresses: order.RequestedIPAddresses,
+		RequestedNotAfter:    order.RequestedNotAfter,
+		EnrollmentID:         order.EnrollmentID,
+		CertificateID:        order.CertificateID,
+		CreatedAt:            order.CreatedAt,
+		UpdatedAt:            order.UpdatedAt,
+	}
+}
+
+func toACMEOrderResponses(orders []domain.ACMEOrder) []acmeOrderResponse {
+	responses := make([]acmeOrderResponse, 0, len(orders))
+	for _, order := range orders {
+		responses = append(responses, toACMEOrderResponse(order))
+	}
+	return responses
+}
+
+func toACMEAuthorizationResponse(authorization domain.ACMEAuthorization) acmeAuthorizationResponse {
+	return acmeAuthorizationResponse{
+		ID:              authorization.ID,
+		OrderID:         authorization.OrderID,
+		IdentifierType:  authorization.IdentifierType,
+		IdentifierValue: authorization.IdentifierValue,
+		Status:          authorization.Status,
+		CreatedAt:       authorization.CreatedAt,
+		UpdatedAt:       authorization.UpdatedAt,
+	}
+}
+
+func toACMEAuthorizationResponses(authorizations []domain.ACMEAuthorization) []acmeAuthorizationResponse {
+	responses := make([]acmeAuthorizationResponse, 0, len(authorizations))
+	for _, authorization := range authorizations {
+		responses = append(responses, toACMEAuthorizationResponse(authorization))
+	}
+	return responses
+}
+
+func toACMEChallengeResponse(challenge domain.ACMEChallenge) acmeChallengeResponse {
+	return acmeChallengeResponse{
+		ID:              challenge.ID,
+		AuthorizationID: challenge.AuthorizationID,
+		Type:            challenge.Type,
+		Token:           challenge.Token,
+		Status:          challenge.Status,
+		ValidatedAt:     challenge.ValidatedAt,
+		CreatedAt:       challenge.CreatedAt,
+		UpdatedAt:       challenge.UpdatedAt,
+	}
+}
+
+func toACMEChallengeResponses(challenges []domain.ACMEChallenge) []acmeChallengeResponse {
+	responses := make([]acmeChallengeResponse, 0, len(challenges))
+	for _, challenge := range challenges {
+		responses = append(responses, toACMEChallengeResponse(challenge))
 	}
 	return responses
 }

@@ -144,6 +144,26 @@ type CreateEnrollmentRequest struct {
 	RequestedNotAfter    time.Time
 }
 
+type CreateACMEAccountRequest struct {
+	Contacts             []string
+	TermsOfServiceAgreed bool
+}
+
+type CreateACMEOrderRequest struct {
+	AccountID            string
+	IdentityID           string
+	IssuerID             string
+	CertificateProfileID string
+	RequestedDNSNames    []string
+	RequestedIPAddresses []string
+	RequestedNotAfter    time.Time
+}
+
+type FinalizeACMEOrderRequest struct {
+	CSRPEM           string
+	RequestedSubject string
+}
+
 type RenewCertificateRequest struct {
 	CSRPEM            string
 	RequestedNotAfter time.Time
@@ -659,6 +679,225 @@ func (s *Service) ListTrustAnchors(ctx context.Context) ([]domain.Issuer, error)
 		}
 	}
 	return anchors, nil
+}
+
+func (s *Service) CreateACMEAccount(ctx context.Context, actor string, req CreateACMEAccountRequest) (domain.ACMEAccount, error) {
+	if err := validateCreateACMEAccountRequest(req); err != nil {
+		return domain.ACMEAccount{}, err
+	}
+	now := s.clock.Now()
+	account := domain.ACMEAccount{
+		ID:                   s.idgen.NewID(),
+		Contacts:             append([]string(nil), req.Contacts...),
+		Status:               domain.ACMEAccountValid,
+		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.CreateACMEAccount(ctx, account); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.account.created", "acme_account", account.ID, now, auditFields(
+			"acme_account_id", account.ID,
+		))
+	}); err != nil {
+		return domain.ACMEAccount{}, err
+	}
+	return account, nil
+}
+
+func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateACMEOrderRequest) (domain.ACMEOrder, error) {
+	now := s.clock.Now()
+	if err := validateCreateACMEOrderRequest(req, now); err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	order := domain.ACMEOrder{
+		ID:                   s.idgen.NewID(),
+		AccountID:            req.AccountID,
+		IdentityID:           req.IdentityID,
+		IssuerID:             req.IssuerID,
+		CertificateProfileID: req.CertificateProfileID,
+		Status:               domain.ACMEOrderPending,
+		RequestedDNSNames:    append([]string(nil), req.RequestedDNSNames...),
+		RequestedIPAddresses: append([]string(nil), req.RequestedIPAddresses...),
+		RequestedNotAfter:    req.RequestedNotAfter,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		account, err := repo.GetACMEAccount(ctx, req.AccountID)
+		if err != nil {
+			return err
+		}
+		if account.Status != domain.ACMEAccountValid {
+			return domain.ErrInvalidTransition
+		}
+		if _, err := repo.GetIdentity(ctx, req.IdentityID); err != nil {
+			return err
+		}
+		if _, err := repo.GetIssuer(ctx, req.IssuerID); err != nil {
+			return err
+		}
+		if req.CertificateProfileID != "" {
+			if _, err := repo.GetCertificateProfile(ctx, req.CertificateProfileID); err != nil {
+				return err
+			}
+		}
+		if err := repo.CreateACMEOrder(ctx, order); err != nil {
+			return err
+		}
+		if err := s.createACMEAuthorizations(ctx, repo, order, now); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.order.created", "acme_order", order.ID, now, auditFields(
+			"acme_account_id", order.AccountID,
+			"acme_order_id", order.ID,
+			"identity_id", order.IdentityID,
+			"issuer_id", order.IssuerID,
+			"profile_id", order.CertificateProfileID,
+		))
+	}); err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *Service) GetACMEOrder(ctx context.Context, id string) (domain.ACMEOrder, error) {
+	if isBlank(id) {
+		return domain.ACMEOrder{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetACMEOrder(ctx, id)
+}
+
+func (s *Service) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error) {
+	return s.repo.ListACMEAccounts(ctx)
+}
+
+func (s *Service) ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error) {
+	if isBlank(accountID) {
+		return nil, domain.ErrInvalidRequest
+	}
+	return s.repo.ListACMEOrdersByAccount(ctx, accountID)
+}
+
+func (s *Service) ListACMEAuthorizations(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error) {
+	if isBlank(orderID) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if _, err := s.repo.GetACMEOrder(ctx, orderID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListACMEAuthorizationsByOrder(ctx, orderID)
+}
+
+func (s *Service) ListACMEChallenges(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error) {
+	if isBlank(authorizationID) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if _, err := s.repo.GetACMEAuthorization(ctx, authorizationID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListACMEChallengesByAuthorization(ctx, authorizationID)
+}
+
+func (s *Service) CompleteACMEChallenge(ctx context.Context, actor string, challengeID string) (domain.ACMEChallenge, error) {
+	if isBlank(challengeID) {
+		return domain.ACMEChallenge{}, domain.ErrInvalidRequest
+	}
+	now := s.clock.Now()
+	var completed domain.ACMEChallenge
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		challenge, err := repo.GetACMEChallenge(ctx, challengeID)
+		if err != nil {
+			return err
+		}
+		if challenge.Status != domain.ACMEChallengePending {
+			return domain.ErrInvalidTransition
+		}
+		authorization, err := repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
+		if err != nil {
+			return err
+		}
+		if authorization.Status != domain.ACMEAuthorizationPending {
+			return domain.ErrInvalidTransition
+		}
+		challenge.Status = domain.ACMEChallengeValid
+		challenge.ValidatedAt = now
+		challenge.UpdatedAt = now
+		if err := repo.UpdateACMEChallengeIfStatus(ctx, challenge, domain.ACMEChallengePending); err != nil {
+			return err
+		}
+		completed = challenge
+		if err := s.promoteACMEAuthorizationIfReady(ctx, repo, authorization, now); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.challenge.completed", "acme_challenge", challenge.ID, now, auditFields(
+			"acme_challenge_id", challenge.ID,
+			"acme_authorization_id", authorization.ID,
+			"acme_order_id", authorization.OrderID,
+		))
+	}); err != nil {
+		return domain.ACMEChallenge{}, err
+	}
+	return completed, nil
+}
+
+func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID string, req FinalizeACMEOrderRequest) (domain.ACMEOrder, error) {
+	if isBlank(orderID) || isBlank(req.CSRPEM) || isBlank(req.RequestedSubject) {
+		return domain.ACMEOrder{}, domain.ErrInvalidRequest
+	}
+	order, err := s.repo.GetACMEOrder(ctx, orderID)
+	if err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	if order.Status != domain.ACMEOrderReady {
+		return domain.ACMEOrder{}, domain.ErrInvalidTransition
+	}
+
+	enrollment, err := s.CreateEnrollment(ctx, actor, CreateEnrollmentRequest{
+		IdentityID:           order.IdentityID,
+		IssuerID:             order.IssuerID,
+		CertificateProfileID: order.CertificateProfileID,
+		CSRPEM:               req.CSRPEM,
+		RequestedSubject:     req.RequestedSubject,
+		RequestedDNSNames:    append([]string(nil), order.RequestedDNSNames...),
+		RequestedIPAddresses: append([]string(nil), order.RequestedIPAddresses...),
+		RequestedNotAfter:    order.RequestedNotAfter,
+	})
+	if err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	if _, err := s.ApproveEnrollment(ctx, actor, enrollment.ID); err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	certificate, err := s.IssueCertificate(ctx, actor, enrollment.ID)
+	if err != nil {
+		return domain.ACMEOrder{}, err
+	}
+
+	now := s.clock.Now()
+	order.CSRPEM = req.CSRPEM
+	order.RequestedSubject = req.RequestedSubject
+	order.EnrollmentID = enrollment.ID
+	order.CertificateID = certificate.ID
+	order.Status = domain.ACMEOrderValid
+	order.UpdatedAt = now
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderReady); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.order.finalized", "acme_order", order.ID, now, auditFields(
+			"acme_account_id", order.AccountID,
+			"acme_order_id", order.ID,
+			"enrollment_id", enrollment.ID,
+			"certificate_id", certificate.ID,
+		))
+	}); err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	return order, nil
 }
 
 func (s *Service) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
@@ -1612,6 +1851,84 @@ func (s *Service) createOutboxMessage(ctx context.Context, repo store.Repository
 	})
 }
 
+func (s *Service) createACMEAuthorizations(ctx context.Context, repo store.Repository, order domain.ACMEOrder, now time.Time) error {
+	for _, dnsName := range order.RequestedDNSNames {
+		if err := s.createACMEAuthorization(ctx, repo, order.ID, "dns", dnsName, domain.ACMEChallengeHTTP01, now); err != nil {
+			return err
+		}
+	}
+	for _, ipAddress := range order.RequestedIPAddresses {
+		if err := s.createACMEAuthorization(ctx, repo, order.ID, "ip", ipAddress, domain.ACMEChallengeHTTP01, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) createACMEAuthorization(ctx context.Context, repo store.Repository, orderID string, identifierType string, identifierValue string, challengeType domain.ACMEChallengeType, now time.Time) error {
+	authorization := domain.ACMEAuthorization{
+		ID:              s.idgen.NewID(),
+		OrderID:         orderID,
+		IdentifierType:  identifierType,
+		IdentifierValue: identifierValue,
+		Status:          domain.ACMEAuthorizationPending,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := repo.CreateACMEAuthorization(ctx, authorization); err != nil {
+		return err
+	}
+	return repo.CreateACMEChallenge(ctx, domain.ACMEChallenge{
+		ID:              s.idgen.NewID(),
+		AuthorizationID: authorization.ID,
+		Type:            challengeType,
+		Token:           s.idgen.NewID(),
+		Status:          domain.ACMEChallengePending,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+}
+
+func (s *Service) promoteACMEAuthorizationIfReady(ctx context.Context, repo store.Repository, authorization domain.ACMEAuthorization, now time.Time) error {
+	challenges, err := repo.ListACMEChallengesByAuthorization(ctx, authorization.ID)
+	if err != nil {
+		return err
+	}
+	for _, challenge := range challenges {
+		if challenge.Status != domain.ACMEChallengeValid {
+			return nil
+		}
+	}
+	authorization.Status = domain.ACMEAuthorizationValid
+	authorization.UpdatedAt = now
+	if err := repo.UpdateACMEAuthorizationIfStatus(ctx, authorization, domain.ACMEAuthorizationPending); err != nil {
+		return err
+	}
+	order, err := repo.GetACMEOrder(ctx, authorization.OrderID)
+	if err != nil {
+		return err
+	}
+	return s.promoteACMEOrderIfReady(ctx, repo, order, now)
+}
+
+func (s *Service) promoteACMEOrderIfReady(ctx context.Context, repo store.Repository, order domain.ACMEOrder, now time.Time) error {
+	if order.Status != domain.ACMEOrderPending {
+		return nil
+	}
+	authorizations, err := repo.ListACMEAuthorizationsByOrder(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	for _, authorization := range authorizations {
+		if authorization.Status != domain.ACMEAuthorizationValid {
+			return nil
+		}
+	}
+	order.Status = domain.ACMEOrderReady
+	order.UpdatedAt = now
+	return repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderPending)
+}
+
 func auditFields(pairs ...string) map[string]any {
 	fields := make(map[string]any)
 	for i := 0; i+1 < len(pairs); i += 2 {
@@ -1721,6 +2038,14 @@ func auditErrorCode(err error) string {
 		return "certificate_not_found"
 	case errors.Is(err, domain.ErrCRLPublicationNotFound):
 		return "crl_publication_not_found"
+	case errors.Is(err, domain.ErrACMEAccountNotFound):
+		return "acme_account_not_found"
+	case errors.Is(err, domain.ErrACMEOrderNotFound):
+		return "acme_order_not_found"
+	case errors.Is(err, domain.ErrACMEAuthorizationNotFound):
+		return "acme_authorization_not_found"
+	case errors.Is(err, domain.ErrACMEChallengeNotFound):
+		return "acme_challenge_not_found"
 	case errors.Is(err, domain.ErrCSRParseFailed):
 		return "csr_parse_failed"
 	case errors.Is(err, domain.ErrCertificateIssuanceFailed):
@@ -2006,6 +2331,41 @@ func validateCreateEnrollmentRequest(req CreateEnrollmentRequest, now time.Time)
 	}
 	if !req.RequestedNotAfter.After(now) {
 		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func validateCreateACMEAccountRequest(req CreateACMEAccountRequest) error {
+	if len(req.Contacts) == 0 || !req.TermsOfServiceAgreed {
+		return domain.ErrInvalidRequest
+	}
+	for _, contact := range req.Contacts {
+		if isBlank(contact) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
+func validateCreateACMEOrderRequest(req CreateACMEOrderRequest, now time.Time) error {
+	if isBlank(req.AccountID) || isBlank(req.IdentityID) || isBlank(req.IssuerID) {
+		return domain.ErrInvalidRequest
+	}
+	if len(req.RequestedDNSNames) == 0 && len(req.RequestedIPAddresses) == 0 {
+		return domain.ErrInvalidRequest
+	}
+	if !req.RequestedNotAfter.After(now) {
+		return domain.ErrInvalidRequest
+	}
+	for _, dnsName := range req.RequestedDNSNames {
+		if isBlank(dnsName) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, ipAddress := range req.RequestedIPAddresses {
+		if isBlank(ipAddress) {
+			return domain.ErrInvalidRequest
+		}
 	}
 	return nil
 }

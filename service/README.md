@@ -25,6 +25,17 @@ Issuers can record parent issuer links, AIA URLs, CRL distribution points, and t
 - `GET /issuers/{id}/chain`
 - `GET /trust/anchors`
 
+ACME enrollment state is modeled as accounts, orders, authorizations, and challenges. Creating an order records requested DNS/IP identifiers and creates one pending authorization and challenge per identifier. Completing all challenges moves the order to `ready`. Finalizing a ready order creates an enrollment, approves it, issues the certificate, and marks the order `valid`.
+
+- `POST /acme/accounts`
+- `GET /acme/accounts`
+- `POST /acme/orders`
+- `GET /acme/orders/{id}`
+- `GET /acme/orders/{id}/authorizations`
+- `GET /acme/authorizations/{id}/challenges`
+- `POST /acme/challenges/{id}/complete`
+- `POST /acme/orders/{id}/finalize`
+
 Certificate lifecycle operations include revocation, suspension, and resumption:
 
 - `POST /certificates/{id}/revoke`
