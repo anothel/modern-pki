@@ -128,6 +128,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /acme/authz/{id}", s.acmeGetAuthorization)
 	s.mux.HandleFunc("POST /acme/challenge/{id}", s.acmeCompleteChallenge)
 	s.mux.HandleFunc("POST /acme/order/{id}/finalize", s.acmeFinalizeOrder)
+	s.mux.HandleFunc("GET /acme/cert/{id}", s.acmeGetCertificate)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -610,7 +611,7 @@ func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	challenge, err := s.service.CompleteACMEChallenge(r.Context(), requestActor(r), r.PathValue("id"))
+	challenge, err := s.service.ValidateACMEHTTP01Challenge(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -647,6 +648,17 @@ func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeACMEJSON(w, r, http.StatusOK, response)
+}
+
+func (s *Server) acmeGetCertificate(w http.ResponseWriter, r *http.Request) {
+	certificate, err := s.service.GetCertificate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/pem-certificate-chain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(certificate.CertificatePEM))
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
@@ -2133,7 +2145,7 @@ func (s *Server) toACMEProtocolOrder(r *http.Request, order domain.ACMEOrder) (a
 		Finalize:       baseURL + "/acme/order/" + order.ID + "/finalize",
 	}
 	if order.CertificateID != "" {
-		response.Certificate = baseURL + "/certificates/" + order.CertificateID
+		response.Certificate = baseURL + "/acme/cert/" + order.CertificateID
 	}
 	return response, nil
 }

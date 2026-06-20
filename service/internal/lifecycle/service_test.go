@@ -2755,6 +2755,129 @@ func TestACMEOrderLifecycleFinalizesToCertificate(t *testing.T) {
 	}
 }
 
+func TestValidateACMEHTTP01ChallengeVerifiesKeyAuthorizationAndPromotesOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	verifier := &fakeACMEHTTP01Verifier{}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := NewWithACMEHTTP01Verifier(repo, &fakeIssuer{}, clock, &fakeIDGenerator{}, verifier)
+
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+		KeyThumbprint:        "thumbprint-1",
+		KeyJWKJSON:           `{"crv":"P-256","kty":"EC","x":"x","y":"y"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	order, err := service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEOrder returned error: %v", err)
+	}
+	authzs, err := service.ListACMEAuthorizations(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("ListACMEAuthorizations returned error: %v", err)
+	}
+	challenges, err := service.ListACMEChallenges(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("ListACMEChallenges returned error: %v", err)
+	}
+
+	challenge, err := service.ValidateACMEHTTP01Challenge(ctx, "acme-client", challenges[0].ID)
+	if err != nil {
+		t.Fatalf("ValidateACMEHTTP01Challenge returned error: %v", err)
+	}
+	if challenge.Status != domain.ACMEChallengeValid || challenge.ValidatedAt.IsZero() {
+		t.Fatalf("challenge = %#v", challenge)
+	}
+	if len(verifier.requests) != 1 ||
+		verifier.requests[0].Identifier != "edge-01.example.test" ||
+		verifier.requests[0].Token != challenges[0].Token ||
+		verifier.requests[0].KeyAuthorization != challenges[0].Token+".thumbprint-1" {
+		t.Fatalf("verifier requests = %#v", verifier.requests)
+	}
+	ready, err := service.GetACMEOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder returned error: %v", err)
+	}
+	if ready.Status != domain.ACMEOrderReady {
+		t.Fatalf("order status = %q, want %q", ready.Status, domain.ACMEOrderReady)
+	}
+}
+
+func TestValidateACMEHTTP01ChallengeMarksAuthorizationAndOrderInvalidOnFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	verifier := &fakeACMEHTTP01Verifier{err: errors.New("token mismatch")}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := NewWithACMEHTTP01Verifier(repo, &fakeIssuer{}, clock, &fakeIDGenerator{}, verifier)
+
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+		KeyThumbprint:        "thumbprint-1",
+		KeyJWKJSON:           `{"crv":"P-256","kty":"EC","x":"x","y":"y"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	order, err := service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEOrder returned error: %v", err)
+	}
+	authzs, err := service.ListACMEAuthorizations(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("ListACMEAuthorizations returned error: %v", err)
+	}
+	challenges, err := service.ListACMEChallenges(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("ListACMEChallenges returned error: %v", err)
+	}
+
+	_, err = service.ValidateACMEHTTP01Challenge(ctx, "acme-client", challenges[0].ID)
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("ValidateACMEHTTP01Challenge error = %v, want ErrInvalidRequest", err)
+	}
+	storedChallenge, err := service.GetACMEChallenge(ctx, challenges[0].ID)
+	if err != nil {
+		t.Fatalf("GetACMEChallenge returned error: %v", err)
+	}
+	if storedChallenge.Status != domain.ACMEChallengeInvalid {
+		t.Fatalf("challenge status = %q, want %q", storedChallenge.Status, domain.ACMEChallengeInvalid)
+	}
+	storedAuthz, err := service.GetACMEAuthorization(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("GetACMEAuthorization returned error: %v", err)
+	}
+	if storedAuthz.Status != domain.ACMEAuthorizationInvalid {
+		t.Fatalf("authorization status = %q, want %q", storedAuthz.Status, domain.ACMEAuthorizationInvalid)
+	}
+	storedOrder, err := service.GetACMEOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder returned error: %v", err)
+	}
+	if storedOrder.Status != domain.ACMEOrderInvalid {
+		t.Fatalf("order status = %q, want %q", storedOrder.Status, domain.ACMEOrderInvalid)
+	}
+}
+
 func TestFinalizeACMEOrderRequiresReadyOrder(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -3048,6 +3171,26 @@ func (f *fakeIssuer) GenerateOCSPResponse(ctx context.Context, req corecli.Gener
 type ocspResponderValidationRequest struct {
 	issuerCertificatePEM    string
 	responderCertificatePEM string
+}
+
+type fakeACMEHTTP01Verifier struct {
+	err      error
+	requests []fakeACMEHTTP01Request
+}
+
+type fakeACMEHTTP01Request struct {
+	Identifier       string
+	Token            string
+	KeyAuthorization string
+}
+
+func (f *fakeACMEHTTP01Verifier) VerifyHTTP01(ctx context.Context, identifier string, token string, keyAuthorization string) error {
+	f.requests = append(f.requests, fakeACMEHTTP01Request{
+		Identifier:       identifier,
+		Token:            token,
+		KeyAuthorization: keyAuthorization,
+	})
+	return f.err
 }
 
 type fixedClock struct {

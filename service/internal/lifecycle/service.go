@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"sort"
@@ -39,6 +41,16 @@ type IDGenerator interface {
 	NewID() string
 }
 
+type ACMEHTTP01Verifier interface {
+	VerifyHTTP01(ctx context.Context, identifier string, token string, keyAuthorization string) error
+}
+
+type ACMEHTTP01VerifierFunc func(ctx context.Context, identifier string, token string, keyAuthorization string) error
+
+func (f ACMEHTTP01VerifierFunc) VerifyHTTP01(ctx context.Context, identifier string, token string, keyAuthorization string) error {
+	return f(ctx, identifier, token, keyAuthorization)
+}
+
 type RealClock struct{}
 
 func (RealClock) Now() time.Time {
@@ -52,10 +64,11 @@ func (UUIDGenerator) NewID() string {
 }
 
 type Service struct {
-	repo   store.Repository
-	issuer CertificateIssuer
-	clock  Clock
-	idgen  IDGenerator
+	repo               store.Repository
+	issuer             CertificateIssuer
+	clock              Clock
+	idgen              IDGenerator
+	acmeHTTP01Verifier ACMEHTTP01Verifier
 }
 
 type AuditRequestMetadata struct {
@@ -221,12 +234,51 @@ type ocspSigner struct {
 }
 
 func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator) *Service {
-	return &Service{
-		repo:   repo,
-		issuer: issuer,
-		clock:  clock,
-		idgen:  idgen,
+	return NewWithACMEHTTP01Verifier(repo, issuer, clock, idgen, nil)
+}
+
+func NewWithACMEHTTP01Verifier(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator, verifier ACMEHTTP01Verifier) *Service {
+	if verifier == nil {
+		verifier = defaultACMEHTTP01Verifier()
 	}
+	return &Service{
+		repo:               repo,
+		issuer:             issuer,
+		clock:              clock,
+		idgen:              idgen,
+		acmeHTTP01Verifier: verifier,
+	}
+}
+
+func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
+	client := &http.Client{Timeout: 10 * time.Second}
+	return ACMEHTTP01VerifierFunc(func(ctx context.Context, identifier string, token string, keyAuthorization string) error {
+		challengeURL := url.URL{
+			Scheme: "http",
+			Host:   identifier,
+			Path:   "/.well-known/acme-challenge/" + token,
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, challengeURL.String(), nil)
+		if err != nil {
+			return err
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return domain.ErrInvalidRequest
+		}
+		body, err := io.ReadAll(io.LimitReader(res.Body, 4096))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(body)) != keyAuthorization {
+			return domain.ErrInvalidRequest
+		}
+		return nil
+	})
 }
 
 func WithAuditRequestMetadata(ctx context.Context, metadata AuditRequestMetadata) context.Context {
@@ -867,6 +919,20 @@ func (s *Service) CompleteACMEChallenge(ctx context.Context, actor string, chall
 		return domain.ACMEChallenge{}, err
 	}
 	return completed, nil
+}
+
+func (s *Service) ValidateACMEHTTP01Challenge(ctx context.Context, actor string, challengeID string) (domain.ACMEChallenge, error) {
+	validation, err := s.acmeHTTP01ValidationContext(ctx, challengeID)
+	if err != nil {
+		return domain.ACMEChallenge{}, err
+	}
+	if err := s.acmeHTTP01Verifier.VerifyHTTP01(ctx, validation.IdentifierValue, validation.Challenge.Token, validation.KeyAuthorization); err != nil {
+		if invalidateErr := s.invalidateACMEChallenge(ctx, actor, validation.Challenge.ID); invalidateErr != nil {
+			return domain.ACMEChallenge{}, invalidateErr
+		}
+		return domain.ACMEChallenge{}, domain.ErrInvalidRequest
+	}
+	return s.CompleteACMEChallenge(ctx, actor, challengeID)
 }
 
 func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID string, req FinalizeACMEOrderRequest) (domain.ACMEOrder, error) {
@@ -1911,6 +1977,96 @@ func (s *Service) createACMEAuthorization(ctx context.Context, repo store.Reposi
 		Status:          domain.ACMEChallengePending,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	})
+}
+
+type acmeHTTP01ValidationContext struct {
+	Challenge        domain.ACMEChallenge
+	IdentifierValue  string
+	KeyAuthorization string
+}
+
+func (s *Service) acmeHTTP01ValidationContext(ctx context.Context, challengeID string) (acmeHTTP01ValidationContext, error) {
+	if isBlank(challengeID) {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidRequest
+	}
+	challenge, err := s.repo.GetACMEChallenge(ctx, challengeID)
+	if err != nil {
+		return acmeHTTP01ValidationContext{}, err
+	}
+	if challenge.Type != domain.ACMEChallengeHTTP01 || challenge.Status != domain.ACMEChallengePending {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
+	}
+	authorization, err := s.repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
+	if err != nil {
+		return acmeHTTP01ValidationContext{}, err
+	}
+	if authorization.Status != domain.ACMEAuthorizationPending {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
+	}
+	order, err := s.repo.GetACMEOrder(ctx, authorization.OrderID)
+	if err != nil {
+		return acmeHTTP01ValidationContext{}, err
+	}
+	if order.Status != domain.ACMEOrderPending {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
+	}
+	account, err := s.repo.GetACMEAccount(ctx, order.AccountID)
+	if err != nil {
+		return acmeHTTP01ValidationContext{}, err
+	}
+	if account.Status != domain.ACMEAccountValid || account.KeyThumbprint == "" {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidRequest
+	}
+	return acmeHTTP01ValidationContext{
+		Challenge:        challenge,
+		IdentifierValue:  authorization.IdentifierValue,
+		KeyAuthorization: challenge.Token + "." + account.KeyThumbprint,
+	}, nil
+}
+
+func (s *Service) invalidateACMEChallenge(ctx context.Context, actor string, challengeID string) error {
+	now := s.clock.Now()
+	return s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		challenge, err := repo.GetACMEChallenge(ctx, challengeID)
+		if err != nil {
+			return err
+		}
+		if challenge.Status != domain.ACMEChallengePending {
+			return domain.ErrInvalidTransition
+		}
+		authorization, err := repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
+		if err != nil {
+			return err
+		}
+		order, err := repo.GetACMEOrder(ctx, authorization.OrderID)
+		if err != nil {
+			return err
+		}
+		challenge.Status = domain.ACMEChallengeInvalid
+		challenge.UpdatedAt = now
+		if err := repo.UpdateACMEChallengeIfStatus(ctx, challenge, domain.ACMEChallengePending); err != nil {
+			return err
+		}
+		if authorization.Status == domain.ACMEAuthorizationPending {
+			authorization.Status = domain.ACMEAuthorizationInvalid
+			authorization.UpdatedAt = now
+			if err := repo.UpdateACMEAuthorizationIfStatus(ctx, authorization, domain.ACMEAuthorizationPending); err != nil {
+				return err
+			}
+		}
+		if order.Status == domain.ACMEOrderPending {
+			order.Status = domain.ACMEOrderInvalid
+			order.UpdatedAt = now
+			if err := repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderPending); err != nil {
+				return err
+			}
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.challenge.invalid", "acme_challenge", challenge.ID, now, auditFields(
+			"acme_challenge_id", challenge.ID,
+			"acme_authorization_id", authorization.ID,
+			"acme_order_id", authorization.OrderID,
+		))
 	})
 }
 

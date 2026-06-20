@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,6 +347,21 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	assertStatus(t, status, http.StatusOK)
 	if finalized.Status != string(domain.ACMEOrderValid) || finalized.Certificate == "" {
 		t.Fatalf("finalized order = %#v", finalized)
+	}
+	certificatePath := api.pathFromURL(t, finalized.Certificate)
+	if !strings.HasPrefix(certificatePath, "/acme/cert/") {
+		t.Fatalf("certificate URL path = %q, want /acme/cert/{id}", certificatePath)
+	}
+	status, certificatePEM, contentType := api.doRaw(t, http.MethodGet, certificatePath, "")
+	assertStatus(t, status, http.StatusOK)
+	if contentType != "application/pem-certificate-chain" {
+		t.Fatalf("certificate content type = %q, want application/pem-certificate-chain", contentType)
+	}
+	if string(certificatePEM) != "issued:csr-pem" {
+		t.Fatalf("certificate PEM = %q, want issued:csr-pem", string(certificatePEM))
+	}
+	if len(api.acmeHTTP01.requests) != len(order.Authorizations) {
+		t.Fatalf("HTTP-01 verifier request count = %d, want %d", len(api.acmeHTTP01.requests), len(order.Authorizations))
 	}
 }
 
@@ -1513,6 +1529,7 @@ type testAPI struct {
 	repo       store.Repository
 	service    *lifecycle.Service
 	issuer     *fakeIssuer
+	acmeHTTP01 *fakeACMEHTTP01Verifier
 	acmeSigner *acmeTestSigner
 	acmeKID    string
 }
@@ -1526,12 +1543,14 @@ func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 	t.Helper()
 
 	issuer := &fakeIssuer{}
+	acmeHTTP01 := &fakeACMEHTTP01Verifier{}
 	repo := store.NewMemoryStore()
-	service := lifecycle.New(
+	service := lifecycle.NewWithACMEHTTP01Verifier(
 		repo,
 		issuer,
 		fixedClock{now: testNow},
 		&fakeIDGenerator{},
+		acmeHTTP01,
 	)
 	server := httptest.NewServer(NewWithAuth(service, auth))
 	t.Cleanup(server.Close)
@@ -1543,6 +1562,7 @@ func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 		repo:       repo,
 		service:    service,
 		issuer:     issuer,
+		acmeHTTP01: acmeHTTP01,
 		acmeSigner: newACMETestSigner(t),
 	}
 }
@@ -1748,6 +1768,26 @@ func paddedBigInt(value *big.Int, size int) []byte {
 	out := make([]byte, size)
 	copy(out[size-len(raw):], raw)
 	return out
+}
+
+type fakeACMEHTTP01Verifier struct {
+	err      error
+	requests []fakeACMEHTTP01Request
+}
+
+type fakeACMEHTTP01Request struct {
+	Identifier       string
+	Token            string
+	KeyAuthorization string
+}
+
+func (f *fakeACMEHTTP01Verifier) VerifyHTTP01(ctx context.Context, identifier string, token string, keyAuthorization string) error {
+	f.requests = append(f.requests, fakeACMEHTTP01Request{
+		Identifier:       identifier,
+		Token:            token,
+		KeyAuthorization: keyAuthorization,
+	})
+	return f.err
 }
 
 func (api *testAPI) doRaw(t *testing.T, method string, path string, actor string) (int, []byte, string) {
