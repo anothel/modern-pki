@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -1136,7 +1138,7 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	if err := json.Unmarshal(protectedBytes, &protected); err != nil {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
-	if protected.Alg != "ES256" || protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
+	if !isSupportedACMEJWSAlg(protected.Alg) || protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	if !s.consumeACMENonce(protected.Nonce) {
@@ -1183,10 +1185,14 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 		result.KeyJWKJSON = keyJSON
 		result.KeyThumbprint = thumbprint
 	}
-	if err := verifyACMEJWS(jwk, req.Protected+"."+req.Payload, req.Signature); err != nil {
+	if err := verifyACMEJWS(protected.Alg, jwk, req.Protected+"."+req.Payload, req.Signature); err != nil {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	return result, nil
+}
+
+func isSupportedACMEJWSAlg(alg string) bool {
+	return alg == "ES256" || alg == "RS256"
 }
 
 func (s *Server) issueACMENonce() (string, error) {
@@ -1333,10 +1339,10 @@ func acmeJWKFromProtected(value any) (acmeJWK, error) {
 	if err := json.Unmarshal(encoded, &jwk); err != nil {
 		return acmeJWK{}, err
 	}
-	if jwk.KTY != "EC" || jwk.CRV != "P-256" || jwk.X == "" || jwk.Y == "" {
-		return acmeJWK{}, domain.ErrInvalidRequest
+	if isValidACMEECJWK(jwk) || isValidACMERSAJWK(jwk) {
+		return jwk, nil
 	}
-	return jwk, nil
+	return acmeJWK{}, domain.ErrInvalidRequest
 }
 
 func acmeAccountIDFromKID(kid string) (string, error) {
@@ -1351,26 +1357,51 @@ func acmeAccountIDFromKID(kid string) (string, error) {
 	return parts[2], nil
 }
 
-func verifyACMEJWS(jwk acmeJWK, signingInput string, signatureB64 string) error {
-	publicKey, err := acmeJWKPublicKey(jwk)
-	if err != nil {
-		return err
-	}
+func verifyACMEJWS(alg string, jwk acmeJWK, signingInput string, signatureB64 string) error {
 	signature, err := base64.RawURLEncoding.DecodeString(signatureB64)
-	if err != nil || len(signature) != 64 {
+	if err != nil {
 		return domain.ErrInvalidRequest
 	}
-	r := new(big.Int).SetBytes(signature[:32])
-	sigS := new(big.Int).SetBytes(signature[32:])
 	sum := sha256.Sum256([]byte(signingInput))
-	if !ecdsa.Verify(publicKey, sum[:], r, sigS) {
+	switch alg {
+	case "ES256":
+		publicKey, err := acmeECJWKPublicKey(jwk)
+		if err != nil {
+			return err
+		}
+		if len(signature) != 64 {
+			return domain.ErrInvalidRequest
+		}
+		r := new(big.Int).SetBytes(signature[:32])
+		sigS := new(big.Int).SetBytes(signature[32:])
+		if !ecdsa.Verify(publicKey, sum[:], r, sigS) {
+			return domain.ErrInvalidRequest
+		}
+		return nil
+	case "RS256":
+		publicKey, err := acmeRSAJWKPublicKey(jwk)
+		if err != nil {
+			return err
+		}
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, sum[:], signature); err != nil {
+			return domain.ErrInvalidRequest
+		}
+		return nil
+	default:
 		return domain.ErrInvalidRequest
 	}
-	return nil
 }
 
-func acmeJWKPublicKey(jwk acmeJWK) (*ecdsa.PublicKey, error) {
-	if jwk.KTY != "EC" || jwk.CRV != "P-256" || jwk.X == "" || jwk.Y == "" {
+func isValidACMEECJWK(jwk acmeJWK) bool {
+	return jwk.KTY == "EC" && jwk.CRV == "P-256" && jwk.X != "" && jwk.Y != "" && jwk.N == "" && jwk.E == ""
+}
+
+func isValidACMERSAJWK(jwk acmeJWK) bool {
+	return jwk.KTY == "RSA" && jwk.N != "" && jwk.E != "" && jwk.CRV == "" && jwk.X == "" && jwk.Y == ""
+}
+
+func acmeECJWKPublicKey(jwk acmeJWK) (*ecdsa.PublicKey, error) {
+	if !isValidACMEECJWK(jwk) {
 		return nil, domain.ErrInvalidRequest
 	}
 	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
@@ -1390,11 +1421,41 @@ func acmeJWKPublicKey(jwk acmeJWK) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
-func canonicalACMEJWKJSON(jwk acmeJWK) (string, error) {
-	if _, err := acmeJWKPublicKey(jwk); err != nil {
-		return "", err
+func acmeRSAJWKPublicKey(jwk acmeJWK) (*rsa.PublicKey, error) {
+	if !isValidACMERSAJWK(jwk) {
+		return nil, domain.ErrInvalidRequest
 	}
-	return fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s","y":"%s"}`, jwk.CRV, jwk.KTY, jwk.X, jwk.Y), nil
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	n := new(big.Int).SetBytes(nBytes)
+	e := new(big.Int).SetBytes(eBytes)
+	if n.Sign() <= 0 || !e.IsInt64() || e.Int64() <= 1 {
+		return nil, domain.ErrInvalidRequest
+	}
+	return &rsa.PublicKey{N: n, E: int(e.Int64())}, nil
+}
+
+func canonicalACMEJWKJSON(jwk acmeJWK) (string, error) {
+	switch jwk.KTY {
+	case "EC":
+		if _, err := acmeECJWKPublicKey(jwk); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s","y":"%s"}`, jwk.CRV, jwk.KTY, jwk.X, jwk.Y), nil
+	case "RSA":
+		if _, err := acmeRSAJWKPublicKey(jwk); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`{"e":"%s","kty":"%s","n":"%s"}`, jwk.E, jwk.KTY, jwk.N), nil
+	default:
+		return "", domain.ErrInvalidRequest
+	}
 }
 
 func acmeJWKThumbprint(jwk acmeJWK) (string, error) {
@@ -1860,6 +1921,8 @@ type acmeJWK struct {
 	CRV string `json:"crv"`
 	X   string `json:"x"`
 	Y   string `json:"y"`
+	N   string `json:"n"`
+	E   string `json:"e"`
 }
 
 type acmeNewAccountRequest struct {

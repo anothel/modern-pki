@@ -48,8 +48,8 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 - ACME directory and nonce endpoints.
 - JWS envelope parsing and one-time nonce replay protection.
-- ES256/P-256 JWS signature verification.
-- Account key binding through JWK thumbprint and canonical JWK persistence.
+- ES256/P-256 and RS256/RSA JWS signature verification.
+- Account key binding through EC/RSA JWK thumbprint and canonical JWK persistence.
 - Existing account reuse by JWK thumbprint, contact update, account deactivation, and deactivated-account enforcement.
 - Account ownership enforcement for new-order, challenge, finalize, and certificate download.
 - ACME order, authorization, challenge, finalize, and certificate download flow.
@@ -114,7 +114,7 @@ Likely gaps:
 
 ### 4. ACME Key Algorithm Expansion
 
-- RSA account keys.
+- Done: RSA account keys with `RS256` JWS verification.
 - Ed25519 account keys if supported by selected clients.
 - Keep ES256 as default fixture.
 
