@@ -253,13 +253,32 @@ func NewWithACMEHTTP01Verifier(repo store.Repository, issuer CertificateIssuer, 
 }
 
 func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
+	verifier, err := NewACMEHTTP01Verifier("")
+	if err != nil {
+		panic(err)
+	}
+	return verifier
+}
+
+func NewACMEHTTP01Verifier(overrideBaseURL string) (ACMEHTTP01Verifier, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	return ACMEHTTP01VerifierFunc(func(ctx context.Context, identifier string, token string, keyAuthorization string) error {
-		challengeURL := url.URL{
-			Scheme: "http",
-			Host:   identifier,
-			Path:   "/.well-known/acme-challenge/" + token,
+	var baseURL *url.URL
+	overrideBaseURL = strings.TrimSpace(overrideBaseURL)
+	if overrideBaseURL != "" {
+		parsed, err := url.Parse(overrideBaseURL)
+		if err != nil {
+			return nil, err
 		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("scheme must be http or https")
+		}
+		if parsed.Host == "" {
+			return nil, fmt.Errorf("host is required")
+		}
+		baseURL = parsed
+	}
+	return ACMEHTTP01VerifierFunc(func(ctx context.Context, identifier string, token string, keyAuthorization string) error {
+		challengeURL := acmeHTTP01ChallengeURL(baseURL, identifier, token)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, challengeURL.String(), nil)
 		if err != nil {
 			return err
@@ -280,7 +299,23 @@ func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
 			return domain.ErrInvalidRequest
 		}
 		return nil
-	})
+	}), nil
+}
+
+func acmeHTTP01ChallengeURL(baseURL *url.URL, identifier string, token string) url.URL {
+	challengePath := "/.well-known/acme-challenge/" + token
+	if baseURL == nil {
+		return url.URL{
+			Scheme: "http",
+			Host:   identifier,
+			Path:   challengePath,
+		}
+	}
+	challengeURL := *baseURL
+	challengeURL.Path = strings.TrimRight(challengeURL.Path, "/") + challengePath
+	challengeURL.RawQuery = ""
+	challengeURL.Fragment = ""
+	return challengeURL
 }
 
 func WithAuditRequestMetadata(ctx context.Context, metadata AuditRequestMetadata) context.Context {

@@ -167,6 +167,39 @@ func TestLoadExpirationScanConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadACMEHTTP01VerifierConfigDefaults(t *testing.T) {
+	t.Setenv("MODERN_PKI_ACME_HTTP01_BASE_URL", "")
+
+	cfg, err := loadACMEHTTP01VerifierConfig()
+	if err != nil {
+		t.Fatalf("loadACMEHTTP01VerifierConfig returned error: %v", err)
+	}
+	if cfg.BaseURL != "" {
+		t.Fatalf("base URL = %q, want empty", cfg.BaseURL)
+	}
+}
+
+func TestLoadACMEHTTP01VerifierConfigCustomBaseURL(t *testing.T) {
+	t.Setenv("MODERN_PKI_ACME_HTTP01_BASE_URL", "http://127.0.0.1:5002")
+
+	cfg, err := loadACMEHTTP01VerifierConfig()
+	if err != nil {
+		t.Fatalf("loadACMEHTTP01VerifierConfig returned error: %v", err)
+	}
+	if cfg.BaseURL != "http://127.0.0.1:5002" {
+		t.Fatalf("base URL = %q", cfg.BaseURL)
+	}
+}
+
+func TestLoadACMEHTTP01VerifierConfigRejectsInvalidBaseURL(t *testing.T) {
+	t.Setenv("MODERN_PKI_ACME_HTTP01_BASE_URL", "://bad-url")
+
+	_, err := loadACMEHTTP01VerifierConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_ACME_HTTP01_BASE_URL") {
+		t.Fatalf("loadACMEHTTP01VerifierConfig error = %v, want MODERN_PKI_ACME_HTTP01_BASE_URL", err)
+	}
+}
+
 func clearExpirationScanEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("MODERN_PKI_EXPIRATION_SCAN_ENABLED", "")

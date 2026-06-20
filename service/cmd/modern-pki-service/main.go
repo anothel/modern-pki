@@ -52,6 +52,10 @@ type expirationScanConfig struct {
 	BatchSize     int
 }
 
+type acmeHTTP01VerifierConfig struct {
+	BaseURL string
+}
+
 type authConfig struct {
 	HTTP                 httpapi.AuthConfig
 	BootstrapAPIKey      string
@@ -76,6 +80,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load expiration scan config: %v", err)
 	}
+	acmeHTTP01VerifierCfg, err := loadACMEHTTP01VerifierConfig()
+	if err != nil {
+		log.Fatalf("load ACME HTTP-01 verifier config: %v", err)
+	}
 
 	db, err := sql.Open(dbDriver, dbDSN)
 	if err != nil {
@@ -88,7 +96,14 @@ func main() {
 	}
 
 	repo := store.NewSQLStore(db)
-	svc := lifecycle.New(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
+	acmeHTTP01Verifier, err := lifecycle.NewACMEHTTP01Verifier(acmeHTTP01VerifierCfg.BaseURL)
+	if err != nil {
+		log.Fatalf("create ACME HTTP-01 verifier: %v", err)
+	}
+	svc := lifecycle.NewWithACMEHTTP01Verifier(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{}, acmeHTTP01Verifier)
+	if acmeHTTP01VerifierCfg.BaseURL != "" {
+		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
+	}
 	if authCfg.BootstrapAPIKey != "" {
 		key, err := svc.EnsureAPIKey(context.Background(), "system", lifecycle.EnsureAPIKeyRequest{
 			Name:  authCfg.BootstrapAPIKeyName,
@@ -190,6 +205,16 @@ func loadExpirationScanConfig() (expirationScanConfig, error) {
 		WarningWindow: warningWindow,
 		BatchSize:     batchSize,
 	}, nil
+}
+
+func loadACMEHTTP01VerifierConfig() (acmeHTTP01VerifierConfig, error) {
+	baseURL := strings.TrimSpace(os.Getenv("MODERN_PKI_ACME_HTTP01_BASE_URL"))
+	if baseURL != "" {
+		if _, err := lifecycle.NewACMEHTTP01Verifier(baseURL); err != nil {
+			return acmeHTTP01VerifierConfig{}, fmt.Errorf("MODERN_PKI_ACME_HTTP01_BASE_URL: %w", err)
+		}
+	}
+	return acmeHTTP01VerifierConfig{BaseURL: baseURL}, nil
 }
 
 func parseBoolEnv(name string, fallback bool) (bool, error) {

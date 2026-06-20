@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -2875,6 +2877,34 @@ func TestValidateACMEHTTP01ChallengeMarksAuthorizationAndOrderInvalidOnFailure(t
 	}
 	if storedOrder.Status != domain.ACMEOrderInvalid {
 		t.Fatalf("order status = %q, want %q", storedOrder.Status, domain.ACMEOrderInvalid)
+	}
+}
+
+func TestACMEHTTP01VerifierUsesOverrideBaseURL(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte("token-1.thumbprint-1"))
+	}))
+	defer server.Close()
+
+	verifier, err := NewACMEHTTP01Verifier(server.URL)
+	if err != nil {
+		t.Fatalf("NewACMEHTTP01Verifier returned error: %v", err)
+	}
+	err = verifier.VerifyHTTP01(context.Background(), "edge-01.example.test", "token-1", "token-1.thumbprint-1")
+	if err != nil {
+		t.Fatalf("VerifyHTTP01 returned error: %v", err)
+	}
+	if gotPath != "/.well-known/acme-challenge/token-1" {
+		t.Fatalf("challenge path = %q", gotPath)
+	}
+}
+
+func TestACMEHTTP01VerifierRejectsInvalidOverrideBaseURL(t *testing.T) {
+	_, err := NewACMEHTTP01Verifier("://bad-url")
+	if err == nil {
+		t.Fatal("NewACMEHTTP01Verifier returned nil error")
 	}
 }
 

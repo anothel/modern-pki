@@ -65,6 +65,13 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 Goal: run a real ACME client against the local service and turn remaining compatibility gaps into tests.
 
+Current status:
+
+- Local client availability checked: `certbot`, `lego`, and `step` are not present on `PATH` in the current workspace shell.
+- Harness scaffold added under `scripts/acme-smoke/`.
+- Opt-in `MODERN_PKI_ACME_HTTP01_BASE_URL` support added for non-port-80 local HTTP-01 smoke.
+- Next unblocker: install certbot and run the harness against the local service.
+
 Recommended shape:
 
 - Start `modern-pki-service` with SQLite temp DB.
@@ -173,4 +180,3 @@ For each roadmap item:
 - Keep C++ smoke checks passing:
   - `ctest --test-dir build -C Debug -R modern_pki.core_ocsp --output-on-failure`
   - `ctest --test-dir build -C Debug -R modern_pki.core_cli_contract --output-on-failure`
-
