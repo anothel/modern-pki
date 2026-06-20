@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
@@ -18,6 +21,8 @@ type Server struct {
 	service *lifecycle.Service
 	mux     *http.ServeMux
 	auth    AuthConfig
+	nonceMu sync.Mutex
+	nonces  map[string]struct{}
 }
 
 type AuthMode string
@@ -53,6 +58,7 @@ func NewWithAuth(service *lifecycle.Service, auth AuthConfig) *Server {
 		service: service,
 		mux:     http.NewServeMux(),
 		auth:    auth,
+		nonces:  make(map[string]struct{}),
 	}
 	s.registerRoutes()
 	return s
@@ -106,6 +112,16 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /acme/orders/{id}/finalize", s.finalizeACMEOrder)
 	s.mux.HandleFunc("GET /acme/authorizations/{id}/challenges", s.listACMEChallenges)
 	s.mux.HandleFunc("POST /acme/challenges/{id}/complete", s.completeACMEChallenge)
+
+	s.mux.HandleFunc("GET /acme/directory", s.acmeDirectory)
+	s.mux.HandleFunc("HEAD /acme/new-nonce", s.acmeNewNonce)
+	s.mux.HandleFunc("GET /acme/new-nonce", s.acmeNewNonce)
+	s.mux.HandleFunc("POST /acme/new-account", s.acmeNewAccount)
+	s.mux.HandleFunc("POST /acme/new-order", s.acmeNewOrder)
+	s.mux.HandleFunc("GET /acme/order/{id}", s.acmeGetOrder)
+	s.mux.HandleFunc("GET /acme/authz/{id}", s.acmeGetAuthorization)
+	s.mux.HandleFunc("POST /acme/challenge/{id}", s.acmeCompleteChallenge)
+	s.mux.HandleFunc("POST /acme/order/{id}/finalize", s.acmeFinalizeOrder)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -459,6 +475,159 @@ func (s *Server) finalizeACMEOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toACMEOrderResponse(order))
 }
 
+func (s *Server) acmeDirectory(w http.ResponseWriter, r *http.Request) {
+	baseURL := requestBaseURL(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"newNonce":   baseURL + "/acme/new-nonce",
+		"newAccount": baseURL + "/acme/new-account",
+		"newOrder":   baseURL + "/acme/new-order",
+		"meta": map[string]any{
+			"externalAccountRequired": false,
+		},
+	})
+}
+
+func (s *Server) acmeNewNonce(w http.ResponseWriter, r *http.Request) {
+	nonce, err := s.issueACMENonce()
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Replay-Nonce", nonce)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) acmeNewAccount(w http.ResponseWriter, r *http.Request) {
+	payload, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var req acmeNewAccountRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	account, err := s.service.CreateACMEAccount(r.Context(), requestActor(r), lifecycle.CreateACMEAccountRequest{
+		Contacts:             req.Contact,
+		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response := s.toACMEProtocolAccount(r, account)
+	w.Header().Set("Location", response.Location)
+	s.writeACMEJSON(w, r, http.StatusCreated, response)
+}
+
+func (s *Server) acmeNewOrder(w http.ResponseWriter, r *http.Request) {
+	payload, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var req acmeNewOrderRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	dnsNames, ipAddresses, err := acmeOrderIdentifiers(req.Identifiers)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	order, err := s.service.CreateACMEOrder(r.Context(), requestActor(r), lifecycle.CreateACMEOrderRequest{
+		AccountID:            req.AccountID,
+		IdentityID:           req.IdentityID,
+		IssuerID:             req.IssuerID,
+		CertificateProfileID: req.CertificateProfileID,
+		RequestedDNSNames:    dnsNames,
+		RequestedIPAddresses: ipAddresses,
+		RequestedNotAfter:    req.NotAfter,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolOrder(r, order)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", response.URL)
+	s.writeACMEJSON(w, r, http.StatusCreated, response)
+}
+
+func (s *Server) acmeGetOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := s.service.GetACMEOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolOrder(r, order)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
+	authorization, err := s.service.GetACMEAuthorization(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolAuthorization(r, authorization)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.decodeACMEJWS(r); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	challenge, err := s.service.CompleteACMEChallenge(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, s.toACMEProtocolChallenge(r, challenge))
+}
+
+func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
+	payload, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var req finalizeACMEOrderRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	order, err := s.service.FinalizeACMEOrder(r.Context(), requestActor(r), r.PathValue("id"), lifecycle.FinalizeACMEOrderRequest{
+		CSRPEM:           req.CSRPEM,
+		RequestedSubject: req.RequestedSubject,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolOrder(r, order)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, response)
+}
+
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
 	var req createCertificateProfileRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -774,6 +943,99 @@ func (s *Server) listTrustAnchors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toIssuerResponses(anchors))
 }
 
+func (s *Server) decodeACMEJWS(r *http.Request) ([]byte, error) {
+	if contentType := r.Header.Get("Content-Type"); contentType != "" && !strings.HasPrefix(contentType, "application/jose+json") {
+		return nil, domain.ErrUnsupportedMediaType
+	}
+	var req acmeJWSRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return nil, err
+	}
+	if req.Protected == "" || req.Payload == "" || req.Signature == "" {
+		return nil, domain.ErrInvalidRequest
+	}
+	protectedBytes, err := base64.RawURLEncoding.DecodeString(req.Protected)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	var protected acmeProtectedHeader
+	if err := json.Unmarshal(protectedBytes, &protected); err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	if protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if !s.consumeACMENonce(protected.Nonce) {
+		return nil, domain.ErrInvalidRequest
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(req.Payload)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	return payload, nil
+}
+
+func (s *Server) issueACMENonce() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(raw[:])
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	s.nonces[nonce] = struct{}{}
+	return nonce, nil
+}
+
+func (s *Server) consumeACMENonce(nonce string) bool {
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	if _, ok := s.nonces[nonce]; !ok {
+		return false
+	}
+	delete(s.nonces, nonce)
+	return true
+}
+
+func (s *Server) writeACMEJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
+	nonce, err := s.issueACMENonce()
+	if err == nil {
+		w.Header().Set("Replay-Nonce", nonce)
+	}
+	writeJSON(w, status, value)
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := r.Header.Get("X-Forwarded-Proto")
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host
+}
+
+func requestAbsoluteURL(r *http.Request) string {
+	return requestBaseURL(r) + r.URL.RequestURI()
+}
+
+func acmeOrderIdentifiers(identifiers []acmeIdentifierRequest) ([]string, []string, error) {
+	dnsNames := make([]string, 0)
+	ipAddresses := make([]string, 0)
+	for _, identifier := range identifiers {
+		if strings.TrimSpace(identifier.Value) == "" {
+			return nil, nil, domain.ErrInvalidRequest
+		}
+		switch identifier.Type {
+		case "dns":
+			dnsNames = append(dnsNames, identifier.Value)
+		case "ip":
+			ipAddresses = append(ipAddresses, identifier.Value)
+		default:
+			return nil, nil, domain.ErrInvalidRequest
+		}
+	}
+	return dnsNames, ipAddresses, nil
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -846,6 +1108,9 @@ func isPublicEndpoint(method string, path string) bool {
 	if method == http.MethodPost && path == "/ocsp" {
 		return true
 	}
+	if isPublicACMEProtocolEndpoint(method, path) {
+		return true
+	}
 	if method == http.MethodGet && strings.HasPrefix(path, "/crls/") && len(strings.TrimPrefix(path, "/crls/")) > 0 {
 		return true
 	}
@@ -854,6 +1119,25 @@ func isPublicEndpoint(method string, path string) bool {
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	return len(parts) == 3 && parts[0] == "issuers" && parts[1] != "" && parts[2] == "crl"
+}
+
+func isPublicACMEProtocolEndpoint(method string, path string) bool {
+	if method == http.MethodGet && path == "/acme/directory" {
+		return true
+	}
+	if (method == http.MethodHead || method == http.MethodGet) && path == "/acme/new-nonce" {
+		return true
+	}
+	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order") {
+		return true
+	}
+	if method == http.MethodGet && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/authz/")) {
+		return true
+	}
+	if method == http.MethodPost && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/challenge/")) {
+		return true
+	}
+	return false
 }
 
 func requiredScopeForRequest(method string, path string) requiredScope {
@@ -1126,6 +1410,39 @@ type finalizeACMEOrderRequest struct {
 	RequestedSubject string `json:"requested_subject"`
 }
 
+type acmeJWSRequest struct {
+	Protected string `json:"protected"`
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+
+type acmeProtectedHeader struct {
+	Alg   string `json:"alg"`
+	Nonce string `json:"nonce"`
+	URL   string `json:"url"`
+	KID   string `json:"kid,omitempty"`
+	JWK   any    `json:"jwk,omitempty"`
+}
+
+type acmeNewAccountRequest struct {
+	Contact              []string `json:"contact"`
+	TermsOfServiceAgreed bool     `json:"termsOfServiceAgreed"`
+}
+
+type acmeNewOrderRequest struct {
+	AccountID            string                  `json:"account_id"`
+	IdentityID           string                  `json:"identity_id"`
+	IssuerID             string                  `json:"issuer_id"`
+	CertificateProfileID string                  `json:"profile_id"`
+	Identifiers          []acmeIdentifierRequest `json:"identifiers"`
+	NotAfter             time.Time               `json:"notAfter"`
+}
+
+type acmeIdentifierRequest struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
 type publishCRLRequest struct {
 	IssuerID          string    `json:"issuer_id"`
 	DistributionPoint string    `json:"distribution_point"`
@@ -1254,6 +1571,42 @@ type acmeChallengeResponse struct {
 	ValidatedAt     time.Time                  `json:"validated_at"`
 	CreatedAt       time.Time                  `json:"created_at"`
 	UpdatedAt       time.Time                  `json:"updated_at"`
+}
+
+type acmeProtocolAccountResponse struct {
+	ID       string   `json:"id"`
+	Status   string   `json:"status"`
+	Contact  []string `json:"contact"`
+	Location string   `json:"location"`
+}
+
+type acmeProtocolOrderResponse struct {
+	ID             string   `json:"id"`
+	Status         string   `json:"status"`
+	URL            string   `json:"url"`
+	Authorizations []string `json:"authorizations"`
+	Finalize       string   `json:"finalize"`
+	Certificate    string   `json:"certificate,omitempty"`
+}
+
+type acmeProtocolAuthorizationResponse struct {
+	ID         string                          `json:"id"`
+	Status     string                          `json:"status"`
+	Identifier acmeProtocolIdentifierResponse  `json:"identifier"`
+	Challenges []acmeProtocolChallengeResponse `json:"challenges"`
+}
+
+type acmeProtocolIdentifierResponse struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type acmeProtocolChallengeResponse struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+	Token  string `json:"token"`
+	Status string `json:"status"`
 }
 
 type certificateProfileResponse struct {
@@ -1562,6 +1915,68 @@ func toACMEChallengeResponses(challenges []domain.ACMEChallenge) []acmeChallenge
 		responses = append(responses, toACMEChallengeResponse(challenge))
 	}
 	return responses
+}
+
+func (s *Server) toACMEProtocolAccount(r *http.Request, account domain.ACMEAccount) acmeProtocolAccountResponse {
+	return acmeProtocolAccountResponse{
+		ID:       account.ID,
+		Status:   string(account.Status),
+		Contact:  account.Contacts,
+		Location: requestBaseURL(r) + "/acme/account/" + account.ID,
+	}
+}
+
+func (s *Server) toACMEProtocolOrder(r *http.Request, order domain.ACMEOrder) (acmeProtocolOrderResponse, error) {
+	authorizations, err := s.service.ListACMEAuthorizations(r.Context(), order.ID)
+	if err != nil {
+		return acmeProtocolOrderResponse{}, err
+	}
+	baseURL := requestBaseURL(r)
+	authzURLs := make([]string, 0, len(authorizations))
+	for _, authorization := range authorizations {
+		authzURLs = append(authzURLs, baseURL+"/acme/authz/"+authorization.ID)
+	}
+	response := acmeProtocolOrderResponse{
+		ID:             order.ID,
+		Status:         string(order.Status),
+		URL:            baseURL + "/acme/order/" + order.ID,
+		Authorizations: authzURLs,
+		Finalize:       baseURL + "/acme/order/" + order.ID + "/finalize",
+	}
+	if order.CertificateID != "" {
+		response.Certificate = baseURL + "/certificates/" + order.CertificateID
+	}
+	return response, nil
+}
+
+func (s *Server) toACMEProtocolAuthorization(r *http.Request, authorization domain.ACMEAuthorization) (acmeProtocolAuthorizationResponse, error) {
+	challenges, err := s.service.ListACMEChallenges(r.Context(), authorization.ID)
+	if err != nil {
+		return acmeProtocolAuthorizationResponse{}, err
+	}
+	response := acmeProtocolAuthorizationResponse{
+		ID:     authorization.ID,
+		Status: string(authorization.Status),
+		Identifier: acmeProtocolIdentifierResponse{
+			Type:  authorization.IdentifierType,
+			Value: authorization.IdentifierValue,
+		},
+		Challenges: make([]acmeProtocolChallengeResponse, 0, len(challenges)),
+	}
+	for _, challenge := range challenges {
+		response.Challenges = append(response.Challenges, s.toACMEProtocolChallenge(r, challenge))
+	}
+	return response, nil
+}
+
+func (s *Server) toACMEProtocolChallenge(r *http.Request, challenge domain.ACMEChallenge) acmeProtocolChallengeResponse {
+	return acmeProtocolChallengeResponse{
+		ID:     challenge.ID,
+		Type:   string(challenge.Type),
+		URL:    requestBaseURL(r) + "/acme/challenge/" + challenge.ID,
+		Token:  challenge.Token,
+		Status: string(challenge.Status),
+	}
 }
 
 func toCertificateProfileResponse(profile domain.CertificateProfile) certificateProfileResponse {

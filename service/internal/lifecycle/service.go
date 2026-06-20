@@ -792,6 +792,13 @@ func (s *Service) ListACMEAuthorizations(ctx context.Context, orderID string) ([
 	return s.repo.ListACMEAuthorizationsByOrder(ctx, orderID)
 }
 
+func (s *Service) GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error) {
+	if isBlank(id) {
+		return domain.ACMEAuthorization{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetACMEAuthorization(ctx, id)
+}
+
 func (s *Service) ListACMEChallenges(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error) {
 	if isBlank(authorizationID) {
 		return nil, domain.ErrInvalidRequest

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,6 +164,126 @@ func TestACMEOrderAPI(t *testing.T) {
 	}, &finalized)
 	assertStatus(t, status, http.StatusOK)
 	if finalized.Status != domain.ACMEOrderValid || finalized.CertificateID == "" || finalized.EnrollmentID == "" {
+		t.Fatalf("finalized order = %#v", finalized)
+	}
+}
+
+func TestACMEProtocolDirectoryAndNonce(t *testing.T) {
+	api := newTestAPI(t)
+
+	var directory map[string]any
+	status := api.doJSON(t, http.MethodGet, "/acme/directory", "", nil, &directory)
+	assertStatus(t, status, http.StatusOK)
+	for _, key := range []string{"newNonce", "newAccount", "newOrder"} {
+		value, ok := directory[key].(string)
+		if !ok || value == "" {
+			t.Fatalf("directory[%s] = %#v", key, directory[key])
+		}
+	}
+
+	status, _, nonce := api.doACMENonce(t)
+	assertStatus(t, status, http.StatusOK)
+	if nonce == "" {
+		t.Fatal("Replay-Nonce header is empty")
+	}
+}
+
+func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
+	api := newTestAPI(t)
+	_, _, nonce := api.doACMENonce(t)
+
+	var account apiACMEProtocolAccount
+	status := api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, status, http.StatusCreated)
+	if account.Status != string(domain.ACMEAccountValid) || account.Location == "" {
+		t.Fatalf("account = %#v", account)
+	}
+
+	var body errorResponse
+	status = api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
+func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"allowed_ip_ranges":       []string{"127.0.0.0/8"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	status = api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	status = api.doACMEJWS(t, "/acme/new-order", nonce, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+			{"type": "ip", "value": "127.0.0.1"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &order)
+	assertStatus(t, status, http.StatusCreated)
+	if order.Status != string(domain.ACMEOrderPending) || len(order.Authorizations) != 2 || order.Finalize == "" {
+		t.Fatalf("order = %#v", order)
+	}
+
+	for _, authzURL := range order.Authorizations {
+		var authz apiACMEProtocolAuthorization
+		status = api.doJSON(t, http.MethodGet, api.pathFromURL(t, authzURL), "", nil, &authz)
+		assertStatus(t, status, http.StatusOK)
+		if len(authz.Challenges) != 1 {
+			t.Fatalf("authorization = %#v", authz)
+		}
+		_, _, nonce = api.doACMENonce(t)
+		var challenge apiACMEProtocolChallenge
+		status = api.doACMEJWS(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, map[string]any{}, &challenge)
+		assertStatus(t, status, http.StatusOK)
+		if challenge.Status != string(domain.ACMEChallengeValid) {
+			t.Fatalf("challenge = %#v", challenge)
+		}
+	}
+
+	var ready apiACMEProtocolOrder
+	status = api.doJSON(t, http.MethodGet, api.pathFromURL(t, order.URL), "", nil, &ready)
+	assertStatus(t, status, http.StatusOK)
+	if ready.Status != string(domain.ACMEOrderReady) {
+		t.Fatalf("ready order = %#v", ready)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var finalized apiACMEProtocolOrder
+	status = api.doACMEJWS(t, api.pathFromURL(t, order.Finalize), nonce, map[string]any{
+		"csr_pem":           "csr-pem",
+		"requested_subject": "CN=edge-01",
+	}, &finalized)
+	assertStatus(t, status, http.StatusOK)
+	if finalized.Status != string(domain.ACMEOrderValid) || finalized.Certificate == "" {
 		t.Fatalf("finalized order = %#v", finalized)
 	}
 }
@@ -1430,6 +1551,82 @@ func (api *testAPI) doJSONWithHeaders(t *testing.T, method string, path string, 
 	return res.StatusCode
 }
 
+func (api *testAPI) doACMENonce(t *testing.T) (int, []byte, string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodHead, api.url+"/acme/new-nonce", nil)
+	if err != nil {
+		t.Fatalf("create nonce request: %v", err)
+	}
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send nonce request: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read nonce body: %v", err)
+	}
+	return res.StatusCode, body, res.Header.Get("Replay-Nonce")
+}
+
+func (api *testAPI) doACMEJWS(t *testing.T, path string, nonce string, payload any, into any) int {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal ACME payload: %v", err)
+	}
+	protected, err := json.Marshal(map[string]any{
+		"alg":   "ES256",
+		"nonce": nonce,
+		"url":   api.url + path,
+	})
+	if err != nil {
+		t.Fatalf("marshal ACME protected header: %v", err)
+	}
+	body := map[string]string{
+		"protected": base64.RawURLEncoding.EncodeToString(protected),
+		"payload":   base64.RawURLEncoding.EncodeToString(data),
+		"signature": "test-signature",
+	}
+	requestBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal ACME JWS: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, api.url+path, bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("create ACME request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/jose+json")
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send ACME request: %v", err)
+	}
+	defer res.Body.Close()
+	if into != nil {
+		if err := json.NewDecoder(res.Body).Decode(into); err != nil {
+			t.Fatalf("decode ACME response: %v", err)
+		}
+	}
+	return res.StatusCode
+}
+
+func (api *testAPI) pathFromURL(t *testing.T, raw string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse URL %q: %v", raw, err)
+	}
+	path := parsed.Path
+	if parsed.RawQuery != "" {
+		path += "?" + parsed.RawQuery
+	}
+	return path
+}
+
 func (api *testAPI) doRaw(t *testing.T, method string, path string, actor string) (int, []byte, string) {
 	t.Helper()
 
@@ -1725,6 +1922,42 @@ type apiACMEChallenge struct {
 	ValidatedAt     time.Time                  `json:"validated_at"`
 	CreatedAt       time.Time                  `json:"created_at"`
 	UpdatedAt       time.Time                  `json:"updated_at"`
+}
+
+type apiACMEProtocolAccount struct {
+	ID       string   `json:"id"`
+	Status   string   `json:"status"`
+	Contact  []string `json:"contact"`
+	Location string   `json:"location"`
+}
+
+type apiACMEProtocolOrder struct {
+	ID             string   `json:"id"`
+	Status         string   `json:"status"`
+	URL            string   `json:"url"`
+	Authorizations []string `json:"authorizations"`
+	Finalize       string   `json:"finalize"`
+	Certificate    string   `json:"certificate"`
+}
+
+type apiACMEProtocolAuthorization struct {
+	ID         string                     `json:"id"`
+	Status     string                     `json:"status"`
+	Identifier acmeProtocolIdentifier     `json:"identifier"`
+	Challenges []apiACMEProtocolChallenge `json:"challenges"`
+}
+
+type apiACMEProtocolChallenge struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+	Token  string `json:"token"`
+	Status string `json:"status"`
+}
+
+type acmeProtocolIdentifier struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 type apiOCSPResponder struct {

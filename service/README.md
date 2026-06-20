@@ -36,6 +36,20 @@ ACME enrollment state is modeled as accounts, orders, authorizations, and challe
 - `POST /acme/challenges/{id}/complete`
 - `POST /acme/orders/{id}/finalize`
 
+The service also exposes an ACME-shaped protocol adapter with directory discovery, nonce issuance, JWS envelope decoding, and one-time nonce replay protection:
+
+- `GET /acme/directory`
+- `HEAD /acme/new-nonce`
+- `GET /acme/new-nonce`
+- `POST /acme/new-account`
+- `POST /acme/new-order`
+- `GET /acme/order/{id}`
+- `GET /acme/authz/{id}`
+- `POST /acme/challenge/{id}`
+- `POST /acme/order/{id}/finalize`
+
+Protocol adapter requests use `Content-Type: application/jose+json` and JSON JWS fields `protected`, `payload`, and `signature`. The protected header must include a fresh `nonce` from `/acme/new-nonce` and the exact request `url`. This adapter currently validates the envelope and nonce lifecycle, but does not yet cryptographically verify JWS signatures or implement full certbot-compatible account key binding.
+
 Certificate lifecycle operations include revocation, suspension, and resumption:
 
 - `POST /certificates/{id}/revoke`
