@@ -98,41 +98,26 @@ Likely gaps:
 
 ## Prioritized Backlog
 
-### 2. ACME Challenge Polling And Retry Semantics
+### 2. ACME Key Algorithm Expansion
 
-- Done: challenge validation failures now move challenges to `processing` instead of invalidating the authorization and order.
-- Done: authorization polling retries processing HTTP-01 challenges and promotes the order to `ready` after validation succeeds.
-- Done: protocol challenge and authorization responses emit `Retry-After` while challenge validation is still processing.
-- Remaining: map order-not-ready and authorization failure problem types after live client smoke exposes exact client expectations.
-
-### 3. ACME Account Management
-
-- Done: repeated new-account requests with the same JWK thumbprint return the existing account instead of creating duplicates.
-- Done: `POST /acme/account/{id}` supports contact update and deactivation.
-- Done: deactivated accounts are rejected for new-order and account-owned resources with ACME unauthorized problem responses.
-- Remaining: account conflict problem tuning after live client smoke exposes exact client expectations.
-
-### 4. ACME Key Algorithm Expansion
-
-- Done: RSA account keys with `RS256` JWS verification.
 - Ed25519 account keys if supported by selected clients.
 - Keep ES256 as default fixture.
 
-### 5. Machine Identity Enrollment
+### 3. Machine Identity Enrollment
 
 - First-class machine identity records for services, workloads, devices, and pods.
 - Identity-bound issuance policy.
 - Service/workload metadata and ownership.
 - Audit views by machine identity.
 
-### 6. Kubernetes Workload Identity
+### 4. Kubernetes Workload Identity
 
 - Kubernetes service account identity mapping.
 - Pod/workload certificate enrollment API.
 - Optional Kubernetes CSR or projected token verification.
 - Rotation workflow for workloads.
 
-### 7. Certificate Rotation Automation
+### 5. Certificate Rotation Automation
 
 - Rotation schedules.
 - Pre-expiry renewal windows.
@@ -140,21 +125,21 @@ Likely gaps:
 - Evented rotation notifications.
 - Safe cutover state tracking.
 
-### 8. HSM And PKCS#11
+### 6. HSM And PKCS#11
 
 - Issuer key reference model for HSM-backed keys.
 - PKCS#11 signing boundary.
 - Operator configuration for slots, labels, and PIN sources.
 - Tests with a software token if available.
 
-### 9. Crypto Agility
+### 7. Crypto Agility
 
 - Profile-level key algorithm and signature algorithm policy.
 - RSA/ECDSA algorithm selection in issuance paths.
 - Ed25519 feasibility check.
 - Migration plan for algorithm deprecation.
 
-### 10. PQC And Hybrid Experiments
+### 8. PQC And Hybrid Experiments
 
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.
