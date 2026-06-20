@@ -137,9 +137,10 @@ const (
 type ACMEChallengeStatus string
 
 const (
-	ACMEChallengePending ACMEChallengeStatus = "pending"
-	ACMEChallengeValid   ACMEChallengeStatus = "valid"
-	ACMEChallengeInvalid ACMEChallengeStatus = "invalid"
+	ACMEChallengePending    ACMEChallengeStatus = "pending"
+	ACMEChallengeProcessing ACMEChallengeStatus = "processing"
+	ACMEChallengeValid      ACMEChallengeStatus = "valid"
+	ACMEChallengeInvalid    ACMEChallengeStatus = "invalid"
 )
 
 type RevocationReason string

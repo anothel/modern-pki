@@ -53,6 +53,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - Account ownership enforcement for new-order, challenge, finalize, and certificate download.
 - ACME order, authorization, challenge, finalize, and certificate download flow.
 - HTTP-01 challenge validation.
+- Challenge `processing` state, retryable HTTP-01 validation failures, authorization polling, and `Retry-After`.
 - POST-as-GET for order, authorization, and certificate resources.
 - ACME `Replay-Nonce`, directory `Link`, `Location`, and `application/problem+json` responses.
 - `badNonce` problem type mapping.
@@ -92,17 +93,16 @@ Likely gaps:
 - CSR/finalize payload format.
 - Certificate chain response expectations.
 - Problem document type mapping.
-- Challenge retry and polling semantics.
 - HTTP-01 responder host/port mapping in local dev.
 
 ## Prioritized Backlog
 
 ### 2. ACME Challenge Polling And Retry Semantics
 
-- Add challenge validation retry behavior instead of one-shot invalidation.
-- Add `processing` state if needed by client behavior.
-- Add `Retry-After` for pending/processing resources.
-- Map order-not-ready and authorization failure problem types.
+- Done: challenge validation failures now move challenges to `processing` instead of invalidating the authorization and order.
+- Done: authorization polling retries processing HTTP-01 challenges and promotes the order to `ready` after validation succeeds.
+- Done: protocol challenge and authorization responses emit `Retry-After` while challenge validation is still processing.
+- Remaining: map order-not-ready and authorization failure problem types after live client smoke exposes exact client expectations.
 
 ### 3. ACME Account Management
 

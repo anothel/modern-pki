@@ -2816,7 +2816,7 @@ func TestValidateACMEHTTP01ChallengeVerifiesKeyAuthorizationAndPromotesOrder(t *
 	}
 }
 
-func TestValidateACMEHTTP01ChallengeMarksAuthorizationAndOrderInvalidOnFailure(t *testing.T) {
+func TestValidateACMEHTTP01ChallengeKeepsAuthorizationPendingForRetry(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
 	verifier := &fakeACMEHTTP01Verifier{err: errors.New("token mismatch")}
@@ -2853,30 +2853,49 @@ func TestValidateACMEHTTP01ChallengeMarksAuthorizationAndOrderInvalidOnFailure(t
 		t.Fatalf("ListACMEChallenges returned error: %v", err)
 	}
 
-	_, err = service.ValidateACMEHTTP01Challenge(ctx, "acme-client", challenges[0].ID)
-	if !errors.Is(err, domain.ErrInvalidRequest) {
-		t.Fatalf("ValidateACMEHTTP01Challenge error = %v, want ErrInvalidRequest", err)
+	challenge, err := service.ValidateACMEHTTP01Challenge(ctx, "acme-client", challenges[0].ID)
+	if err != nil {
+		t.Fatalf("ValidateACMEHTTP01Challenge returned error: %v", err)
+	}
+	if challenge.Status != domain.ACMEChallengeProcessing {
+		t.Fatalf("challenge status = %q, want %q", challenge.Status, domain.ACMEChallengeProcessing)
 	}
 	storedChallenge, err := service.GetACMEChallenge(ctx, challenges[0].ID)
 	if err != nil {
 		t.Fatalf("GetACMEChallenge returned error: %v", err)
 	}
-	if storedChallenge.Status != domain.ACMEChallengeInvalid {
-		t.Fatalf("challenge status = %q, want %q", storedChallenge.Status, domain.ACMEChallengeInvalid)
+	if storedChallenge.Status != domain.ACMEChallengeProcessing {
+		t.Fatalf("stored challenge status = %q, want %q", storedChallenge.Status, domain.ACMEChallengeProcessing)
 	}
 	storedAuthz, err := service.GetACMEAuthorization(ctx, authzs[0].ID)
 	if err != nil {
 		t.Fatalf("GetACMEAuthorization returned error: %v", err)
 	}
-	if storedAuthz.Status != domain.ACMEAuthorizationInvalid {
-		t.Fatalf("authorization status = %q, want %q", storedAuthz.Status, domain.ACMEAuthorizationInvalid)
+	if storedAuthz.Status != domain.ACMEAuthorizationPending {
+		t.Fatalf("authorization status = %q, want %q", storedAuthz.Status, domain.ACMEAuthorizationPending)
 	}
 	storedOrder, err := service.GetACMEOrder(ctx, order.ID)
 	if err != nil {
 		t.Fatalf("GetACMEOrder returned error: %v", err)
 	}
-	if storedOrder.Status != domain.ACMEOrderInvalid {
-		t.Fatalf("order status = %q, want %q", storedOrder.Status, domain.ACMEOrderInvalid)
+	if storedOrder.Status != domain.ACMEOrderPending {
+		t.Fatalf("order status = %q, want %q", storedOrder.Status, domain.ACMEOrderPending)
+	}
+
+	verifier.err = nil
+	challenge, err = service.ValidateACMEHTTP01Challenge(ctx, "acme-client", challenges[0].ID)
+	if err != nil {
+		t.Fatalf("ValidateACMEHTTP01Challenge retry returned error: %v", err)
+	}
+	if challenge.Status != domain.ACMEChallengeValid {
+		t.Fatalf("challenge status after retry = %q, want %q", challenge.Status, domain.ACMEChallengeValid)
+	}
+	ready, err := service.GetACMEOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder returned error: %v", err)
+	}
+	if ready.Status != domain.ACMEOrderReady {
+		t.Fatalf("order status after retry = %q, want %q", ready.Status, domain.ACMEOrderReady)
 	}
 }
 

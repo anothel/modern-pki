@@ -33,6 +33,8 @@ type Server struct {
 
 var errACMEBadNonce = errors.New("acme bad nonce")
 
+const acmeRetryAfterSeconds = "5"
+
 type AuthMode string
 
 const (
@@ -621,7 +623,7 @@ func (s *Server) acmePostAsGetOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
-	authorization, err := s.service.GetACMEAuthorization(r.Context(), r.PathValue("id"))
+	authorization, err := s.service.PollACMEAuthorization(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -630,6 +632,9 @@ func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, r, err)
 		return
+	}
+	if acmeAuthorizationHasProcessingChallenge(response) {
+		w.Header().Set("Retry-After", acmeRetryAfterSeconds)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -648,7 +653,7 @@ func (s *Server) acmePostAsGetAuthorization(w http.ResponseWriter, r *http.Reque
 		s.writeError(w, r, err)
 		return
 	}
-	authorization, err := s.service.GetACMEAuthorization(r.Context(), r.PathValue("id"))
+	authorization, err := s.service.PollACMEAuthorization(r.Context(), requestActor(r), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -657,6 +662,9 @@ func (s *Server) acmePostAsGetAuthorization(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		s.writeError(w, r, err)
 		return
+	}
+	if acmeAuthorizationHasProcessingChallenge(response) {
+		w.Header().Set("Retry-After", acmeRetryAfterSeconds)
 	}
 	s.writeACMEJSON(w, r, http.StatusOK, response)
 }
@@ -675,6 +683,9 @@ func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, r, err)
 		return
+	}
+	if challenge.Status == domain.ACMEChallengeProcessing {
+		w.Header().Set("Retry-After", acmeRetryAfterSeconds)
 	}
 	s.writeACMEJSON(w, r, http.StatusOK, s.toACMEProtocolChallenge(r, challenge))
 }
@@ -2352,6 +2363,15 @@ func (s *Server) toACMEProtocolChallenge(r *http.Request, challenge domain.ACMEC
 		Token:  challenge.Token,
 		Status: string(challenge.Status),
 	}
+}
+
+func acmeAuthorizationHasProcessingChallenge(authorization acmeProtocolAuthorizationResponse) bool {
+	for _, challenge := range authorization.Challenges {
+		if challenge.Status == string(domain.ACMEChallengeProcessing) {
+			return true
+		}
+	}
+	return false
 }
 
 func toCertificateProfileResponse(profile domain.CertificateProfile) certificateProfileResponse {

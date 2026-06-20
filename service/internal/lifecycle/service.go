@@ -900,6 +900,31 @@ func (s *Service) GetACMEAuthorization(ctx context.Context, id string) (domain.A
 	return s.repo.GetACMEAuthorization(ctx, id)
 }
 
+func (s *Service) PollACMEAuthorization(ctx context.Context, actor string, authorizationID string) (domain.ACMEAuthorization, error) {
+	if isBlank(authorizationID) {
+		return domain.ACMEAuthorization{}, domain.ErrInvalidRequest
+	}
+	authorization, err := s.repo.GetACMEAuthorization(ctx, authorizationID)
+	if err != nil {
+		return domain.ACMEAuthorization{}, err
+	}
+	if authorization.Status != domain.ACMEAuthorizationPending {
+		return authorization, nil
+	}
+	challenges, err := s.repo.ListACMEChallengesByAuthorization(ctx, authorizationID)
+	if err != nil {
+		return domain.ACMEAuthorization{}, err
+	}
+	for _, challenge := range challenges {
+		if challenge.Type == domain.ACMEChallengeHTTP01 && challenge.Status == domain.ACMEChallengeProcessing {
+			if _, err := s.ValidateACMEHTTP01Challenge(ctx, actor, challenge.ID); err != nil {
+				return domain.ACMEAuthorization{}, err
+			}
+		}
+	}
+	return s.repo.GetACMEAuthorization(ctx, authorizationID)
+}
+
 func (s *Service) ListACMEChallenges(ctx context.Context, authorizationID string) ([]domain.ACMEChallenge, error) {
 	if isBlank(authorizationID) {
 		return nil, domain.ErrInvalidRequest
@@ -928,9 +953,10 @@ func (s *Service) CompleteACMEChallenge(ctx context.Context, actor string, chall
 		if err != nil {
 			return err
 		}
-		if challenge.Status != domain.ACMEChallengePending {
+		if challenge.Status != domain.ACMEChallengePending && challenge.Status != domain.ACMEChallengeProcessing {
 			return domain.ErrInvalidTransition
 		}
+		currentStatus := challenge.Status
 		authorization, err := repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
 		if err != nil {
 			return err
@@ -941,7 +967,7 @@ func (s *Service) CompleteACMEChallenge(ctx context.Context, actor string, chall
 		challenge.Status = domain.ACMEChallengeValid
 		challenge.ValidatedAt = now
 		challenge.UpdatedAt = now
-		if err := repo.UpdateACMEChallengeIfStatus(ctx, challenge, domain.ACMEChallengePending); err != nil {
+		if err := repo.UpdateACMEChallengeIfStatus(ctx, challenge, currentStatus); err != nil {
 			return err
 		}
 		completed = challenge
@@ -965,10 +991,7 @@ func (s *Service) ValidateACMEHTTP01Challenge(ctx context.Context, actor string,
 		return domain.ACMEChallenge{}, err
 	}
 	if err := s.acmeHTTP01Verifier.VerifyHTTP01(ctx, validation.IdentifierValue, validation.Challenge.Token, validation.KeyAuthorization); err != nil {
-		if invalidateErr := s.invalidateACMEChallenge(ctx, actor, validation.Challenge.ID); invalidateErr != nil {
-			return domain.ACMEChallenge{}, invalidateErr
-		}
-		return domain.ACMEChallenge{}, domain.ErrInvalidRequest
+		return s.markACMEChallengeProcessing(ctx, actor, validation.Challenge.ID)
 	}
 	return s.CompleteACMEChallenge(ctx, actor, challengeID)
 }
@@ -2039,7 +2062,8 @@ func (s *Service) acmeHTTP01ValidationContext(ctx context.Context, challengeID s
 	if err != nil {
 		return acmeHTTP01ValidationContext{}, err
 	}
-	if challenge.Type != domain.ACMEChallengeHTTP01 || challenge.Status != domain.ACMEChallengePending {
+	if challenge.Type != domain.ACMEChallengeHTTP01 ||
+		(challenge.Status != domain.ACMEChallengePending && challenge.Status != domain.ACMEChallengeProcessing) {
 		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
 	}
 	authorization, err := s.repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
@@ -2072,6 +2096,42 @@ func (s *Service) acmeHTTP01ValidationContext(ctx context.Context, challengeID s
 		IdentifierValue:  authorization.IdentifierValue,
 		KeyAuthorization: challenge.Token + "." + account.KeyThumbprint,
 	}, nil
+}
+
+func (s *Service) markACMEChallengeProcessing(ctx context.Context, actor string, challengeID string) (domain.ACMEChallenge, error) {
+	now := s.clock.Now()
+	var processing domain.ACMEChallenge
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		challenge, err := repo.GetACMEChallenge(ctx, challengeID)
+		if err != nil {
+			return err
+		}
+		if challenge.Status != domain.ACMEChallengePending && challenge.Status != domain.ACMEChallengeProcessing {
+			return domain.ErrInvalidTransition
+		}
+		currentStatus := challenge.Status
+		authorization, err := repo.GetACMEAuthorization(ctx, challenge.AuthorizationID)
+		if err != nil {
+			return err
+		}
+		if authorization.Status != domain.ACMEAuthorizationPending {
+			return domain.ErrInvalidTransition
+		}
+		challenge.Status = domain.ACMEChallengeProcessing
+		challenge.UpdatedAt = now
+		if err := repo.UpdateACMEChallengeIfStatus(ctx, challenge, currentStatus); err != nil {
+			return err
+		}
+		processing = challenge
+		return s.createAuditEvent(ctx, repo, actor, "acme.challenge.processing", "acme_challenge", challenge.ID, now, auditFields(
+			"acme_challenge_id", challenge.ID,
+			"acme_authorization_id", authorization.ID,
+			"acme_order_id", authorization.OrderID,
+		))
+	}); err != nil {
+		return domain.ACMEChallenge{}, err
+	}
+	return processing, nil
 }
 
 func (s *Service) invalidateACMEChallenge(ctx context.Context, actor string, challengeID string) error {

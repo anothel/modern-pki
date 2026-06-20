@@ -322,6 +322,77 @@ func TestACMEProtocolCertbotCompatibilityFixture(t *testing.T) {
 	}
 }
 
+func TestACMEProtocolChallengePollingRetriesProcessingChallenge(t *testing.T) {
+	api := newTestAPI(t)
+	api.acmeHTTP01.failuresRemaining = 1
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	status = api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	status = api.doACMEJWS(t, "/acme/new-order", nonce, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &order)
+	assertStatus(t, status, http.StatusCreated)
+
+	var authz apiACMEProtocolAuthorization
+	authzResponse := api.doACMEPostAsGET(t, api.pathFromURL(t, order.Authorizations[0]), account.Location, api.acmeSigner, &authz)
+	assertStatus(t, authzResponse.StatusCode, http.StatusOK)
+	if len(authz.Challenges) != 1 {
+		t.Fatalf("authorization = %#v", authz)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var challenge apiACMEProtocolChallenge
+	challengeResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, account.Location, api.acmeSigner, map[string]any{}, &challenge)
+	assertStatus(t, challengeResponse.StatusCode, http.StatusOK)
+	if challenge.Status != string(domain.ACMEChallengeProcessing) || challengeResponse.RetryAfter == "" {
+		t.Fatalf("challenge response = %#v headers = %#v", challenge, challengeResponse)
+	}
+
+	var polledAuthz apiACMEProtocolAuthorization
+	pollResponse := api.doACMEPostAsGET(t, api.pathFromURL(t, order.Authorizations[0]), account.Location, api.acmeSigner, &polledAuthz)
+	assertStatus(t, pollResponse.StatusCode, http.StatusOK)
+	if polledAuthz.Status != string(domain.ACMEAuthorizationValid) ||
+		len(polledAuthz.Challenges) != 1 ||
+		polledAuthz.Challenges[0].Status != string(domain.ACMEChallengeValid) {
+		t.Fatalf("polled authorization = %#v headers = %#v", polledAuthz, pollResponse)
+	}
+
+	var ready apiACMEProtocolOrder
+	readyResponse := api.doACMEPostAsGET(t, api.pathFromURL(t, order.URL), account.Location, api.acmeSigner, &ready)
+	assertStatus(t, readyResponse.StatusCode, http.StatusOK)
+	if ready.Status != string(domain.ACMEOrderReady) {
+		t.Fatalf("ready order = %#v headers = %#v", ready, readyResponse)
+	}
+	if len(api.acmeHTTP01.requests) != 2 {
+		t.Fatalf("HTTP-01 verifier request count = %d, want 2", len(api.acmeHTTP01.requests))
+	}
+}
+
 func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	api := newTestAPI(t)
 	identity := api.createIdentity(t)
@@ -1824,6 +1895,7 @@ func (api *testAPI) doACMEJWSWithResponse(t *testing.T, path string, nonce strin
 		ReplayNonce: res.Header.Get("Replay-Nonce"),
 		Location:    res.Header.Get("Location"),
 		Link:        res.Header.Get("Link"),
+		RetryAfter:  res.Header.Get("Retry-After"),
 	}
 }
 
@@ -1894,6 +1966,7 @@ func (api *testAPI) doACMEJWSRawPayload(t *testing.T, path string, nonce string,
 		ReplayNonce: res.Header.Get("Replay-Nonce"),
 		Location:    res.Header.Get("Location"),
 		Link:        res.Header.Get("Link"),
+		RetryAfter:  res.Header.Get("Retry-After"),
 		Body:        string(responseBody),
 	}
 }
@@ -1922,6 +1995,7 @@ type acmeJWSHTTPResponse struct {
 	ReplayNonce string
 	Location    string
 	Link        string
+	RetryAfter  string
 	Body        string
 }
 
@@ -1965,8 +2039,9 @@ func paddedBigInt(value *big.Int, size int) []byte {
 }
 
 type fakeACMEHTTP01Verifier struct {
-	err      error
-	requests []fakeACMEHTTP01Request
+	err               error
+	failuresRemaining int
+	requests          []fakeACMEHTTP01Request
 }
 
 type fakeACMEHTTP01Request struct {
@@ -1981,6 +2056,10 @@ func (f *fakeACMEHTTP01Verifier) VerifyHTTP01(ctx context.Context, identifier st
 		Token:            token,
 		KeyAuthorization: keyAuthorization,
 	})
+	if f.failuresRemaining > 0 {
+		f.failuresRemaining--
+		return errors.New("challenge token not ready")
+	}
 	return f.err
 }
 
