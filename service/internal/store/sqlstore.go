@@ -259,6 +259,10 @@ func (s *SQLStore) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, 
 	return s.repository().ListACMEAccounts(ctx)
 }
 
+func (s *SQLStore) UpdateACMEAccountIfStatus(ctx context.Context, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error {
+	return s.repository().UpdateACMEAccountIfStatus(ctx, account, currentStatus)
+}
+
 func (s *SQLStore) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {
 	return s.repository().CreateACMEOrder(ctx, order)
 }
@@ -1645,6 +1649,40 @@ ORDER BY created_at, id`)
 		return nil, err
 	}
 	return accounts, nil
+}
+
+func (r sqlRepository) UpdateACMEAccountIfStatus(ctx context.Context, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error {
+	contacts, err := marshalStringSlice(account.Contacts)
+	if err != nil {
+		return err
+	}
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE acme_accounts
+SET contacts = $1, status = $2, terms_of_service_agreed = $3, key_thumbprint = $4, key_jwk_json = $5, updated_at = $6
+WHERE id = $7 AND status = $8`,
+		contacts,
+		string(account.Status),
+		account.TermsOfServiceAgreed,
+		account.KeyThumbprint,
+		account.KeyJWKJSON,
+		formatSQLTime(account.UpdatedAt),
+		account.ID,
+		string(currentStatus),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		if _, err := r.GetACMEAccount(ctx, account.ID); errors.Is(err, domain.ErrACMEAccountNotFound) {
+			return domain.ErrACMEAccountNotFound
+		}
+		return domain.ErrInvalidTransition
+	}
+	return nil
 }
 
 func (r sqlRepository) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {

@@ -164,6 +164,17 @@ type CreateACMEAccountRequest struct {
 	KeyJWKJSON           string
 }
 
+type CreateACMEAccountResult struct {
+	Account domain.ACMEAccount
+	Created bool
+}
+
+type UpdateACMEAccountRequest struct {
+	Contacts       []string
+	UpdateContacts bool
+	Deactivate     bool
+}
+
 type CreateACMEOrderRequest struct {
 	AccountID            string
 	IdentityID           string
@@ -776,6 +787,33 @@ func (s *Service) CreateACMEAccount(ctx context.Context, actor string, req Creat
 	if err := validateCreateACMEAccountRequest(req); err != nil {
 		return domain.ACMEAccount{}, err
 	}
+	return s.createACMEAccount(ctx, actor, req)
+}
+
+func (s *Service) CreateOrGetACMEAccount(ctx context.Context, actor string, req CreateACMEAccountRequest) (CreateACMEAccountResult, error) {
+	if err := validateCreateACMEAccountRequest(req); err != nil {
+		return CreateACMEAccountResult{}, err
+	}
+	keyThumbprint := strings.TrimSpace(req.KeyThumbprint)
+	if keyThumbprint != "" {
+		accounts, err := s.repo.ListACMEAccounts(ctx)
+		if err != nil {
+			return CreateACMEAccountResult{}, err
+		}
+		for _, account := range accounts {
+			if account.KeyThumbprint == keyThumbprint {
+				return CreateACMEAccountResult{Account: account}, nil
+			}
+		}
+	}
+	account, err := s.createACMEAccount(ctx, actor, req)
+	if err != nil {
+		return CreateACMEAccountResult{}, err
+	}
+	return CreateACMEAccountResult{Account: account, Created: true}, nil
+}
+
+func (s *Service) createACMEAccount(ctx context.Context, actor string, req CreateACMEAccountRequest) (domain.ACMEAccount, error) {
 	now := s.clock.Now()
 	account := domain.ACMEAccount{
 		ID:                   s.idgen.NewID(),
@@ -798,6 +836,47 @@ func (s *Service) CreateACMEAccount(ctx context.Context, actor string, req Creat
 		return domain.ACMEAccount{}, err
 	}
 	return account, nil
+}
+
+func (s *Service) UpdateACMEAccount(ctx context.Context, actor string, accountID string, req UpdateACMEAccountRequest) (domain.ACMEAccount, error) {
+	if isBlank(accountID) || (!req.UpdateContacts && !req.Deactivate) {
+		return domain.ACMEAccount{}, domain.ErrInvalidRequest
+	}
+	now := s.clock.Now()
+	var updated domain.ACMEAccount
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		account, err := repo.GetACMEAccount(ctx, accountID)
+		if err != nil {
+			return err
+		}
+		if account.Status == domain.ACMEAccountDeactivated {
+			return domain.ErrACMEAccountDeactivated
+		}
+		if account.Status != domain.ACMEAccountValid {
+			return domain.ErrInvalidTransition
+		}
+		if req.UpdateContacts {
+			account.Contacts = append([]string(nil), req.Contacts...)
+		}
+		if req.Deactivate {
+			account.Status = domain.ACMEAccountDeactivated
+		}
+		account.UpdatedAt = now
+		if err := repo.UpdateACMEAccountIfStatus(ctx, account, domain.ACMEAccountValid); err != nil {
+			return err
+		}
+		updated = account
+		action := "acme.account.updated"
+		if req.Deactivate {
+			action = "acme.account.deactivated"
+		}
+		return s.createAuditEvent(ctx, repo, actor, action, "acme_account", account.ID, now, auditFields(
+			"acme_account_id", account.ID,
+		))
+	}); err != nil {
+		return domain.ACMEAccount{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateACMEOrderRequest) (domain.ACMEOrder, error) {
@@ -825,8 +904,11 @@ func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateA
 		if err != nil {
 			return err
 		}
+		if account.Status == domain.ACMEAccountDeactivated {
+			return domain.ErrACMEAccountDeactivated
+		}
 		if account.Status != domain.ACMEAccountValid {
-			return domain.ErrInvalidTransition
+			return domain.ErrInvalidRequest
 		}
 		if _, err := repo.GetIdentity(ctx, req.IdentityID); err != nil {
 			return err
@@ -2087,6 +2169,9 @@ func (s *Service) acmeHTTP01ValidationContext(ctx context.Context, challengeID s
 	account, err := s.repo.GetACMEAccount(ctx, order.AccountID)
 	if err != nil {
 		return acmeHTTP01ValidationContext{}, err
+	}
+	if account.Status == domain.ACMEAccountDeactivated {
+		return acmeHTTP01ValidationContext{}, domain.ErrACMEAccountDeactivated
 	}
 	if account.Status != domain.ACMEAccountValid || account.KeyThumbprint == "" {
 		return acmeHTTP01ValidationContext{}, domain.ErrInvalidRequest

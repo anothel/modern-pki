@@ -96,6 +96,7 @@ type ACMERepository interface {
 	CreateACMEAccount(ctx context.Context, account domain.ACMEAccount) error
 	GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error)
 	ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error)
+	UpdateACMEAccountIfStatus(ctx context.Context, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error
 	CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error
 	GetACMEOrder(ctx context.Context, id string) (domain.ACMEOrder, error)
 	ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error)

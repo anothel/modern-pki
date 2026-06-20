@@ -557,6 +557,13 @@ func (s *MemoryStore) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccoun
 	return listACMEAccounts(s.acmeAccounts), nil
 }
 
+func (s *MemoryStore) UpdateACMEAccountIfStatus(ctx context.Context, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateACMEAccountIfStatus(s.acmeAccounts, account, currentStatus)
+}
+
 func (s *MemoryStore) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -866,6 +873,18 @@ func updateAPIKeyIfStatus(keys map[string]domain.APIKey, key domain.APIKey, curr
 		return domain.ErrInvalidTransition
 	}
 	keys[key.ID] = copyAPIKey(key)
+	return nil
+}
+
+func updateACMEAccountIfStatus(accounts map[string]domain.ACMEAccount, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error {
+	current, ok := accounts[account.ID]
+	if !ok {
+		return domain.ErrACMEAccountNotFound
+	}
+	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	accounts[account.ID] = copyACMEAccount(account)
 	return nil
 }
 
@@ -1290,6 +1309,10 @@ func (tx *memoryTx) GetACMEAccount(ctx context.Context, id string) (domain.ACMEA
 
 func (tx *memoryTx) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error) {
 	return listACMEAccounts(tx.acmeAccounts), nil
+}
+
+func (tx *memoryTx) UpdateACMEAccountIfStatus(ctx context.Context, account domain.ACMEAccount, currentStatus domain.ACMEAccountStatus) error {
+	return updateACMEAccountIfStatus(tx.acmeAccounts, account, currentStatus)
 }
 
 func (tx *memoryTx) CreateACMEOrder(ctx context.Context, order domain.ACMEOrder) error {

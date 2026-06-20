@@ -127,6 +127,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("HEAD /acme/new-nonce", s.acmeNewNonce)
 	s.mux.HandleFunc("GET /acme/new-nonce", s.acmeNewNonce)
 	s.mux.HandleFunc("POST /acme/new-account", s.acmeNewAccount)
+	s.mux.HandleFunc("POST /acme/account/{id}", s.acmeUpdateAccount)
 	s.mux.HandleFunc("POST /acme/new-order", s.acmeNewOrder)
 	s.mux.HandleFunc("GET /acme/order/{id}", s.acmeGetOrder)
 	s.mux.HandleFunc("POST /acme/order/{id}", s.acmePostAsGetOrder)
@@ -524,7 +525,7 @@ func (s *Server) acmeNewAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
-	account, err := s.service.CreateACMEAccount(r.Context(), requestActor(r), lifecycle.CreateACMEAccountRequest{
+	result, err := s.service.CreateOrGetACMEAccount(r.Context(), requestActor(r), lifecycle.CreateACMEAccountRequest{
 		Contacts:             req.Contact,
 		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
 		KeyThumbprint:        jws.KeyThumbprint,
@@ -534,9 +535,49 @@ func (s *Server) acmeNewAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	response := s.toACMEProtocolAccount(r, account)
+	response := s.toACMEProtocolAccount(r, result.Account)
 	w.Header().Set("Location", response.Location)
-	s.writeACMEJSON(w, r, http.StatusCreated, response)
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	s.writeACMEJSON(w, r, status, response)
+}
+
+func (s *Server) acmeUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	accountID := r.PathValue("id")
+	if jws.AccountID == "" || jws.AccountID != accountID {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	var req acmeUpdateAccountRequest
+	if err := json.Unmarshal(jws.Payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	update := lifecycle.UpdateACMEAccountRequest{}
+	if req.Contact != nil {
+		update.Contacts = append([]string(nil), (*req.Contact)...)
+		update.UpdateContacts = true
+	}
+	if req.Status != "" {
+		if req.Status != string(domain.ACMEAccountDeactivated) {
+			s.writeError(w, r, domain.ErrInvalidRequest)
+			return
+		}
+		update.Deactivate = true
+	}
+	account, err := s.service.UpdateACMEAccount(r.Context(), requestActor(r), accountID, update)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, s.toACMEProtocolAccount(r, account))
 }
 
 func (s *Server) acmeNewOrder(w http.ResponseWriter, r *http.Request) {
@@ -1260,6 +1301,16 @@ func (s *Server) requireACMEOrderAccount(ctx context.Context, orderID string, ac
 	if accountID == "" {
 		return domain.ErrInvalidRequest
 	}
+	account, err := s.service.GetACMEAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if account.Status == domain.ACMEAccountDeactivated {
+		return domain.ErrACMEAccountDeactivated
+	}
+	if account.Status != domain.ACMEAccountValid {
+		return domain.ErrInvalidRequest
+	}
 	order, err := s.service.GetACMEOrder(ctx, orderID)
 	if err != nil {
 		return err
@@ -1450,6 +1501,9 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order") {
 		return true
 	}
+	if method == http.MethodPost && strings.HasPrefix(path, "/acme/account/") {
+		return true
+	}
 	if method == http.MethodGet && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/authz/")) {
 		return true
 	}
@@ -1546,6 +1600,8 @@ func acmeProblemType(err error) string {
 	switch {
 	case errors.Is(err, errACMEBadNonce):
 		return "urn:ietf:params:acme:error:badNonce"
+	case errors.Is(err, domain.ErrACMEAccountDeactivated):
+		return "urn:ietf:params:acme:error:unauthorized"
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrForbidden):
 		return "urn:ietf:params:acme:error:unauthorized"
 	default:
@@ -1596,6 +1652,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrAPIKeyNotFound.Error()
 	case errors.Is(err, domain.ErrACMEAccountNotFound):
 		return domain.ErrACMEAccountNotFound.Error()
+	case errors.Is(err, domain.ErrACMEAccountDeactivated):
+		return domain.ErrACMEAccountDeactivated.Error()
 	case errors.Is(err, domain.ErrACMEOrderNotFound):
 		return domain.ErrACMEOrderNotFound.Error()
 	case errors.Is(err, domain.ErrACMEAuthorizationNotFound):
@@ -1633,6 +1691,8 @@ func statusForError(err error) int {
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrForbidden):
 		return http.StatusForbidden
+	case errors.Is(err, domain.ErrACMEAccountDeactivated):
+		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrIdentityNotFound),
@@ -1805,6 +1865,11 @@ type acmeJWK struct {
 type acmeNewAccountRequest struct {
 	Contact              []string `json:"contact"`
 	TermsOfServiceAgreed bool     `json:"termsOfServiceAgreed"`
+}
+
+type acmeUpdateAccountRequest struct {
+	Contact *[]string `json:"contact,omitempty"`
+	Status  string    `json:"status,omitempty"`
 }
 
 type acmeNewOrderRequest struct {

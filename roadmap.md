@@ -50,6 +50,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - JWS envelope parsing and one-time nonce replay protection.
 - ES256/P-256 JWS signature verification.
 - Account key binding through JWK thumbprint and canonical JWK persistence.
+- Existing account reuse by JWK thumbprint, contact update, account deactivation, and deactivated-account enforcement.
 - Account ownership enforcement for new-order, challenge, finalize, and certificate download.
 - ACME order, authorization, challenge, finalize, and certificate download flow.
 - HTTP-01 challenge validation.
@@ -106,10 +107,10 @@ Likely gaps:
 
 ### 3. ACME Account Management
 
-- Account lookup by existing JWK thumbprint.
-- Account update/deactivate endpoint.
-- Contact update semantics.
-- Better ACME problem responses for account conflicts and unauthorized key use.
+- Done: repeated new-account requests with the same JWK thumbprint return the existing account instead of creating duplicates.
+- Done: `POST /acme/account/{id}` supports contact update and deactivation.
+- Done: deactivated accounts are rejected for new-order and account-owned resources with ACME unauthorized problem responses.
+- Remaining: account conflict problem tuning after live client smoke exposes exact client expectations.
 
 ### 4. ACME Key Algorithm Expansion
 

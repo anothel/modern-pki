@@ -393,6 +393,82 @@ func TestACMEProtocolChallengePollingRetriesProcessingChallenge(t *testing.T) {
 	}
 }
 
+func TestACMEProtocolAccountManagementReusesUpdatesAndDeactivatesAccount(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var reused apiACMEProtocolAccount
+	reuseResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &reused)
+	assertStatus(t, reuseResponse.StatusCode, http.StatusOK)
+	if reused.ID != account.ID || reuseResponse.Location != account.Location {
+		t.Fatalf("reused account = %#v headers = %#v, want id %s location %s", reused, reuseResponse, account.ID, account.Location)
+	}
+	accounts, err := api.repo.ListACMEAccounts(api.ctx)
+	if err != nil {
+		t.Fatalf("ListACMEAccounts returned error: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("account count = %d, want 1", len(accounts))
+	}
+
+	var updated apiACMEProtocolAccount
+	updateResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, account.Location), reuseResponse.ReplayNonce, account.Location, api.acmeSigner, map[string]any{
+		"contact": []string{"mailto:pki-admin@example.test"},
+	}, &updated)
+	assertStatus(t, updateResponse.StatusCode, http.StatusOK)
+	if len(updated.Contact) != 1 || updated.Contact[0] != "mailto:pki-admin@example.test" || updated.Status != string(domain.ACMEAccountValid) {
+		t.Fatalf("updated account = %#v", updated)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var deactivated apiACMEProtocolAccount
+	deactivateResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, account.Location), nonce, account.Location, api.acmeSigner, map[string]any{
+		"status": string(domain.ACMEAccountDeactivated),
+	}, &deactivated)
+	assertStatus(t, deactivateResponse.StatusCode, http.StatusOK)
+	if deactivated.Status != string(domain.ACMEAccountDeactivated) {
+		t.Fatalf("deactivated account = %#v", deactivated)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var orderProblem acmeProblemResponse
+	orderResponse := api.doACMEJWSWithResponse(t, "/acme/new-order", nonce, account.Location, api.acmeSigner, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &orderProblem)
+	assertStatus(t, orderResponse.StatusCode, http.StatusUnauthorized)
+	if orderProblem.Type != "urn:ietf:params:acme:error:unauthorized" {
+		t.Fatalf("order problem = %#v", orderProblem)
+	}
+}
+
 func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	api := newTestAPI(t)
 	identity := api.createIdentity(t)

@@ -18,6 +18,7 @@ var (
 	ErrOutboxMessageNotFound         = errors.New("outbox message not found")
 	ErrAPIKeyNotFound                = errors.New("api key not found")
 	ErrACMEAccountNotFound           = errors.New("acme account not found")
+	ErrACMEAccountDeactivated        = errors.New("acme account deactivated")
 	ErrACMEOrderNotFound             = errors.New("acme order not found")
 	ErrACMEAuthorizationNotFound     = errors.New("acme authorization not found")
 	ErrACMEChallengeNotFound         = errors.New("acme challenge not found")
