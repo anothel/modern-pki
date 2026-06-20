@@ -225,8 +225,100 @@ func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
 	if response.ReplayNonce == "" {
 		t.Fatal("error Replay-Nonce header is empty")
 	}
-	if body.Type != "urn:ietf:params:acme:error:malformed" || body.Detail != domain.ErrInvalidRequest.Error() || body.Status != http.StatusBadRequest {
+	if body.Type != "urn:ietf:params:acme:error:badNonce" || body.Detail != domain.ErrInvalidRequest.Error() || body.Status != http.StatusBadRequest {
 		t.Fatalf("problem body = %#v", body)
+	}
+}
+
+func TestACMEProtocolCertbotCompatibilityFixture(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"allowed_ip_ranges":       []string{"127.0.0.0/8"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+	if accountResponse.Location != account.Location || accountResponse.ReplayNonce == "" || !strings.Contains(accountResponse.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("new-account headers = %#v, account = %#v", accountResponse, account)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	orderResponse := api.doACMEJWSWithResponse(t, "/acme/new-order", nonce, account.Location, api.acmeSigner, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+			{"type": "ip", "value": "127.0.0.1"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &order)
+	assertStatus(t, orderResponse.StatusCode, http.StatusCreated)
+	if orderResponse.Location != order.URL || orderResponse.ReplayNonce == "" || !strings.Contains(orderResponse.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("new-order headers = %#v, order = %#v", orderResponse, order)
+	}
+
+	var fetchedOrder apiACMEProtocolOrder
+	orderPostAsGet := api.doACMEPostAsGET(t, api.pathFromURL(t, order.URL), account.Location, api.acmeSigner, &fetchedOrder)
+	assertStatus(t, orderPostAsGet.StatusCode, http.StatusOK)
+	if fetchedOrder.ID != order.ID || orderPostAsGet.ReplayNonce == "" || !strings.Contains(orderPostAsGet.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("POST-as-GET order response = %#v headers = %#v", fetchedOrder, orderPostAsGet)
+	}
+
+	var authz apiACMEProtocolAuthorization
+	authzPostAsGet := api.doACMEPostAsGET(t, api.pathFromURL(t, order.Authorizations[0]), account.Location, api.acmeSigner, &authz)
+	assertStatus(t, authzPostAsGet.StatusCode, http.StatusOK)
+	if authz.ID == "" || len(authz.Challenges) != 1 || authzPostAsGet.ReplayNonce == "" || !strings.Contains(authzPostAsGet.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("POST-as-GET authz response = %#v headers = %#v", authz, authzPostAsGet)
+	}
+
+	for _, authzURL := range order.Authorizations {
+		var currentAuthz apiACMEProtocolAuthorization
+		currentAuthzResponse := api.doACMEPostAsGET(t, api.pathFromURL(t, authzURL), account.Location, api.acmeSigner, &currentAuthz)
+		assertStatus(t, currentAuthzResponse.StatusCode, http.StatusOK)
+		if len(currentAuthz.Challenges) != 1 {
+			t.Fatalf("authorization = %#v", currentAuthz)
+		}
+		_, _, nonce = api.doACMENonce(t)
+		var challenge apiACMEProtocolChallenge
+		challengeResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, currentAuthz.Challenges[0].URL), nonce, account.Location, api.acmeSigner, map[string]any{}, &challenge)
+		assertStatus(t, challengeResponse.StatusCode, http.StatusOK)
+		if challenge.Status != string(domain.ACMEChallengeValid) || challengeResponse.ReplayNonce == "" {
+			t.Fatalf("challenge response = %#v headers = %#v", challenge, challengeResponse)
+		}
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var finalized apiACMEProtocolOrder
+	finalizeResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, order.Finalize), nonce, account.Location, api.acmeSigner, map[string]any{
+		"csr_pem":           "csr-pem",
+		"requested_subject": "CN=edge-01",
+	}, &finalized)
+	assertStatus(t, finalizeResponse.StatusCode, http.StatusOK)
+	if finalized.Certificate == "" || finalizeResponse.ReplayNonce == "" {
+		t.Fatalf("finalize response = %#v headers = %#v", finalized, finalizeResponse)
+	}
+
+	certResponse := api.doACMEPostAsGETRaw(t, api.pathFromURL(t, finalized.Certificate), account.Location, api.acmeSigner)
+	assertStatus(t, certResponse.StatusCode, http.StatusOK)
+	if certResponse.ContentType != "application/pem-certificate-chain" || certResponse.Body != "issued:csr-pem" ||
+		certResponse.ReplayNonce == "" || !strings.Contains(certResponse.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("POST-as-GET cert response = %#v", certResponse)
 	}
 }
 
@@ -1730,6 +1822,79 @@ func (api *testAPI) doACMEJWSWithResponse(t *testing.T, path string, nonce strin
 		StatusCode:  res.StatusCode,
 		ContentType: res.Header.Get("Content-Type"),
 		ReplayNonce: res.Header.Get("Replay-Nonce"),
+		Location:    res.Header.Get("Location"),
+		Link:        res.Header.Get("Link"),
+	}
+}
+
+func (api *testAPI) doACMEPostAsGET(t *testing.T, path string, kid string, signer *acmeTestSigner, into any) acmeJWSHTTPResponse {
+	t.Helper()
+	_, _, nonce := api.doACMENonce(t)
+	return api.doACMEJWSRawPayload(t, path, nonce, kid, signer, "", into)
+}
+
+func (api *testAPI) doACMEPostAsGETRaw(t *testing.T, path string, kid string, signer *acmeTestSigner) acmeJWSHTTPResponse {
+	t.Helper()
+	_, _, nonce := api.doACMENonce(t)
+	return api.doACMEJWSRawPayload(t, path, nonce, kid, signer, "", nil)
+}
+
+func (api *testAPI) doACMEJWSRawPayload(t *testing.T, path string, nonce string, kid string, signer *acmeTestSigner, payloadB64 string, into any) acmeJWSHTTPResponse {
+	t.Helper()
+	protectedHeader := map[string]any{
+		"alg":   "ES256",
+		"nonce": nonce,
+		"url":   api.url + path,
+	}
+	if kid != "" {
+		protectedHeader["kid"] = kid
+	} else {
+		protectedHeader["jwk"] = signer.jwk()
+	}
+	protected, err := json.Marshal(protectedHeader)
+	if err != nil {
+		t.Fatalf("marshal ACME protected header: %v", err)
+	}
+	protectedB64 := base64.RawURLEncoding.EncodeToString(protected)
+	signature := signer.sign(t, protectedB64+"."+payloadB64)
+	body := map[string]string{
+		"protected": protectedB64,
+		"payload":   payloadB64,
+		"signature": signature,
+	}
+	requestBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal ACME JWS: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, api.url+path, bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("create ACME request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/jose+json")
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send ACME request: %v", err)
+	}
+	defer res.Body.Close()
+	if into != nil {
+		if err := json.NewDecoder(res.Body).Decode(into); err != nil {
+			t.Fatalf("decode ACME response: %v", err)
+		}
+	}
+	var responseBody []byte
+	if into == nil {
+		responseBody, err = io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatalf("read ACME response: %v", err)
+		}
+	}
+	return acmeJWSHTTPResponse{
+		StatusCode:  res.StatusCode,
+		ContentType: res.Header.Get("Content-Type"),
+		ReplayNonce: res.Header.Get("Replay-Nonce"),
+		Location:    res.Header.Get("Location"),
+		Link:        res.Header.Get("Link"),
+		Body:        string(responseBody),
 	}
 }
 
@@ -1755,6 +1920,9 @@ type acmeJWSHTTPResponse struct {
 	StatusCode  int
 	ContentType string
 	ReplayNonce string
+	Location    string
+	Link        string
+	Body        string
 }
 
 func newACMETestSigner(t *testing.T) *acmeTestSigner {

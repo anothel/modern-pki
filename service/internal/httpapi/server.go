@@ -31,6 +31,8 @@ type Server struct {
 	nonces  map[string]struct{}
 }
 
+var errACMEBadNonce = errors.New("acme bad nonce")
+
 type AuthMode string
 
 const (
@@ -125,10 +127,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /acme/new-account", s.acmeNewAccount)
 	s.mux.HandleFunc("POST /acme/new-order", s.acmeNewOrder)
 	s.mux.HandleFunc("GET /acme/order/{id}", s.acmeGetOrder)
+	s.mux.HandleFunc("POST /acme/order/{id}", s.acmePostAsGetOrder)
 	s.mux.HandleFunc("GET /acme/authz/{id}", s.acmeGetAuthorization)
+	s.mux.HandleFunc("POST /acme/authz/{id}", s.acmePostAsGetAuthorization)
 	s.mux.HandleFunc("POST /acme/challenge/{id}", s.acmeCompleteChallenge)
 	s.mux.HandleFunc("POST /acme/order/{id}/finalize", s.acmeFinalizeOrder)
 	s.mux.HandleFunc("GET /acme/cert/{id}", s.acmeGetCertificate)
+	s.mux.HandleFunc("POST /acme/cert/{id}", s.acmePostAsGetCertificate)
 
 	s.mux.HandleFunc("POST /certificate-profiles", s.createCertificateProfile)
 	s.mux.HandleFunc("GET /certificate-profiles", s.listCertificateProfiles)
@@ -501,6 +506,7 @@ func (s *Server) acmeNewNonce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Replay-Nonce", nonce)
+	w.Header().Set("Link", acmeDirectoryLink(r))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 }
@@ -587,6 +593,33 @@ func (s *Server) acmeGetOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) acmePostAsGetOrder(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if len(jws.Payload) != 0 {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if err := s.requireACMEOrderAccount(r.Context(), r.PathValue("id"), jws.AccountID); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	order, err := s.service.GetACMEOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolOrder(r, order)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, response)
+}
+
 func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
 	authorization, err := s.service.GetACMEAuthorization(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -599,6 +632,33 @@ func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) acmePostAsGetAuthorization(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if len(jws.Payload) != 0 {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if err := s.requireACMEAuthorizationAccount(r.Context(), r.PathValue("id"), jws.AccountID); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	authorization, err := s.service.GetACMEAuthorization(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	response, err := s.toACMEProtocolAuthorization(r, authorization)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, response)
 }
 
 func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
@@ -656,6 +716,35 @@ func (s *Server) acmeGetCertificate(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/pem-certificate-chain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(certificate.CertificatePEM))
+}
+
+func (s *Server) acmePostAsGetCertificate(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if len(jws.Payload) != 0 {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if err := s.requireACMECertificateAccount(r.Context(), r.PathValue("id"), jws.AccountID); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	certificate, err := s.service.GetCertificate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	nonce, err := s.issueACMENonce()
+	if err == nil {
+		w.Header().Set("Replay-Nonce", nonce)
+	}
+	w.Header().Set("Link", acmeDirectoryLink(r))
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(certificate.CertificatePEM))
@@ -984,7 +1073,7 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	if err := decodeJSON(r, &req); err != nil {
 		return acmeJWSResult{}, err
 	}
-	if req.Protected == "" || req.Payload == "" || req.Signature == "" {
+	if req.Protected == "" || req.Signature == "" {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	protectedBytes, err := base64.RawURLEncoding.DecodeString(req.Protected)
@@ -999,7 +1088,7 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	if !s.consumeACMENonce(protected.Nonce) {
-		return acmeJWSResult{}, domain.ErrInvalidRequest
+		return acmeJWSResult{}, errACMEBadNonce
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(req.Payload)
 	if err != nil {
@@ -1075,7 +1164,12 @@ func (s *Server) writeACMEJSON(w http.ResponseWriter, r *http.Request, status in
 	if err == nil {
 		w.Header().Set("Replay-Nonce", nonce)
 	}
+	w.Header().Set("Link", acmeDirectoryLink(r))
 	writeJSON(w, status, value)
+}
+
+func acmeDirectoryLink(r *http.Request) string {
+	return "<" + requestBaseURL(r) + "/acme/directory>;rel=\"index\""
 }
 
 func requestBaseURL(r *http.Request) string {
@@ -1122,6 +1216,33 @@ func (s *Server) requireACMEChallengeAccount(ctx context.Context, challengeID st
 		return err
 	}
 	return s.requireACMEOrderAccount(ctx, authorization.OrderID, accountID)
+}
+
+func (s *Server) requireACMEAuthorizationAccount(ctx context.Context, authorizationID string, accountID string) error {
+	if accountID == "" {
+		return domain.ErrInvalidRequest
+	}
+	authorization, err := s.service.GetACMEAuthorization(ctx, authorizationID)
+	if err != nil {
+		return err
+	}
+	return s.requireACMEOrderAccount(ctx, authorization.OrderID, accountID)
+}
+
+func (s *Server) requireACMECertificateAccount(ctx context.Context, certificateID string, accountID string) error {
+	if certificateID == "" || accountID == "" {
+		return domain.ErrInvalidRequest
+	}
+	orders, err := s.service.ListACMEOrdersByAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	for _, order := range orders {
+		if order.CertificateID == certificateID {
+			return nil
+		}
+	}
+	return domain.ErrForbidden
 }
 
 func (s *Server) requireACMEOrderAccount(ctx context.Context, orderID string, accountID string) error {
@@ -1321,7 +1442,7 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 	if method == http.MethodGet && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/authz/")) {
 		return true
 	}
-	if method == http.MethodPost && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/challenge/")) {
+	if method == http.MethodPost && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/authz/") || strings.HasPrefix(path, "/acme/challenge/") || strings.HasPrefix(path, "/acme/cert/")) {
 		return true
 	}
 	if method == http.MethodGet && strings.HasPrefix(path, "/acme/cert/") {
@@ -1399,6 +1520,7 @@ func (s *Server) writeACMEProblem(w http.ResponseWriter, r *http.Request, status
 	if nonceErr == nil {
 		w.Header().Set("Replay-Nonce", nonce)
 	}
+	w.Header().Set("Link", acmeDirectoryLink(r))
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(acmeProblem{
@@ -1411,6 +1533,8 @@ func (s *Server) writeACMEProblem(w http.ResponseWriter, r *http.Request, status
 
 func acmeProblemType(err error) string {
 	switch {
+	case errors.Is(err, errACMEBadNonce):
+		return "urn:ietf:params:acme:error:badNonce"
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrForbidden):
 		return "urn:ietf:params:acme:error:unauthorized"
 	default:
@@ -1427,6 +1551,8 @@ type acmeProblem struct {
 
 func publicErrorMessage(err error) string {
 	switch {
+	case errors.Is(err, errACMEBadNonce):
+		return domain.ErrInvalidRequest.Error()
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return domain.ErrInvalidRequest.Error()
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
@@ -1486,6 +1612,8 @@ func publicErrorMessage(err error) string {
 
 func statusForError(err error) int {
 	switch {
+	case errors.Is(err, errACMEBadNonce):
+		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
