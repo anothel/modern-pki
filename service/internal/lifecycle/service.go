@@ -179,6 +179,8 @@ type FinalizeACMEOrderRequest struct {
 	RequestedSubject string
 }
 
+const defaultACMEAuthorizationLifetime = 24 * time.Hour
+
 type RenewCertificateRequest struct {
 	CSRPEM            string
 	RequestedNotAfter time.Time
@@ -778,6 +780,7 @@ func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateA
 		RequestedDNSNames:    append([]string(nil), req.RequestedDNSNames...),
 		RequestedIPAddresses: append([]string(nil), req.RequestedIPAddresses...),
 		RequestedNotAfter:    req.RequestedNotAfter,
+		ExpiresAt:            now.Add(defaultACMEAuthorizationLifetime),
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -944,6 +947,12 @@ func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID s
 		return domain.ACMEOrder{}, err
 	}
 	if order.Status != domain.ACMEOrderReady {
+		return domain.ACMEOrder{}, domain.ErrInvalidTransition
+	}
+	if acmeExpired(order.ExpiresAt, s.clock.Now()) {
+		if err := s.invalidateACMEOrder(ctx, actor, order); err != nil {
+			return domain.ACMEOrder{}, err
+		}
 		return domain.ACMEOrder{}, domain.ErrInvalidTransition
 	}
 
@@ -1963,6 +1972,7 @@ func (s *Service) createACMEAuthorization(ctx context.Context, repo store.Reposi
 		IdentifierType:  identifierType,
 		IdentifierValue: identifierValue,
 		Status:          domain.ACMEAuthorizationPending,
+		ExpiresAt:       now.Add(defaultACMEAuthorizationLifetime),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -2009,6 +2019,10 @@ func (s *Service) acmeHTTP01ValidationContext(ctx context.Context, challengeID s
 		return acmeHTTP01ValidationContext{}, err
 	}
 	if order.Status != domain.ACMEOrderPending {
+		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
+	}
+	now := s.clock.Now()
+	if acmeExpired(order.ExpiresAt, now) || acmeExpired(authorization.ExpiresAt, now) {
 		return acmeHTTP01ValidationContext{}, domain.ErrInvalidTransition
 	}
 	account, err := s.repo.GetACMEAccount(ctx, order.AccountID)
@@ -2068,6 +2082,25 @@ func (s *Service) invalidateACMEChallenge(ctx context.Context, actor string, cha
 			"acme_order_id", authorization.OrderID,
 		))
 	})
+}
+
+func (s *Service) invalidateACMEOrder(ctx context.Context, actor string, order domain.ACMEOrder) error {
+	now := s.clock.Now()
+	order.Status = domain.ACMEOrderInvalid
+	order.UpdatedAt = now
+	return s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		if err := repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderReady); err != nil {
+			return err
+		}
+		return s.createAuditEvent(ctx, repo, actor, "acme.order.invalid", "acme_order", order.ID, now, auditFields(
+			"acme_account_id", order.AccountID,
+			"acme_order_id", order.ID,
+		))
+	})
+}
+
+func acmeExpired(expiresAt time.Time, now time.Time) bool {
+	return !expiresAt.IsZero() && !expiresAt.After(now)
 }
 
 func (s *Service) promoteACMEAuthorizationIfReady(ctx context.Context, repo store.Repository, authorization domain.ACMEAuthorization, now time.Time) error {

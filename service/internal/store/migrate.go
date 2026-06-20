@@ -158,6 +158,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			requested_not_after TEXT NOT NULL,
 			enrollment_id TEXT NOT NULL,
 			certificate_id TEXT NOT NULL,
+			expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -169,6 +170,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			identifier_type TEXT NOT NULL,
 			identifier_value TEXT NOT NULL,
 			status TEXT NOT NULL,
+			expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -245,6 +247,25 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		}
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE acme_accounts ADD COLUMN %s", column.definition)); err != nil {
 			return fmt.Errorf("add sqlite column acme_accounts.%s: %w", column.name, err)
+		}
+	}
+	for _, tableColumn := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{table: "acme_orders", name: "expires_at", definition: "expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"},
+		{table: "acme_authorizations", name: "expires_at", definition: "expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"},
+	} {
+		exists, err := sqliteColumnExists(ctx, db, tableColumn.table, tableColumn.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", tableColumn.table, tableColumn.definition)); err != nil {
+			return fmt.Errorf("add sqlite column %s.%s: %w", tableColumn.table, tableColumn.name, err)
 		}
 	}
 	return nil
@@ -371,9 +392,11 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			requested_not_after TIMESTAMPTZ NOT NULL,
 			enrollment_id TEXT NOT NULL,
 			certificate_id TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		"ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
 		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account
 			ON acme_orders(account_id, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS acme_authorizations (
@@ -382,9 +405,11 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			identifier_type TEXT NOT NULL,
 			identifier_value TEXT NOT NULL,
 			status TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		"ALTER TABLE acme_authorizations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
 		`CREATE INDEX IF NOT EXISTS idx_acme_authorizations_order
 			ON acme_authorizations(order_id, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS acme_challenges (

@@ -212,6 +212,7 @@ CREATE TABLE IF NOT EXISTS acme_orders (
     requested_not_after TEXT NOT NULL,
     enrollment_id TEXT NOT NULL,
     certificate_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -225,6 +226,7 @@ CREATE TABLE IF NOT EXISTS acme_authorizations (
     identifier_type TEXT NOT NULL,
     identifier_value TEXT NOT NULL,
     status TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

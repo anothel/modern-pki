@@ -607,6 +607,7 @@ func testACMEState(t *testing.T, repo Repository) {
 		RequestedDNSNames:    []string{"edge-01.example.test"},
 		RequestedIPAddresses: []string{"192.0.2.10"},
 		RequestedNotAfter:    now.Add(24 * time.Hour),
+		ExpiresAt:            now.Add(2 * time.Hour),
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -625,7 +626,7 @@ func testACMEState(t *testing.T, repo Repository) {
 	if err != nil {
 		t.Fatalf("ListACMEOrdersByAccount returned error: %v", err)
 	}
-	if len(orders) != 1 || orders[0].Status != domain.ACMEOrderReady {
+	if len(orders) != 1 || orders[0].Status != domain.ACMEOrderReady || !orders[0].ExpiresAt.Equal(order.ExpiresAt) {
 		t.Fatalf("orders = %#v", orders)
 	}
 
@@ -635,6 +636,7 @@ func testACMEState(t *testing.T, repo Repository) {
 		IdentifierType:  "dns",
 		IdentifierValue: "edge-01.example.test",
 		Status:          domain.ACMEAuthorizationPending,
+		ExpiresAt:       now.Add(2 * time.Hour),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -650,7 +652,7 @@ func testACMEState(t *testing.T, repo Repository) {
 	if err != nil {
 		t.Fatalf("ListACMEAuthorizationsByOrder returned error: %v", err)
 	}
-	if len(authzs) != 1 || authzs[0].Status != domain.ACMEAuthorizationValid {
+	if len(authzs) != 1 || authzs[0].Status != domain.ACMEAuthorizationValid || !authzs[0].ExpiresAt.Equal(authz.ExpiresAt) {
 		t.Fatalf("authorizations = %#v", authzs)
 	}
 

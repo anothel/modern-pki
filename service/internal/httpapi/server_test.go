@@ -199,23 +199,34 @@ func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
 	_, _, nonce := api.doACMENonce(t)
 
 	var account apiACMEProtocolAccount
-	status := api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+	response := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, api.acmeKID, api.acmeSigner, map[string]any{
 		"contact":              []string{"mailto:ops@example.test"},
 		"termsOfServiceAgreed": true,
 	}, &account)
+	status := response.StatusCode
 	assertStatus(t, status, http.StatusCreated)
+	if response.ReplayNonce == "" {
+		t.Fatal("new-account Replay-Nonce header is empty")
+	}
 	if account.Status != string(domain.ACMEAccountValid) || account.Location == "" {
 		t.Fatalf("account = %#v", account)
 	}
 
-	var body errorResponse
-	status = api.doACMEJWS(t, "/acme/new-account", nonce, map[string]any{
+	var body acmeProblemResponse
+	response = api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, api.acmeKID, api.acmeSigner, map[string]any{
 		"contact":              []string{"mailto:ops@example.test"},
 		"termsOfServiceAgreed": true,
 	}, &body)
+	status = response.StatusCode
 	assertStatus(t, status, http.StatusBadRequest)
-	if body.Error != domain.ErrInvalidRequest.Error() {
-		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	if response.ContentType != "application/problem+json" {
+		t.Fatalf("content type = %q, want application/problem+json", response.ContentType)
+	}
+	if response.ReplayNonce == "" {
+		t.Fatal("error Replay-Nonce header is empty")
+	}
+	if body.Type != "urn:ietf:params:acme:error:malformed" || body.Detail != domain.ErrInvalidRequest.Error() || body.Status != http.StatusBadRequest {
+		t.Fatalf("problem body = %#v", body)
 	}
 }
 
@@ -260,7 +271,7 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	assertStatus(t, status, http.StatusCreated)
 
 	_, _, nonce = api.doACMENonce(t)
-	var invalidSignatureBody errorResponse
+	var invalidSignatureBody acmeProblemResponse
 	status = api.doACMEJWSWithSigner(t, "/acme/new-order", nonce, accountKID, newACMETestSigner(t), map[string]any{
 		"account_id":  account.ID,
 		"identity_id": identity.ID,
@@ -273,8 +284,8 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
 	}, &invalidSignatureBody)
 	assertStatus(t, status, http.StatusBadRequest)
-	if invalidSignatureBody.Error != domain.ErrInvalidRequest.Error() {
-		t.Fatalf("invalid signature error body = %q, want %q", invalidSignatureBody.Error, domain.ErrInvalidRequest.Error())
+	if invalidSignatureBody.Detail != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("invalid signature error detail = %q, want %q", invalidSignatureBody.Detail, domain.ErrInvalidRequest.Error())
 	}
 
 	_, _, nonce = api.doACMENonce(t)
@@ -291,7 +302,7 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
 	}, &order)
 	assertStatus(t, status, http.StatusCreated)
-	if order.Status != string(domain.ACMEOrderPending) || len(order.Authorizations) != 2 || order.Finalize == "" {
+	if order.Status != string(domain.ACMEOrderPending) || len(order.Authorizations) != 2 || order.Finalize == "" || order.Expires.IsZero() {
 		t.Fatalf("order = %#v", order)
 	}
 
@@ -299,16 +310,16 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		var authz apiACMEProtocolAuthorization
 		status = api.doJSON(t, http.MethodGet, api.pathFromURL(t, authzURL), "", nil, &authz)
 		assertStatus(t, status, http.StatusOK)
-		if len(authz.Challenges) != 1 {
+		if len(authz.Challenges) != 1 || authz.Expires.IsZero() {
 			t.Fatalf("authorization = %#v", authz)
 		}
 
 		_, _, nonce = api.doACMENonce(t)
-		var wrongAccountChallenge errorResponse
+		var wrongAccountChallenge acmeProblemResponse
 		status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, otherAccount.Location, otherSigner, map[string]any{}, &wrongAccountChallenge)
 		assertStatus(t, status, http.StatusBadRequest)
-		if wrongAccountChallenge.Error != domain.ErrInvalidRequest.Error() {
-			t.Fatalf("wrong account challenge error body = %q, want %q", wrongAccountChallenge.Error, domain.ErrInvalidRequest.Error())
+		if wrongAccountChallenge.Detail != domain.ErrInvalidRequest.Error() {
+			t.Fatalf("wrong account challenge error detail = %q, want %q", wrongAccountChallenge.Detail, domain.ErrInvalidRequest.Error())
 		}
 
 		_, _, nonce = api.doACMENonce(t)
@@ -328,14 +339,14 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	}
 
 	_, _, nonce = api.doACMENonce(t)
-	var wrongAccountFinalize errorResponse
+	var wrongAccountFinalize acmeProblemResponse
 	status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, order.Finalize), nonce, otherAccount.Location, otherSigner, map[string]any{
 		"csr_pem":           "csr-pem",
 		"requested_subject": "CN=edge-01",
 	}, &wrongAccountFinalize)
 	assertStatus(t, status, http.StatusBadRequest)
-	if wrongAccountFinalize.Error != domain.ErrInvalidRequest.Error() {
-		t.Fatalf("wrong account finalize error body = %q, want %q", wrongAccountFinalize.Error, domain.ErrInvalidRequest.Error())
+	if wrongAccountFinalize.Detail != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("wrong account finalize error detail = %q, want %q", wrongAccountFinalize.Detail, domain.ErrInvalidRequest.Error())
 	}
 
 	_, _, nonce = api.doACMENonce(t)
@@ -1661,6 +1672,11 @@ func (api *testAPI) doACMEJWS(t *testing.T, path string, nonce string, payload a
 
 func (api *testAPI) doACMEJWSWithSigner(t *testing.T, path string, nonce string, kid string, signer *acmeTestSigner, payload any, into any) int {
 	t.Helper()
+	return api.doACMEJWSWithResponse(t, path, nonce, kid, signer, payload, into).StatusCode
+}
+
+func (api *testAPI) doACMEJWSWithResponse(t *testing.T, path string, nonce string, kid string, signer *acmeTestSigner, payload any, into any) acmeJWSHTTPResponse {
+	t.Helper()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal ACME payload: %v", err)
@@ -1710,7 +1726,11 @@ func (api *testAPI) doACMEJWSWithSigner(t *testing.T, path string, nonce string,
 	if account, ok := into.(*apiACMEProtocolAccount); ok && account.Location != "" {
 		api.acmeKID = account.Location
 	}
-	return res.StatusCode
+	return acmeJWSHTTPResponse{
+		StatusCode:  res.StatusCode,
+		ContentType: res.Header.Get("Content-Type"),
+		ReplayNonce: res.Header.Get("Replay-Nonce"),
+	}
 }
 
 func (api *testAPI) pathFromURL(t *testing.T, raw string) string {
@@ -1729,6 +1749,12 @@ func (api *testAPI) pathFromURL(t *testing.T, raw string) string {
 
 type acmeTestSigner struct {
 	key *ecdsa.PrivateKey
+}
+
+type acmeJWSHTTPResponse struct {
+	StatusCode  int
+	ContentType string
+	ReplayNonce string
 }
 
 func newACMETestSigner(t *testing.T) *acmeTestSigner {
@@ -2095,12 +2121,13 @@ type apiACMEProtocolAccount struct {
 }
 
 type apiACMEProtocolOrder struct {
-	ID             string   `json:"id"`
-	Status         string   `json:"status"`
-	URL            string   `json:"url"`
-	Authorizations []string `json:"authorizations"`
-	Finalize       string   `json:"finalize"`
-	Certificate    string   `json:"certificate"`
+	ID             string    `json:"id"`
+	Status         string    `json:"status"`
+	URL            string    `json:"url"`
+	Authorizations []string  `json:"authorizations"`
+	Finalize       string    `json:"finalize"`
+	Certificate    string    `json:"certificate"`
+	Expires        time.Time `json:"expires"`
 }
 
 type apiACMEProtocolAuthorization struct {
@@ -2108,6 +2135,7 @@ type apiACMEProtocolAuthorization struct {
 	Status     string                     `json:"status"`
 	Identifier acmeProtocolIdentifier     `json:"identifier"`
 	Challenges []apiACMEProtocolChallenge `json:"challenges"`
+	Expires    time.Time                  `json:"expires"`
 }
 
 type apiACMEProtocolChallenge struct {
@@ -2121,6 +2149,13 @@ type apiACMEProtocolChallenge struct {
 type acmeProtocolIdentifier struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
+}
+
+type acmeProblemResponse struct {
+	Type   string `json:"type"`
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail"`
 }
 
 type apiOCSPResponder struct {

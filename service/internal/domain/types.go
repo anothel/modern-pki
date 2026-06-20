@@ -374,6 +374,7 @@ type ACMEOrder struct {
 	RequestedNotAfter    time.Time
 	EnrollmentID         string
 	CertificateID        string
+	ExpiresAt            time.Time
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 }
@@ -384,6 +385,7 @@ type ACMEAuthorization struct {
 	IdentifierType  string
 	IdentifierValue string
 	Status          ACMEAuthorizationStatus
+	ExpiresAt       time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

@@ -1660,9 +1660,9 @@ func (r sqlRepository) CreateACMEOrder(ctx context.Context, order domain.ACMEOrd
 INSERT INTO acme_orders (
 	id, account_id, identity_id, issuer_id, certificate_profile_id, status, csr_pem,
 	requested_subject, requested_dns_names, requested_ip_addresses, requested_not_after,
-	enrollment_id, certificate_id, created_at, updated_at
+	enrollment_id, certificate_id, expires_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )`,
 		order.ID,
 		order.AccountID,
@@ -1677,6 +1677,7 @@ INSERT INTO acme_orders (
 		formatSQLTime(order.RequestedNotAfter),
 		order.EnrollmentID,
 		order.CertificateID,
+		formatSQLTime(order.ExpiresAt),
 		formatSQLTime(order.CreatedAt),
 		formatSQLTime(order.UpdatedAt),
 	)
@@ -1687,7 +1688,7 @@ func (r sqlRepository) GetACMEOrder(ctx context.Context, id string) (domain.ACME
 	order, err := scanACMEOrder(r.exec.QueryRowContext(ctx, `
 SELECT id, account_id, identity_id, issuer_id, certificate_profile_id, status, csr_pem,
 	requested_subject, requested_dns_names, requested_ip_addresses, requested_not_after,
-	enrollment_id, certificate_id, created_at, updated_at
+	enrollment_id, certificate_id, expires_at, created_at, updated_at
 FROM acme_orders
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1703,7 +1704,7 @@ func (r sqlRepository) ListACMEOrdersByAccount(ctx context.Context, accountID st
 	rows, err := r.exec.QueryContext(ctx, `
 SELECT id, account_id, identity_id, issuer_id, certificate_profile_id, status, csr_pem,
 	requested_subject, requested_dns_names, requested_ip_addresses, requested_not_after,
-	enrollment_id, certificate_id, created_at, updated_at
+	enrollment_id, certificate_id, expires_at, created_at, updated_at
 FROM acme_orders
 WHERE account_id = $1
 ORDER BY created_at, id`, accountID)
@@ -1740,8 +1741,8 @@ UPDATE acme_orders
 SET account_id = $1, identity_id = $2, issuer_id = $3, certificate_profile_id = $4,
 	status = $5, csr_pem = $6, requested_subject = $7, requested_dns_names = $8,
 	requested_ip_addresses = $9, requested_not_after = $10, enrollment_id = $11,
-	certificate_id = $12, created_at = $13, updated_at = $14
-WHERE id = $15 AND status = $16`,
+	certificate_id = $12, expires_at = $13, created_at = $14, updated_at = $15
+WHERE id = $16 AND status = $17`,
 		order.AccountID,
 		order.IdentityID,
 		order.IssuerID,
@@ -1754,6 +1755,7 @@ WHERE id = $15 AND status = $16`,
 		formatSQLTime(order.RequestedNotAfter),
 		order.EnrollmentID,
 		order.CertificateID,
+		formatSQLTime(order.ExpiresAt),
 		formatSQLTime(order.CreatedAt),
 		formatSQLTime(order.UpdatedAt),
 		order.ID,
@@ -1778,15 +1780,16 @@ WHERE id = $15 AND status = $16`,
 func (r sqlRepository) CreateACMEAuthorization(ctx context.Context, authorization domain.ACMEAuthorization) error {
 	_, err := r.exec.ExecContext(ctx, `
 INSERT INTO acme_authorizations (
-	id, order_id, identifier_type, identifier_value, status, created_at, updated_at
+	id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7
+	$1, $2, $3, $4, $5, $6, $7, $8
 )`,
 		authorization.ID,
 		authorization.OrderID,
 		authorization.IdentifierType,
 		authorization.IdentifierValue,
 		string(authorization.Status),
+		formatSQLTime(authorization.ExpiresAt),
 		formatSQLTime(authorization.CreatedAt),
 		formatSQLTime(authorization.UpdatedAt),
 	)
@@ -1795,7 +1798,7 @@ INSERT INTO acme_authorizations (
 
 func (r sqlRepository) GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error) {
 	authorization, err := scanACMEAuthorization(r.exec.QueryRowContext(ctx, `
-SELECT id, order_id, identifier_type, identifier_value, status, created_at, updated_at
+SELECT id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
 FROM acme_authorizations
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1809,7 +1812,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListACMEAuthorizationsByOrder(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, order_id, identifier_type, identifier_value, status, created_at, updated_at
+SELECT id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
 FROM acme_authorizations
 WHERE order_id = $1
 ORDER BY created_at, id`, orderID)
@@ -1835,12 +1838,13 @@ ORDER BY created_at, id`, orderID)
 func (r sqlRepository) UpdateACMEAuthorizationIfStatus(ctx context.Context, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error {
 	result, err := r.exec.ExecContext(ctx, `
 UPDATE acme_authorizations
-SET order_id = $1, identifier_type = $2, identifier_value = $3, status = $4, created_at = $5, updated_at = $6
-WHERE id = $7 AND status = $8`,
+SET order_id = $1, identifier_type = $2, identifier_value = $3, status = $4, expires_at = $5, created_at = $6, updated_at = $7
+WHERE id = $8 AND status = $9`,
 		authorization.OrderID,
 		authorization.IdentifierType,
 		authorization.IdentifierValue,
 		string(authorization.Status),
+		formatSQLTime(authorization.ExpiresAt),
 		formatSQLTime(authorization.CreatedAt),
 		formatSQLTime(authorization.UpdatedAt),
 		authorization.ID,
@@ -1991,6 +1995,7 @@ func scanACMEOrder(scanner sqlScanner) (domain.ACMEOrder, error) {
 	var requestedDNSNames string
 	var requestedIPAddresses string
 	var requestedNotAfter any
+	var expiresAt any
 	var createdAt any
 	var updatedAt any
 	if err := scanner.Scan(
@@ -2007,6 +2012,7 @@ func scanACMEOrder(scanner sqlScanner) (domain.ACMEOrder, error) {
 		&requestedNotAfter,
 		&order.EnrollmentID,
 		&order.CertificateID,
+		&expiresAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -2024,6 +2030,10 @@ func scanACMEOrder(scanner sqlScanner) (domain.ACMEOrder, error) {
 	if err != nil {
 		return domain.ACMEOrder{}, err
 	}
+	parsedExpiresAt, err := parseSQLTime(expiresAt)
+	if err != nil {
+		return domain.ACMEOrder{}, err
+	}
 	parsedCreatedAt, err := parseSQLTime(createdAt)
 	if err != nil {
 		return domain.ACMEOrder{}, err
@@ -2036,6 +2046,7 @@ func scanACMEOrder(scanner sqlScanner) (domain.ACMEOrder, error) {
 	order.RequestedDNSNames = dnsNames
 	order.RequestedIPAddresses = ipAddresses
 	order.RequestedNotAfter = parsedRequestedNotAfter
+	order.ExpiresAt = parsedExpiresAt
 	order.CreatedAt = parsedCreatedAt
 	order.UpdatedAt = parsedUpdatedAt
 	return order, nil
@@ -2044,6 +2055,7 @@ func scanACMEOrder(scanner sqlScanner) (domain.ACMEOrder, error) {
 func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error) {
 	var authorization domain.ACMEAuthorization
 	var status string
+	var expiresAt any
 	var createdAt any
 	var updatedAt any
 	if err := scanner.Scan(
@@ -2052,9 +2064,14 @@ func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error)
 		&authorization.IdentifierType,
 		&authorization.IdentifierValue,
 		&status,
+		&expiresAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
+		return domain.ACMEAuthorization{}, err
+	}
+	parsedExpiresAt, err := parseSQLTime(expiresAt)
+	if err != nil {
 		return domain.ACMEAuthorization{}, err
 	}
 	parsedCreatedAt, err := parseSQLTime(createdAt)
@@ -2066,6 +2083,7 @@ func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error)
 		return domain.ACMEAuthorization{}, err
 	}
 	authorization.Status = domain.ACMEAuthorizationStatus(status)
+	authorization.ExpiresAt = parsedExpiresAt
 	authorization.CreatedAt = parsedCreatedAt
 	authorization.UpdatedAt = parsedUpdatedAt
 	return authorization, nil

@@ -1324,6 +1324,9 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 	if method == http.MethodPost && (strings.HasPrefix(path, "/acme/order/") || strings.HasPrefix(path, "/acme/challenge/")) {
 		return true
 	}
+	if method == http.MethodGet && strings.HasPrefix(path, "/acme/cert/") {
+		return true
+	}
 	return false
 }
 
@@ -1384,7 +1387,42 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		StatusCode: status,
 		Err:        err,
 	})
+	if isPublicACMEProtocolEndpoint(r.Method, r.URL.Path) {
+		s.writeACMEProblem(w, r, status, err)
+		return
+	}
 	writeJSON(w, status, errorResponse{Error: publicErrorMessage(err)})
+}
+
+func (s *Server) writeACMEProblem(w http.ResponseWriter, r *http.Request, status int, err error) {
+	nonce, nonceErr := s.issueACMENonce()
+	if nonceErr == nil {
+		w.Header().Set("Replay-Nonce", nonce)
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(acmeProblem{
+		Type:   acmeProblemType(err),
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: publicErrorMessage(err),
+	})
+}
+
+func acmeProblemType(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrForbidden):
+		return "urn:ietf:params:acme:error:unauthorized"
+	default:
+		return "urn:ietf:params:acme:error:malformed"
+	}
+}
+
+type acmeProblem struct {
+	Type   string `json:"type"`
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail"`
 }
 
 func publicErrorMessage(err error) string {
@@ -1749,6 +1787,7 @@ type acmeOrderResponse struct {
 	RequestedNotAfter    time.Time              `json:"requested_not_after"`
 	EnrollmentID         string                 `json:"enrollment_id"`
 	CertificateID        string                 `json:"certificate_id"`
+	ExpiresAt            time.Time              `json:"expires_at"`
 	CreatedAt            time.Time              `json:"created_at"`
 	UpdatedAt            time.Time              `json:"updated_at"`
 }
@@ -1759,6 +1798,7 @@ type acmeAuthorizationResponse struct {
 	IdentifierType  string                         `json:"identifier_type"`
 	IdentifierValue string                         `json:"identifier_value"`
 	Status          domain.ACMEAuthorizationStatus `json:"status"`
+	ExpiresAt       time.Time                      `json:"expires_at"`
 	CreatedAt       time.Time                      `json:"created_at"`
 	UpdatedAt       time.Time                      `json:"updated_at"`
 }
@@ -1782,12 +1822,13 @@ type acmeProtocolAccountResponse struct {
 }
 
 type acmeProtocolOrderResponse struct {
-	ID             string   `json:"id"`
-	Status         string   `json:"status"`
-	URL            string   `json:"url"`
-	Authorizations []string `json:"authorizations"`
-	Finalize       string   `json:"finalize"`
-	Certificate    string   `json:"certificate,omitempty"`
+	ID             string    `json:"id"`
+	Status         string    `json:"status"`
+	URL            string    `json:"url"`
+	Authorizations []string  `json:"authorizations"`
+	Finalize       string    `json:"finalize"`
+	Certificate    string    `json:"certificate,omitempty"`
+	Expires        time.Time `json:"expires"`
 }
 
 type acmeProtocolAuthorizationResponse struct {
@@ -1795,6 +1836,7 @@ type acmeProtocolAuthorizationResponse struct {
 	Status     string                          `json:"status"`
 	Identifier acmeProtocolIdentifierResponse  `json:"identifier"`
 	Challenges []acmeProtocolChallengeResponse `json:"challenges"`
+	Expires    time.Time                       `json:"expires"`
 }
 
 type acmeProtocolIdentifierResponse struct {
@@ -2064,6 +2106,7 @@ func toACMEOrderResponse(order domain.ACMEOrder) acmeOrderResponse {
 		RequestedNotAfter:    order.RequestedNotAfter,
 		EnrollmentID:         order.EnrollmentID,
 		CertificateID:        order.CertificateID,
+		ExpiresAt:            order.ExpiresAt,
 		CreatedAt:            order.CreatedAt,
 		UpdatedAt:            order.UpdatedAt,
 	}
@@ -2084,6 +2127,7 @@ func toACMEAuthorizationResponse(authorization domain.ACMEAuthorization) acmeAut
 		IdentifierType:  authorization.IdentifierType,
 		IdentifierValue: authorization.IdentifierValue,
 		Status:          authorization.Status,
+		ExpiresAt:       authorization.ExpiresAt,
 		CreatedAt:       authorization.CreatedAt,
 		UpdatedAt:       authorization.UpdatedAt,
 	}
@@ -2143,6 +2187,7 @@ func (s *Server) toACMEProtocolOrder(r *http.Request, order domain.ACMEOrder) (a
 		URL:            baseURL + "/acme/order/" + order.ID,
 		Authorizations: authzURLs,
 		Finalize:       baseURL + "/acme/order/" + order.ID + "/finalize",
+		Expires:        order.ExpiresAt,
 	}
 	if order.CertificateID != "" {
 		response.Certificate = baseURL + "/acme/cert/" + order.CertificateID
@@ -2163,6 +2208,7 @@ func (s *Server) toACMEProtocolAuthorization(r *http.Request, authorization doma
 			Value: authorization.IdentifierValue,
 		},
 		Challenges: make([]acmeProtocolChallengeResponse, 0, len(challenges)),
+		Expires:    authorization.ExpiresAt,
 	}
 	for _, challenge := range challenges {
 		response.Challenges = append(response.Challenges, s.toACMEProtocolChallenge(r, challenge))

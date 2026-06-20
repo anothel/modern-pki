@@ -2912,6 +2912,53 @@ func TestFinalizeACMEOrderRequiresReadyOrder(t *testing.T) {
 	}
 }
 
+func TestFinalizeACMEOrderRejectsExpiredReadyOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, &fakeIssuer{}, clock, &fakeIDGenerator{})
+
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	order, err := service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEOrder returned error: %v", err)
+	}
+	order.Status = domain.ACMEOrderReady
+	order.ExpiresAt = clock.now.Add(-time.Minute)
+	if err := repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderPending); err != nil {
+		t.Fatalf("UpdateACMEOrderIfStatus returned error: %v", err)
+	}
+
+	_, err = service.FinalizeACMEOrder(ctx, "acme-client", order.ID, FinalizeACMEOrderRequest{
+		CSRPEM:           "csr-pem",
+		RequestedSubject: "CN=edge-01",
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("FinalizeACMEOrder error = %v, want ErrInvalidTransition", err)
+	}
+	stored, err := service.GetACMEOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder returned error: %v", err)
+	}
+	if stored.Status != domain.ACMEOrderInvalid {
+		t.Fatalf("order status = %q, want %q", stored.Status, domain.ACMEOrderInvalid)
+	}
+}
+
 func expirationLifecycleCertificate(id string, status domain.CertificateStatus, notAfter time.Time, renewalNotifiedAt time.Time) domain.Certificate {
 	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	return domain.Certificate{
