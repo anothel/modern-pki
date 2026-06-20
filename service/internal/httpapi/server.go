@@ -2,13 +2,19 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -499,19 +505,21 @@ func (s *Server) acmeNewNonce(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeNewAccount(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.decodeACMEJWS(r)
+	jws, err := s.decodeACMEJWS(r)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	var req acmeNewAccountRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(jws.Payload, &req); err != nil {
 		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
 	account, err := s.service.CreateACMEAccount(r.Context(), requestActor(r), lifecycle.CreateACMEAccountRequest{
 		Contacts:             req.Contact,
 		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
+		KeyThumbprint:        jws.KeyThumbprint,
+		KeyJWKJSON:           jws.KeyJWKJSON,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -523,13 +531,17 @@ func (s *Server) acmeNewAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeNewOrder(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.decodeACMEJWS(r)
+	jws, err := s.decodeACMEJWS(r)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	var req acmeNewOrderRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(jws.Payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if jws.AccountID == "" || req.AccountID != jws.AccountID {
 		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
@@ -589,7 +601,12 @@ func (s *Server) acmeGetAuthorization(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.decodeACMEJWS(r); err != nil {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := s.requireACMEChallengeAccount(r.Context(), r.PathValue("id"), jws.AccountID); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -602,14 +619,18 @@ func (s *Server) acmeCompleteChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.decodeACMEJWS(r)
+	jws, err := s.decodeACMEJWS(r)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	var req finalizeACMEOrderRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(jws.Payload, &req); err != nil {
 		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if err := s.requireACMEOrderAccount(r.Context(), r.PathValue("id"), jws.AccountID); err != nil {
+		s.writeError(w, r, err)
 		return
 	}
 	order, err := s.service.FinalizeACMEOrder(r.Context(), requestActor(r), r.PathValue("id"), lifecycle.FinalizeACMEOrderRequest{
@@ -943,36 +964,76 @@ func (s *Server) listTrustAnchors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toIssuerResponses(anchors))
 }
 
-func (s *Server) decodeACMEJWS(r *http.Request) ([]byte, error) {
+func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	if contentType := r.Header.Get("Content-Type"); contentType != "" && !strings.HasPrefix(contentType, "application/jose+json") {
-		return nil, domain.ErrUnsupportedMediaType
+		return acmeJWSResult{}, domain.ErrUnsupportedMediaType
 	}
 	var req acmeJWSRequest
 	if err := decodeJSON(r, &req); err != nil {
-		return nil, err
+		return acmeJWSResult{}, err
 	}
 	if req.Protected == "" || req.Payload == "" || req.Signature == "" {
-		return nil, domain.ErrInvalidRequest
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	protectedBytes, err := base64.RawURLEncoding.DecodeString(req.Protected)
 	if err != nil {
-		return nil, domain.ErrInvalidRequest
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	var protected acmeProtectedHeader
 	if err := json.Unmarshal(protectedBytes, &protected); err != nil {
-		return nil, domain.ErrInvalidRequest
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
-	if protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
-		return nil, domain.ErrInvalidRequest
+	if protected.Alg != "ES256" || protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	if !s.consumeACMENonce(protected.Nonce) {
-		return nil, domain.ErrInvalidRequest
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(req.Payload)
 	if err != nil {
-		return nil, domain.ErrInvalidRequest
+		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
-	return payload, nil
+	result := acmeJWSResult{Payload: payload}
+	var jwk acmeJWK
+	if protected.KID != "" {
+		accountID, err := acmeAccountIDFromKID(protected.KID)
+		if err != nil {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		account, err := s.service.GetACMEAccount(r.Context(), accountID)
+		if err != nil {
+			return acmeJWSResult{}, err
+		}
+		if account.KeyJWKJSON == "" || account.KeyThumbprint == "" {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		if err := json.Unmarshal([]byte(account.KeyJWKJSON), &jwk); err != nil {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		result.AccountID = account.ID
+		result.KeyThumbprint = account.KeyThumbprint
+		result.KeyJWKJSON = account.KeyJWKJSON
+	} else {
+		parsedJWK, err := acmeJWKFromProtected(protected.JWK)
+		if err != nil {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		jwk = parsedJWK
+		keyJSON, err := canonicalACMEJWKJSON(jwk)
+		if err != nil {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		thumbprint, err := acmeJWKThumbprint(jwk)
+		if err != nil {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
+		result.KeyJWKJSON = keyJSON
+		result.KeyThumbprint = thumbprint
+	}
+	if err := verifyACMEJWS(jwk, req.Protected+"."+req.Payload, req.Signature); err != nil {
+		return acmeJWSResult{}, domain.ErrInvalidRequest
+	}
+	return result, nil
 }
 
 func (s *Server) issueACMENonce() (string, error) {
@@ -1034,6 +1095,120 @@ func acmeOrderIdentifiers(identifiers []acmeIdentifierRequest) ([]string, []stri
 		}
 	}
 	return dnsNames, ipAddresses, nil
+}
+
+func (s *Server) requireACMEChallengeAccount(ctx context.Context, challengeID string, accountID string) error {
+	if accountID == "" {
+		return domain.ErrInvalidRequest
+	}
+	challenge, err := s.service.GetACMEChallenge(ctx, challengeID)
+	if err != nil {
+		return err
+	}
+	authorization, err := s.service.GetACMEAuthorization(ctx, challenge.AuthorizationID)
+	if err != nil {
+		return err
+	}
+	return s.requireACMEOrderAccount(ctx, authorization.OrderID, accountID)
+}
+
+func (s *Server) requireACMEOrderAccount(ctx context.Context, orderID string, accountID string) error {
+	if accountID == "" {
+		return domain.ErrInvalidRequest
+	}
+	order, err := s.service.GetACMEOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order.AccountID != accountID {
+		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func acmeJWKFromProtected(value any) (acmeJWK, error) {
+	if value == nil {
+		return acmeJWK{}, domain.ErrInvalidRequest
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return acmeJWK{}, err
+	}
+	var jwk acmeJWK
+	if err := json.Unmarshal(encoded, &jwk); err != nil {
+		return acmeJWK{}, err
+	}
+	if jwk.KTY != "EC" || jwk.CRV != "P-256" || jwk.X == "" || jwk.Y == "" {
+		return acmeJWK{}, domain.ErrInvalidRequest
+	}
+	return jwk, nil
+}
+
+func acmeAccountIDFromKID(kid string) (string, error) {
+	parsed, err := url.Parse(kid)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 3 || parts[0] != "acme" || parts[1] != "account" || parts[2] == "" {
+		return "", domain.ErrInvalidRequest
+	}
+	return parts[2], nil
+}
+
+func verifyACMEJWS(jwk acmeJWK, signingInput string, signatureB64 string) error {
+	publicKey, err := acmeJWKPublicKey(jwk)
+	if err != nil {
+		return err
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(signatureB64)
+	if err != nil || len(signature) != 64 {
+		return domain.ErrInvalidRequest
+	}
+	r := new(big.Int).SetBytes(signature[:32])
+	sigS := new(big.Int).SetBytes(signature[32:])
+	sum := sha256.Sum256([]byte(signingInput))
+	if !ecdsa.Verify(publicKey, sum[:], r, sigS) {
+		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func acmeJWKPublicKey(jwk acmeJWK) (*ecdsa.PublicKey, error) {
+	if jwk.KTY != "EC" || jwk.CRV != "P-256" || jwk.X == "" || jwk.Y == "" {
+		return nil, domain.ErrInvalidRequest
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return nil, domain.ErrInvalidRequest
+	}
+	x := new(big.Int).SetBytes(xBytes)
+	y := new(big.Int).SetBytes(yBytes)
+	curve := elliptic.P256()
+	if !curve.IsOnCurve(x, y) {
+		return nil, domain.ErrInvalidRequest
+	}
+	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+}
+
+func canonicalACMEJWKJSON(jwk acmeJWK) (string, error) {
+	if _, err := acmeJWKPublicKey(jwk); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s","y":"%s"}`, jwk.CRV, jwk.KTY, jwk.X, jwk.Y), nil
+}
+
+func acmeJWKThumbprint(jwk acmeJWK) (string, error) {
+	canonical, err := canonicalACMEJWKJSON(jwk)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -1416,12 +1591,26 @@ type acmeJWSRequest struct {
 	Signature string `json:"signature"`
 }
 
+type acmeJWSResult struct {
+	Payload       []byte
+	AccountID     string
+	KeyThumbprint string
+	KeyJWKJSON    string
+}
+
 type acmeProtectedHeader struct {
 	Alg   string `json:"alg"`
 	Nonce string `json:"nonce"`
 	URL   string `json:"url"`
 	KID   string `json:"kid,omitempty"`
 	JWK   any    `json:"jwk,omitempty"`
+}
+
+type acmeJWK struct {
+	KTY string `json:"kty"`
+	CRV string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
 }
 
 type acmeNewAccountRequest struct {

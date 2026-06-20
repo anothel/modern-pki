@@ -147,6 +147,8 @@ type CreateEnrollmentRequest struct {
 type CreateACMEAccountRequest struct {
 	Contacts             []string
 	TermsOfServiceAgreed bool
+	KeyThumbprint        string
+	KeyJWKJSON           string
 }
 
 type CreateACMEOrderRequest struct {
@@ -691,6 +693,8 @@ func (s *Service) CreateACMEAccount(ctx context.Context, actor string, req Creat
 		Contacts:             append([]string(nil), req.Contacts...),
 		Status:               domain.ACMEAccountValid,
 		TermsOfServiceAgreed: req.TermsOfServiceAgreed,
+		KeyThumbprint:        strings.TrimSpace(req.KeyThumbprint),
+		KeyJWKJSON:           strings.TrimSpace(req.KeyJWKJSON),
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -775,6 +779,13 @@ func (s *Service) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, e
 	return s.repo.ListACMEAccounts(ctx)
 }
 
+func (s *Service) GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error) {
+	if isBlank(id) {
+		return domain.ACMEAccount{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetACMEAccount(ctx, id)
+}
+
 func (s *Service) ListACMEOrdersByAccount(ctx context.Context, accountID string) ([]domain.ACMEOrder, error) {
 	if isBlank(accountID) {
 		return nil, domain.ErrInvalidRequest
@@ -807,6 +818,13 @@ func (s *Service) ListACMEChallenges(ctx context.Context, authorizationID string
 		return nil, err
 	}
 	return s.repo.ListACMEChallengesByAuthorization(ctx, authorizationID)
+}
+
+func (s *Service) GetACMEChallenge(ctx context.Context, id string) (domain.ACMEChallenge, error) {
+	if isBlank(id) {
+		return domain.ACMEChallenge{}, domain.ErrInvalidRequest
+	}
+	return s.repo.GetACMEChallenge(ctx, id)
 }
 
 func (s *Service) CompleteACMEChallenge(ctx context.Context, actor string, challengeID string) (domain.ACMEChallenge, error) {

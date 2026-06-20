@@ -192,6 +192,8 @@ CREATE TABLE IF NOT EXISTS acme_accounts (
     contacts TEXT NOT NULL,
     status TEXT NOT NULL,
     terms_of_service_agreed INTEGER NOT NULL,
+    key_thumbprint TEXT NOT NULL,
+    key_jwk_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

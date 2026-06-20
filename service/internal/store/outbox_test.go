@@ -577,6 +577,8 @@ func testACMEState(t *testing.T, repo Repository) {
 		Contacts:             []string{"mailto:ops@example.test"},
 		Status:               domain.ACMEAccountValid,
 		TermsOfServiceAgreed: true,
+		KeyThumbprint:        "thumbprint-1",
+		KeyJWKJSON:           `{"crv":"P-256","kty":"EC","x":"x","y":"y"}`,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -587,7 +589,11 @@ func testACMEState(t *testing.T, repo Repository) {
 	if err != nil {
 		t.Fatalf("GetACMEAccount returned error: %v", err)
 	}
-	if gotAccount.Status != account.Status || len(gotAccount.Contacts) != 1 || gotAccount.Contacts[0] != account.Contacts[0] {
+	if gotAccount.Status != account.Status ||
+		gotAccount.KeyThumbprint != account.KeyThumbprint ||
+		gotAccount.KeyJWKJSON != account.KeyJWKJSON ||
+		len(gotAccount.Contacts) != 1 ||
+		gotAccount.Contacts[0] != account.Contacts[0] {
 		t.Fatalf("account = %#v, want %#v", gotAccount, account)
 	}
 

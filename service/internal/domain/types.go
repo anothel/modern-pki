@@ -354,6 +354,8 @@ type ACMEAccount struct {
 	Contacts             []string
 	Status               ACMEAccountStatus
 	TermsOfServiceAgreed bool
+	KeyThumbprint        string
+	KeyJWKJSON           string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 }

@@ -48,7 +48,7 @@ The service also exposes an ACME-shaped protocol adapter with directory discover
 - `POST /acme/challenge/{id}`
 - `POST /acme/order/{id}/finalize`
 
-Protocol adapter requests use `Content-Type: application/jose+json` and JSON JWS fields `protected`, `payload`, and `signature`. The protected header must include a fresh `nonce` from `/acme/new-nonce` and the exact request `url`. This adapter currently validates the envelope and nonce lifecycle, but does not yet cryptographically verify JWS signatures or implement full certbot-compatible account key binding.
+Protocol adapter requests use `Content-Type: application/jose+json` and JSON JWS fields `protected`, `payload`, and `signature`. The protected header must include `alg: ES256`, a fresh `nonce` from `/acme/new-nonce`, and the exact request `url`. New-account requests bind the account to the submitted P-256 JWK thumbprint and canonical JWK. Later `kid`-based requests verify the ES256 signature against the stored account key and reject mismatched account IDs or invalid signatures. The adapter is still not full certbot-compatible: RSA/EdDSA account keys, external account binding, challenge validation, and certificate download are not implemented yet.
 
 Certificate lifecycle operations include revocation, suspension, and resumption:
 

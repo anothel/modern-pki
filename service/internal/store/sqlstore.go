@@ -1593,14 +1593,16 @@ func (r sqlRepository) CreateACMEAccount(ctx context.Context, account domain.ACM
 	}
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO acme_accounts (
-	id, contacts, status, terms_of_service_agreed, created_at, updated_at
+	id, contacts, status, terms_of_service_agreed, key_thumbprint, key_jwk_json, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6
+	$1, $2, $3, $4, $5, $6, $7, $8
 )`,
 		account.ID,
 		contacts,
 		string(account.Status),
 		account.TermsOfServiceAgreed,
+		account.KeyThumbprint,
+		account.KeyJWKJSON,
 		formatSQLTime(account.CreatedAt),
 		formatSQLTime(account.UpdatedAt),
 	)
@@ -1609,7 +1611,7 @@ INSERT INTO acme_accounts (
 
 func (r sqlRepository) GetACMEAccount(ctx context.Context, id string) (domain.ACMEAccount, error) {
 	account, err := scanACMEAccount(r.exec.QueryRowContext(ctx, `
-SELECT id, contacts, status, terms_of_service_agreed, created_at, updated_at
+SELECT id, contacts, status, terms_of_service_agreed, key_thumbprint, key_jwk_json, created_at, updated_at
 FROM acme_accounts
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1623,7 +1625,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListACMEAccounts(ctx context.Context) ([]domain.ACMEAccount, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, contacts, status, terms_of_service_agreed, created_at, updated_at
+SELECT id, contacts, status, terms_of_service_agreed, key_thumbprint, key_jwk_json, created_at, updated_at
 FROM acme_accounts
 ORDER BY created_at, id`)
 	if err != nil {
@@ -1957,6 +1959,8 @@ func scanACMEAccount(scanner sqlScanner) (domain.ACMEAccount, error) {
 		&contacts,
 		&status,
 		&account.TermsOfServiceAgreed,
+		&account.KeyThumbprint,
+		&account.KeyJWKJSON,
 		&createdAt,
 		&updatedAt,
 	); err != nil {

@@ -139,6 +139,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			contacts TEXT NOT NULL,
 			status TEXT NOT NULL,
 			terms_of_service_agreed INTEGER NOT NULL,
+			key_thumbprint TEXT NOT NULL DEFAULT '',
+			key_jwk_json TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -225,6 +227,24 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	} else if !exists {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["operator"]'`); err != nil {
 			return fmt.Errorf("add sqlite column api_keys.scopes: %w", err)
+		}
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "key_thumbprint", definition: "key_thumbprint TEXT NOT NULL DEFAULT ''"},
+		{name: "key_jwk_json", definition: "key_jwk_json TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := sqliteColumnExists(ctx, db, "acme_accounts", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE acme_accounts ADD COLUMN %s", column.definition)); err != nil {
+			return fmt.Errorf("add sqlite column acme_accounts.%s: %w", column.name, err)
 		}
 	}
 	return nil
@@ -330,9 +350,13 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			contacts TEXT NOT NULL,
 			status TEXT NOT NULL,
 			terms_of_service_agreed BOOLEAN NOT NULL,
+			key_thumbprint TEXT NOT NULL DEFAULT '',
+			key_jwk_json TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		"ALTER TABLE acme_accounts ADD COLUMN IF NOT EXISTS key_thumbprint TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE acme_accounts ADD COLUMN IF NOT EXISTS key_jwk_json TEXT NOT NULL DEFAULT ''",
 		`CREATE TABLE IF NOT EXISTS acme_orders (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL REFERENCES acme_accounts(id),

@@ -3,11 +3,16 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -234,10 +239,46 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		"termsOfServiceAgreed": true,
 	}, &account)
 	assertStatus(t, status, http.StatusCreated)
+	storedAccount, err := api.repo.GetACMEAccount(api.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetACMEAccount returned error: %v", err)
+	}
+	if storedAccount.KeyThumbprint == "" || storedAccount.KeyJWKJSON == "" {
+		t.Fatalf("stored account missing bound key: %#v", storedAccount)
+	}
+	accountSigner := api.acmeSigner
+	accountKID := account.Location
+
+	otherSigner := newACMETestSigner(t)
+	_, _, nonce = api.doACMENonce(t)
+	var otherAccount apiACMEProtocolAccount
+	status = api.doACMEJWSWithSigner(t, "/acme/new-account", nonce, "", otherSigner, map[string]any{
+		"contact":              []string{"mailto:other@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &otherAccount)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var invalidSignatureBody errorResponse
+	status = api.doACMEJWSWithSigner(t, "/acme/new-order", nonce, accountKID, newACMETestSigner(t), map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+			{"type": "ip", "value": "127.0.0.1"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &invalidSignatureBody)
+	assertStatus(t, status, http.StatusBadRequest)
+	if invalidSignatureBody.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("invalid signature error body = %q, want %q", invalidSignatureBody.Error, domain.ErrInvalidRequest.Error())
+	}
 
 	_, _, nonce = api.doACMENonce(t)
 	var order apiACMEProtocolOrder
-	status = api.doACMEJWS(t, "/acme/new-order", nonce, map[string]any{
+	status = api.doACMEJWSWithSigner(t, "/acme/new-order", nonce, accountKID, accountSigner, map[string]any{
 		"account_id":  account.ID,
 		"identity_id": identity.ID,
 		"issuer_id":   issuer.ID,
@@ -260,9 +301,18 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		if len(authz.Challenges) != 1 {
 			t.Fatalf("authorization = %#v", authz)
 		}
+
+		_, _, nonce = api.doACMENonce(t)
+		var wrongAccountChallenge errorResponse
+		status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, otherAccount.Location, otherSigner, map[string]any{}, &wrongAccountChallenge)
+		assertStatus(t, status, http.StatusBadRequest)
+		if wrongAccountChallenge.Error != domain.ErrInvalidRequest.Error() {
+			t.Fatalf("wrong account challenge error body = %q, want %q", wrongAccountChallenge.Error, domain.ErrInvalidRequest.Error())
+		}
+
 		_, _, nonce = api.doACMENonce(t)
 		var challenge apiACMEProtocolChallenge
-		status = api.doACMEJWS(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, map[string]any{}, &challenge)
+		status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, accountKID, accountSigner, map[string]any{}, &challenge)
 		assertStatus(t, status, http.StatusOK)
 		if challenge.Status != string(domain.ACMEChallengeValid) {
 			t.Fatalf("challenge = %#v", challenge)
@@ -277,8 +327,19 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	}
 
 	_, _, nonce = api.doACMENonce(t)
+	var wrongAccountFinalize errorResponse
+	status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, order.Finalize), nonce, otherAccount.Location, otherSigner, map[string]any{
+		"csr_pem":           "csr-pem",
+		"requested_subject": "CN=edge-01",
+	}, &wrongAccountFinalize)
+	assertStatus(t, status, http.StatusBadRequest)
+	if wrongAccountFinalize.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("wrong account finalize error body = %q, want %q", wrongAccountFinalize.Error, domain.ErrInvalidRequest.Error())
+	}
+
+	_, _, nonce = api.doACMENonce(t)
 	var finalized apiACMEProtocolOrder
-	status = api.doACMEJWS(t, api.pathFromURL(t, order.Finalize), nonce, map[string]any{
+	status = api.doACMEJWSWithSigner(t, api.pathFromURL(t, order.Finalize), nonce, accountKID, accountSigner, map[string]any{
 		"csr_pem":           "csr-pem",
 		"requested_subject": "CN=edge-01",
 	}, &finalized)
@@ -1446,12 +1507,14 @@ func TestAPIKeyManagementDisablesKeys(t *testing.T) {
 }
 
 type testAPI struct {
-	ctx     context.Context
-	client  *http.Client
-	url     string
-	repo    store.Repository
-	service *lifecycle.Service
-	issuer  *fakeIssuer
+	ctx        context.Context
+	client     *http.Client
+	url        string
+	repo       store.Repository
+	service    *lifecycle.Service
+	issuer     *fakeIssuer
+	acmeSigner *acmeTestSigner
+	acmeKID    string
 }
 
 func newTestAPI(t *testing.T) *testAPI {
@@ -1474,12 +1537,13 @@ func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 	t.Cleanup(server.Close)
 
 	return &testAPI{
-		ctx:     context.Background(),
-		client:  server.Client(),
-		url:     server.URL,
-		repo:    repo,
-		service: service,
-		issuer:  issuer,
+		ctx:        context.Background(),
+		client:     server.Client(),
+		url:        server.URL,
+		repo:       repo,
+		service:    service,
+		issuer:     issuer,
+		acmeSigner: newACMETestSigner(t),
 	}
 }
 
@@ -1572,23 +1636,36 @@ func (api *testAPI) doACMENonce(t *testing.T) (int, []byte, string) {
 
 func (api *testAPI) doACMEJWS(t *testing.T, path string, nonce string, payload any, into any) int {
 	t.Helper()
+	return api.doACMEJWSWithSigner(t, path, nonce, api.acmeKID, api.acmeSigner, payload, into)
+}
 
+func (api *testAPI) doACMEJWSWithSigner(t *testing.T, path string, nonce string, kid string, signer *acmeTestSigner, payload any, into any) int {
+	t.Helper()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal ACME payload: %v", err)
 	}
-	protected, err := json.Marshal(map[string]any{
+	protectedHeader := map[string]any{
 		"alg":   "ES256",
 		"nonce": nonce,
 		"url":   api.url + path,
-	})
+	}
+	if kid != "" {
+		protectedHeader["kid"] = kid
+	} else {
+		protectedHeader["jwk"] = signer.jwk()
+	}
+	protected, err := json.Marshal(protectedHeader)
 	if err != nil {
 		t.Fatalf("marshal ACME protected header: %v", err)
 	}
+	protectedB64 := base64.RawURLEncoding.EncodeToString(protected)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(data)
+	signature := signer.sign(t, protectedB64+"."+payloadB64)
 	body := map[string]string{
-		"protected": base64.RawURLEncoding.EncodeToString(protected),
-		"payload":   base64.RawURLEncoding.EncodeToString(data),
-		"signature": "test-signature",
+		"protected": protectedB64,
+		"payload":   payloadB64,
+		"signature": signature,
 	}
 	requestBody, err := json.Marshal(body)
 	if err != nil {
@@ -1610,6 +1687,9 @@ func (api *testAPI) doACMEJWS(t *testing.T, path string, nonce string, payload a
 			t.Fatalf("decode ACME response: %v", err)
 		}
 	}
+	if account, ok := into.(*apiACMEProtocolAccount); ok && account.Location != "" {
+		api.acmeKID = account.Location
+	}
 	return res.StatusCode
 }
 
@@ -1625,6 +1705,49 @@ func (api *testAPI) pathFromURL(t *testing.T, raw string) string {
 		path += "?" + parsed.RawQuery
 	}
 	return path
+}
+
+type acmeTestSigner struct {
+	key *ecdsa.PrivateKey
+}
+
+func newACMETestSigner(t *testing.T) *acmeTestSigner {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ACME test key: %v", err)
+	}
+	return &acmeTestSigner{key: key}
+}
+
+func (s *acmeTestSigner) jwk() map[string]string {
+	return map[string]string{
+		"kty": "EC",
+		"crv": "P-256",
+		"x":   base64.RawURLEncoding.EncodeToString(paddedBigInt(s.key.X, 32)),
+		"y":   base64.RawURLEncoding.EncodeToString(paddedBigInt(s.key.Y, 32)),
+	}
+}
+
+func (s *acmeTestSigner) sign(t *testing.T, input string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(input))
+	r, sigS, err := ecdsa.Sign(rand.Reader, s.key, sum[:])
+	if err != nil {
+		t.Fatalf("sign ACME test JWS: %v", err)
+	}
+	signature := append(paddedBigInt(r, 32), paddedBigInt(sigS, 32)...)
+	return base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func paddedBigInt(value *big.Int, size int) []byte {
+	raw := value.Bytes()
+	if len(raw) >= size {
+		return raw
+	}
+	out := make([]byte, size)
+	copy(out[size-len(raw):], raw)
+	return out
 }
 
 func (api *testAPI) doRaw(t *testing.T, method string, path string, actor string) (int, []byte, string) {
