@@ -60,46 +60,42 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - `badNonce` problem type mapping.
 - Order and authorization expiration metadata and expired ready-order rejection.
 - Certbot-shaped Go fixture for account, order, POST-as-GET, challenge, finalize, and certificate download.
+- Live lego HTTP-01 smoke against a harness-started local service through account creation, order creation, authorization, challenge validation, finalize, and certificate response.
+- ACME protocol compatibility fixes from live smoke: standard order `identifiers`, RFC8555 finalize `csr` payload support, HTTPS loopback proxy for local clients, and real smoke CA material for core issuance.
 
 ## Current Next Big Work
 
-### 1. Live Certbot Smoke Harness
+### 1. ACME Client Compatibility Hardening
 
-Goal: run a real ACME client against the local service and turn remaining compatibility gaps into tests.
+Goal: make the ACME adapter boring under real clients, not only internal fixtures.
 
 Current status:
 
-- Local client availability checked: `certbot`, `lego`, and `step` are not present on `PATH` in the current workspace shell.
 - Harness scaffold added under `scripts/acme-smoke/`.
-- Harness preflight now works without certbot installed.
+- Harness preflight now works without certbot or lego installed.
 - Harness can optionally start `modern-pki-service` with temporary SQLite state by passing `-StartService`.
 - Harness starts a temporary service binary instead of `go run`, using workspace-local Go caches.
 - Harness defaults to certbot `webroot` mode and starts a local HTTP-01 static-file server.
 - Runner behavior is covered by `scripts/acme-smoke/test-run-certbot-smoke.ps1`.
 - Opt-in `MODERN_PKI_ACME_HTTP01_BASE_URL` support added for non-port-80 local HTTP-01 smoke.
 - Certbot 5.6.0 was installed into a workspace-local Python virtualenv and invoked against the local service.
-- Current blocker: certbot on this Windows shell exits before ACME traffic with `certbot must be run on a shell with administrative rights`.
+- Current certbot blocker: certbot on this Windows non-admin shell exits before ACME traffic with `certbot must be run on a shell with administrative rights`.
+- Lego fallback is available via `-Client lego`; `-LegoPath` defaults to `lego`.
+- Workspace-local lego `v4.35.2+dev-release` was installed at `.tmp\lego-bin\lego.exe`.
+- Live lego HTTP-01 smoke passes from account creation to certificate response.
 
-Recommended shape:
+Next shape:
 
-- Start `modern-pki-service` with SQLite temp DB.
-- Start a local HTTP-01 challenge responder controlled by the test harness.
-- Run certbot or a certbot-compatible ACME client against `/acme/directory`.
-- Capture exact request/response failures.
-- Convert each failure into Go protocol fixture coverage before implementing fixes.
+- Run certbot from an administrative Windows shell or non-Windows environment and convert any differences into protocol fixture coverage.
+- Add explicit certificate chain response tests for real-client expectations.
+- Add account key algorithm matrix coverage beyond the current ES256/RS256 path.
+- Keep lego smoke as the non-admin local regression check.
 
-Expected output:
+Known-good lego command:
 
-- First live certbot transcript from an administrative shell, or from a non-Windows environment.
-- Clear unsupported areas list after first real-client run.
-
-Likely gaps:
-
-- Certbot account creation payload shape.
-- CSR/finalize payload format.
-- Certificate chain response expectations.
-- Problem document type mapping.
-- HTTP-01 responder host/port mapping in local dev.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-certbot-smoke.ps1 -Client lego -LegoPath .tmp\lego-bin\lego.exe -StartService -Run -DirectoryTimeoutSec 60
+```
 
 ## Prioritized Backlog
 
@@ -152,7 +148,7 @@ Likely gaps:
 
 ## Not Next
 
-These are useful, but should wait until live ACME client smoke has been run:
+These are useful, but should wait until ACME HTTP-01 client compatibility is less brittle:
 
 - DNS-01 support.
 - External account binding.

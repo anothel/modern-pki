@@ -4,12 +4,17 @@ param(
     [string]$Email = "ops@example.test",
     [string]$WorkDir = ".tmp\acme-smoke",
     [int]$Http01Port = 5002,
+    [ValidateSet("certbot", "lego")]
+    [string]$Client = "certbot",
     [ValidateSet("webroot", "standalone")]
     [string]$ChallengeMode = "webroot",
     [string]$CertbotPath = "certbot",
+    [string]$LegoPath = "lego",
     [switch]$StartService,
     [string]$ServiceProjectPath = "service",
     [string]$ServiceBin = ".tmp\acme-smoke\modern-pki-service.exe",
+    [string]$HTTPSProxyBin = ".tmp\acme-smoke\acme-https-proxy.exe",
+    [int]$HTTPSProxyPort = 8443,
     [string]$CoreBin = "build\Debug\modern-pki-core.exe",
     [string]$DbDsn = ".tmp\acme-smoke\modern-pki.db",
     [string]$ServiceLogDir = ".tmp\acme-smoke\service-logs",
@@ -131,6 +136,7 @@ function Start-SmokeService {
     $goModCachePath = Resolve-SmokePath ".gomodcache"
     $dbDir = Split-Path -Parent $dbDsnPath
     $serviceBinDir = Split-Path -Parent $serviceBinPath
+    $issuerKeyRef = Join-Path $dbDir "acme-smoke-issuer.key"
 
     New-Item -ItemType Directory -Force -Path $dbDir, $logDir, $serviceBinDir, $goCachePath, $goModCachePath | Out-Null
 
@@ -144,6 +150,9 @@ MODERN_PKI_DB_DRIVER=sqlite
 MODERN_PKI_DB_DSN=$dbDsnPath
 MODERN_PKI_CORE_BIN=$coreBinPath
 MODERN_PKI_ACME_HTTP01_BASE_URL=$http01BaseURL
+MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS=true
+MODERN_PKI_ACME_DEFAULT_VALIDITY=24h
+MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF=$issuerKeyRef
 GOCACHE=$goCachePath
 GOMODCACHE=$goModCachePath
 SERVICE_BIN=$serviceBinPath
@@ -182,12 +191,18 @@ SERVICE_BIN=$serviceBinPath
     $previousModernPKIDBDSN = $env:MODERN_PKI_DB_DSN
     $previousModernPKICoreBin = $env:MODERN_PKI_CORE_BIN
     $previousModernPKIACMEHTTP01BaseURL = $env:MODERN_PKI_ACME_HTTP01_BASE_URL
+    $previousModernPKIACMEBootstrapDefaults = $env:MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS
+    $previousModernPKIACMEDefaultValidity = $env:MODERN_PKI_ACME_DEFAULT_VALIDITY
+    $previousModernPKIACMEBootstrapIssuerKeyRef = $env:MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF
     try {
         $env:MODERN_PKI_ADDR = $serviceAddr
         $env:MODERN_PKI_DB_DRIVER = "sqlite"
         $env:MODERN_PKI_DB_DSN = $dbDsnPath
         $env:MODERN_PKI_CORE_BIN = $coreBinPath
         $env:MODERN_PKI_ACME_HTTP01_BASE_URL = $http01BaseURL
+        $env:MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS = "true"
+        $env:MODERN_PKI_ACME_DEFAULT_VALIDITY = "24h"
+        $env:MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF = $issuerKeyRef
         $process = [System.Diagnostics.Process]::Start($startInfo)
     } finally {
         $env:MODERN_PKI_ADDR = $previousModernPKIAddr
@@ -195,6 +210,9 @@ SERVICE_BIN=$serviceBinPath
         $env:MODERN_PKI_DB_DSN = $previousModernPKIDBDSN
         $env:MODERN_PKI_CORE_BIN = $previousModernPKICoreBin
         $env:MODERN_PKI_ACME_HTTP01_BASE_URL = $previousModernPKIACMEHTTP01BaseURL
+        $env:MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS = $previousModernPKIACMEBootstrapDefaults
+        $env:MODERN_PKI_ACME_DEFAULT_VALIDITY = $previousModernPKIACMEDefaultValidity
+        $env:MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF = $previousModernPKIACMEBootstrapIssuerKeyRef
     }
 
     return [pscustomobject]@{
@@ -260,20 +278,73 @@ function Stop-WebRootServer {
     }
 }
 
+function Start-HTTPSProxy {
+    param(
+        [string]$ServiceUrl,
+        [string]$HTTPSProxyBin,
+        [int]$HTTPSProxyPort
+    )
+
+    $proxyBinPath = Resolve-SmokePath $HTTPSProxyBin
+    $proxyBinDir = Split-Path -Parent $proxyBinPath
+    $goCachePath = Resolve-SmokePath ".gocache"
+    $goModCachePath = Resolve-SmokePath ".gomodcache"
+    New-Item -ItemType Directory -Force -Path $proxyBinDir, $goCachePath, $goModCachePath | Out-Null
+
+    $previousGoCache = $env:GOCACHE
+    $previousGoModCache = $env:GOMODCACHE
+    try {
+        $env:GOCACHE = $goCachePath
+        $env:GOMODCACHE = $goModCachePath
+        $buildOutput = & go build -o $proxyBinPath .\scripts\acme-smoke\acme-https-proxy.go 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "build ACME HTTPS proxy failed: $($buildOutput -join [Environment]::NewLine)"
+        }
+    } finally {
+        $env:GOCACHE = $previousGoCache
+        $env:GOMODCACHE = $previousGoModCache
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $proxyBinPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Arguments = "-listen 127.0.0.1:$HTTPSProxyPort -target $ServiceUrl"
+    return [System.Diagnostics.Process]::Start($startInfo)
+}
+
+function Stop-HTTPSProxy {
+    param($Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+    if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        $Process.WaitForExit(5000) | Out-Null
+    }
+}
+
 $serviceProcess = $null
 $webRootProcess = $null
+$httpsProxyProcess = $null
 
 try {
-    $certbot = Resolve-OptionalCommand $CertbotPath
-    $certbotCommand = $CertbotPath
-    if ($null -eq $certbot) {
-        Write-Host "certbot unavailable: $CertbotPath"
+    $clientPath = $CertbotPath
+    if ($Client -eq "lego") {
+        $clientPath = $LegoPath
+    }
+
+    $clientCommand = $clientPath
+    $clientExecutable = Resolve-OptionalCommand $clientPath
+    if ($null -eq $clientExecutable) {
+        Write-Host "$Client unavailable: $clientPath"
         if ($Run) {
-            Write-Host "install certbot or pass -CertbotPath before using -Run"
+            Write-Host "install $Client or pass the selected client path before using -Run"
             exit 2
         }
     } else {
-        $certbotCommand = $certbot.Source
+        $clientCommand = $clientExecutable.Source
     }
 
     if ($StartService) {
@@ -303,8 +374,24 @@ try {
     $logsDir = Join-Path $WorkDir "logs"
     $webRootDir = Join-Path $WorkDir "http01-webroot"
     $server = "$ServiceUrl/acme/directory"
+    if ($Client -eq "lego") {
+        $server = "https://127.0.0.1:$HTTPSProxyPort/acme/directory"
+    }
+    $legoPath = Join-Path $WorkDir "lego"
 
-    if ($ChallengeMode -eq "standalone") {
+    if ($Client -eq "lego") {
+        $certbotArgs = @(
+            "--server", $server,
+            "--tls-skip-verify",
+            "--accept-tos",
+            "--email", $Email,
+            "--domains", $Domain,
+            "--path", $legoPath,
+            "--http",
+            "--http.webroot", $webRootDir,
+            "run"
+        )
+    } elseif ($ChallengeMode -eq "standalone") {
         $certbotArgs = @(
             "certonly",
             "--server", $server,
@@ -337,6 +424,7 @@ try {
     }
 
     Write-Host "service: $ServiceUrl"
+    Write-Host "client: $Client"
     Write-Host "domain: $Domain"
     Write-Host "challenge-mode: $ChallengeMode"
     Write-Host "http-01-port: $Http01Port"
@@ -345,19 +433,25 @@ try {
     if (-not $Run) {
         Write-Host "preflight ok"
         Write-Host "run command:"
-        Write-Host "$certbotCommand $($certbotArgs -join ' ')"
+        Write-Host "$clientCommand $($certbotArgs -join ' ')"
         exit 0
     }
 
     New-Item -ItemType Directory -Force -Path $configDir, $clientWorkDir, $logsDir | Out-Null
-    if ($ChallengeMode -eq "webroot") {
+    if ($Client -eq "lego" -or $ChallengeMode -eq "webroot") {
         $webRootProcess = Start-WebRootServer -CertbotPath $CertbotPath -WebRootDir $webRootDir -Http01Port $Http01Port
         Write-Host "webroot server pid: $($webRootProcess.Id)"
         Write-Host "webroot path: $webRootDir"
     }
-    & $certbot.Source @certbotArgs
+    if ($Client -eq "lego") {
+        $httpsProxyProcess = Start-HTTPSProxy -ServiceUrl $ServiceUrl -HTTPSProxyBin $HTTPSProxyBin -HTTPSProxyPort $HTTPSProxyPort
+        Write-Host "https proxy pid: $($httpsProxyProcess.Id)"
+        Write-Host "https proxy directory: $server"
+    }
+    & $clientExecutable.Source @certbotArgs
     exit $LASTEXITCODE
 } finally {
+    Stop-HTTPSProxy $httpsProxyProcess
     Stop-WebRootServer $webRootProcess
     Stop-SmokeService $serviceProcess
 }

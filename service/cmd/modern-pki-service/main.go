@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +44,9 @@ const (
 
 	defaultBootstrapAPIKeyName  = "bootstrap"
 	defaultBootstrapAPIKeyActor = "bootstrap"
+
+	defaultACMESmokeValidity     = 24 * time.Hour
+	defaultACMESmokeIssuerKeyRef = ".tmp/acme-smoke/acme-smoke-issuer.key"
 )
 
 type outboxConfig struct {
@@ -54,6 +64,12 @@ type expirationScanConfig struct {
 
 type acmeHTTP01VerifierConfig struct {
 	BaseURL string
+}
+
+type acmeDefaultsConfig struct {
+	BootstrapDefaults bool
+	ValidityPeriod    time.Duration
+	IssuerKeyRef      string
 }
 
 type authConfig struct {
@@ -83,6 +99,10 @@ func main() {
 	acmeHTTP01VerifierCfg, err := loadACMEHTTP01VerifierConfig()
 	if err != nil {
 		log.Fatalf("load ACME HTTP-01 verifier config: %v", err)
+	}
+	acmeDefaultsCfg, err := loadACMEDefaultsConfig()
+	if err != nil {
+		log.Fatalf("load ACME defaults config: %v", err)
 	}
 
 	db, err := sql.Open(dbDriver, dbDSN)
@@ -115,7 +135,15 @@ func main() {
 		}
 		log.Printf("modern-pki bootstrap api key ready id=%s name=%s actor=%s", key.ID, key.Name, key.Actor)
 	}
-	server := httpapi.NewWithAuth(svc, authCfg.HTTP)
+	acmeHTTPConfig := httpapi.ACMEConfig{}
+	if acmeDefaultsCfg.BootstrapDefaults {
+		acmeHTTPConfig, err = bootstrapACMEDefaults(context.Background(), svc, acmeDefaultsCfg.ValidityPeriod, acmeDefaultsCfg.IssuerKeyRef)
+		if err != nil {
+			log.Fatalf("bootstrap ACME defaults: %v", err)
+		}
+		log.Printf("modern-pki ACME defaults ready identity_id=%s issuer_id=%s profile_id=%s validity=%s", acmeHTTPConfig.DefaultIdentityID, acmeHTTPConfig.DefaultIssuerID, acmeHTTPConfig.DefaultCertificateProfileID, acmeHTTPConfig.DefaultValidityPeriod)
+	}
+	server := httpapi.NewWithAuthAndACME(svc, authCfg.HTTP, acmeHTTPConfig)
 	if outboxCfg.Enabled {
 		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, &http.Client{Timeout: 10 * time.Second})
 		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
@@ -215,6 +243,109 @@ func loadACMEHTTP01VerifierConfig() (acmeHTTP01VerifierConfig, error) {
 		}
 	}
 	return acmeHTTP01VerifierConfig{BaseURL: baseURL}, nil
+}
+
+func loadACMEDefaultsConfig() (acmeDefaultsConfig, error) {
+	bootstrap, err := parseBoolEnv("MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS", false)
+	if err != nil {
+		return acmeDefaultsConfig{}, err
+	}
+	validity, err := parseDurationEnv("MODERN_PKI_ACME_DEFAULT_VALIDITY", defaultACMESmokeValidity)
+	if err != nil {
+		return acmeDefaultsConfig{}, err
+	}
+	return acmeDefaultsConfig{
+		BootstrapDefaults: bootstrap,
+		ValidityPeriod:    validity,
+		IssuerKeyRef:      envOrDefault("MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF", defaultACMESmokeIssuerKeyRef),
+	}, nil
+}
+
+func bootstrapACMEDefaults(ctx context.Context, svc *lifecycle.Service, validity time.Duration, issuerKeyRef string) (httpapi.ACMEConfig, error) {
+	issuerCertificatePEM, issuerKeyRef, err := ensureACMESmokeIssuerMaterial(issuerKeyRef)
+	if err != nil {
+		return httpapi.ACMEConfig{}, err
+	}
+	identity, err := svc.CreateIdentity(ctx, "system", lifecycle.CreateIdentityRequest{
+		Type:       "machine",
+		Name:       "acme-smoke-edge-01",
+		ExternalID: "acme-smoke-edge-01",
+	})
+	if err != nil {
+		return httpapi.ACMEConfig{}, err
+	}
+	issuer, err := svc.CreateIssuer(ctx, "system", lifecycle.CreateIssuerRequest{
+		Name:           "acme-smoke-issuer",
+		Kind:           "intermediate_ca",
+		CertificatePEM: issuerCertificatePEM,
+		KeyRef:         issuerKeyRef,
+	})
+	if err != nil {
+		return httpapi.ACMEConfig{}, err
+	}
+	profile, err := svc.CreateCertificateProfile(ctx, "system", lifecycle.CreateCertificateProfileRequest{
+		IssuerID:              issuer.ID,
+		Name:                  "acme-smoke-profile",
+		ValidityPeriodSeconds: int64(validity.Seconds()),
+		AllowedDNSPatterns:    []string{"*.example.test"},
+		AllowedIPRanges:       []string{"127.0.0.0/8"},
+	})
+	if err != nil {
+		return httpapi.ACMEConfig{}, err
+	}
+	return httpapi.ACMEConfig{
+		DefaultIdentityID:           identity.ID,
+		DefaultIssuerID:             issuer.ID,
+		DefaultCertificateProfileID: profile.ID,
+		DefaultValidityPeriod:       validity,
+	}, nil
+}
+
+func ensureACMESmokeIssuerMaterial(issuerKeyRef string) (string, string, error) {
+	if strings.TrimSpace(issuerKeyRef) == "" {
+		return "", "", fmt.Errorf("MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF must not be empty")
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", fmt.Errorf("generate ACME smoke issuer key: %w", err)
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return "", "", fmt.Errorf("generate ACME smoke issuer serial: %w", err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "modern-pki ACME Smoke CA"},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            0,
+		MaxPathLenZero:        true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", fmt.Errorf("create ACME smoke issuer certificate: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal ACME smoke issuer key: %w", err)
+	}
+	keyDir := filepath.Dir(issuerKeyRef)
+	if keyDir != "." {
+		if err := os.MkdirAll(keyDir, 0700); err != nil {
+			return "", "", fmt.Errorf("create ACME smoke issuer key dir: %w", err)
+		}
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(issuerKeyRef, keyPEM, 0600); err != nil {
+		return "", "", fmt.Errorf("write ACME smoke issuer key: %w", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+	return certPEM, issuerKeyRef, nil
 }
 
 func parseBoolEnv(name string, fallback bool) (bool, error) {

@@ -8,8 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,7 @@ type Server struct {
 	service *lifecycle.Service
 	mux     *http.ServeMux
 	auth    AuthConfig
+	acme    ACMEConfig
 	nonceMu sync.Mutex
 	nonces  map[string]struct{}
 }
@@ -48,6 +51,13 @@ type AuthConfig struct {
 	Mode AuthMode
 }
 
+type ACMEConfig struct {
+	DefaultIdentityID           string
+	DefaultIssuerID             string
+	DefaultCertificateProfileID string
+	DefaultValidityPeriod       time.Duration
+}
+
 type requiredScope string
 
 const (
@@ -63,6 +73,10 @@ func New(service *lifecycle.Service) *Server {
 }
 
 func NewWithAuth(service *lifecycle.Service, auth AuthConfig) *Server {
+	return NewWithAuthAndACME(service, auth, ACMEConfig{})
+}
+
+func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMEConfig) *Server {
 	if auth.Mode == "" {
 		auth.Mode = AuthModeDev
 	}
@@ -70,6 +84,7 @@ func NewWithAuth(service *lifecycle.Service, auth AuthConfig) *Server {
 		service: service,
 		mux:     http.NewServeMux(),
 		auth:    auth,
+		acme:    acme,
 		nonces:  make(map[string]struct{}),
 	}
 	s.registerRoutes()
@@ -593,7 +608,26 @@ func (s *Server) acmeNewOrder(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
-	if jws.AccountID == "" || req.AccountID != jws.AccountID {
+	if jws.AccountID == "" {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if req.AccountID == "" {
+		req.AccountID = jws.AccountID
+	}
+	if req.IdentityID == "" {
+		req.IdentityID = s.acme.DefaultIdentityID
+	}
+	if req.IssuerID == "" {
+		req.IssuerID = s.acme.DefaultIssuerID
+	}
+	if req.CertificateProfileID == "" {
+		req.CertificateProfileID = s.acme.DefaultCertificateProfileID
+	}
+	if req.NotAfter.IsZero() && s.acme.DefaultValidityPeriod > 0 {
+		req.NotAfter = time.Now().UTC().Add(s.acme.DefaultValidityPeriod)
+	}
+	if req.AccountID != jws.AccountID {
 		s.writeError(w, r, domain.ErrInvalidRequest)
 		return
 	}
@@ -748,9 +782,14 @@ func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	csrPEM, requestedSubject, err := normalizeACMEFinalizeRequest(req)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	order, err := s.service.FinalizeACMEOrder(r.Context(), requestActor(r), r.PathValue("id"), lifecycle.FinalizeACMEOrderRequest{
-		CSRPEM:           req.CSRPEM,
-		RequestedSubject: req.RequestedSubject,
+		CSRPEM:           csrPEM,
+		RequestedSubject: requestedSubject,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -773,6 +812,43 @@ func (s *Server) acmeGetCertificate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(certificate.CertificatePEM))
+}
+
+func normalizeACMEFinalizeRequest(req finalizeACMEOrderRequest) (string, string, error) {
+	if strings.TrimSpace(req.CSRPEM) != "" {
+		return req.CSRPEM, req.RequestedSubject, nil
+	}
+	if strings.TrimSpace(req.CSR) == "" {
+		return "", "", domain.ErrInvalidRequest
+	}
+	der, err := decodeACMECSR(req.CSR)
+	if err != nil {
+		return "", "", domain.ErrInvalidRequest
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		return "", "", domain.ErrInvalidRequest
+	}
+	subject := req.RequestedSubject
+	if strings.TrimSpace(subject) == "" {
+		subject = csr.Subject.String()
+	}
+	if strings.TrimSpace(subject) == "" {
+		return "", "", domain.ErrInvalidRequest
+	}
+	csrPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: der,
+	}))
+	return csrPEM, subject, nil
+}
+
+func decodeACMECSR(encoded string) ([]byte, error) {
+	der, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err == nil {
+		return der, nil
+	}
+	return base64.URLEncoding.DecodeString(encoded)
 }
 
 func (s *Server) acmePostAsGetCertificate(w http.ResponseWriter, r *http.Request) {
@@ -1892,6 +1968,7 @@ type createACMEOrderRequest struct {
 
 type finalizeACMEOrderRequest struct {
 	CSRPEM           string `json:"csr_pem"`
+	CSR              string `json:"csr"`
 	RequestedSubject string `json:"requested_subject"`
 }
 
@@ -2089,13 +2166,14 @@ type acmeProtocolAccountResponse struct {
 }
 
 type acmeProtocolOrderResponse struct {
-	ID             string    `json:"id"`
-	Status         string    `json:"status"`
-	URL            string    `json:"url"`
-	Authorizations []string  `json:"authorizations"`
-	Finalize       string    `json:"finalize"`
-	Certificate    string    `json:"certificate,omitempty"`
-	Expires        time.Time `json:"expires"`
+	ID             string                           `json:"id"`
+	Status         string                           `json:"status"`
+	URL            string                           `json:"url"`
+	Identifiers    []acmeProtocolIdentifierResponse `json:"identifiers"`
+	Authorizations []string                         `json:"authorizations"`
+	Finalize       string                           `json:"finalize"`
+	Certificate    string                           `json:"certificate,omitempty"`
+	Expires        time.Time                        `json:"expires"`
 }
 
 type acmeProtocolAuthorizationResponse struct {
@@ -2452,6 +2530,7 @@ func (s *Server) toACMEProtocolOrder(r *http.Request, order domain.ACMEOrder) (a
 		ID:             order.ID,
 		Status:         string(order.Status),
 		URL:            baseURL + "/acme/order/" + order.ID,
+		Identifiers:    acmeProtocolOrderIdentifiers(order),
 		Authorizations: authzURLs,
 		Finalize:       baseURL + "/acme/order/" + order.ID + "/finalize",
 		Expires:        order.ExpiresAt,
@@ -2460,6 +2539,23 @@ func (s *Server) toACMEProtocolOrder(r *http.Request, order domain.ACMEOrder) (a
 		response.Certificate = baseURL + "/acme/cert/" + order.CertificateID
 	}
 	return response, nil
+}
+
+func acmeProtocolOrderIdentifiers(order domain.ACMEOrder) []acmeProtocolIdentifierResponse {
+	identifiers := make([]acmeProtocolIdentifierResponse, 0, len(order.RequestedDNSNames)+len(order.RequestedIPAddresses))
+	for _, name := range order.RequestedDNSNames {
+		identifiers = append(identifiers, acmeProtocolIdentifierResponse{
+			Type:  "dns",
+			Value: name,
+		})
+	}
+	for _, address := range order.RequestedIPAddresses {
+		identifiers = append(identifiers, acmeProtocolIdentifierResponse{
+			Type:  "ip",
+			Value: address,
+		})
+	}
+	return identifiers
 }
 
 func (s *Server) toACMEProtocolAuthorization(r *http.Request, authorization domain.ACMEAuthorization) (acmeProtocolAuthorizationResponse, error) {

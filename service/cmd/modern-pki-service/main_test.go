@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +201,54 @@ func TestLoadACMEHTTP01VerifierConfigRejectsInvalidBaseURL(t *testing.T) {
 	_, err := loadACMEHTTP01VerifierConfig()
 	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_ACME_HTTP01_BASE_URL") {
 		t.Fatalf("loadACMEHTTP01VerifierConfig error = %v, want MODERN_PKI_ACME_HTTP01_BASE_URL", err)
+	}
+}
+
+func TestLoadACMEDefaultsConfigIncludesIssuerKeyRef(t *testing.T) {
+	t.Setenv("MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS", "true")
+	t.Setenv("MODERN_PKI_ACME_DEFAULT_VALIDITY", "12h")
+	t.Setenv("MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF", "issuer.key")
+
+	cfg, err := loadACMEDefaultsConfig()
+	if err != nil {
+		t.Fatalf("loadACMEDefaultsConfig returned error: %v", err)
+	}
+	if !cfg.BootstrapDefaults || cfg.ValidityPeriod != 12*time.Hour || cfg.IssuerKeyRef != "issuer.key" {
+		t.Fatalf("ACME defaults config = %#v", cfg)
+	}
+}
+
+func TestEnsureACMESmokeIssuerMaterialWritesCAKey(t *testing.T) {
+	keyRef := filepath.Join(t.TempDir(), "issuer.key")
+
+	certPEM, gotKeyRef, err := ensureACMESmokeIssuerMaterial(keyRef)
+	if err != nil {
+		t.Fatalf("ensureACMESmokeIssuerMaterial returned error: %v", err)
+	}
+	if gotKeyRef != keyRef {
+		t.Fatalf("key ref = %q, want %q", gotKeyRef, keyRef)
+	}
+	certBlock, _ := pem.Decode([]byte(certPEM))
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+		t.Fatalf("certificate PEM block = %#v", certBlock)
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate returned error: %v", err)
+	}
+	if !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		t.Fatalf("certificate is not CA-capable: %#v", cert)
+	}
+	keyPEM, err := os.ReadFile(keyRef)
+	if err != nil {
+		t.Fatalf("ReadFile key returned error: %v", err)
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("key PEM block = %#v", keyBlock)
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); err != nil {
+		t.Fatalf("ParsePKCS8PrivateKey returned error: %v", err)
 	}
 }
 

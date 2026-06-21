@@ -102,6 +102,11 @@ $parseErrors = $null
 [System.Management.Automation.Language.Parser]::ParseFile($Runner, [ref]$null, [ref]$parseErrors) | Out-Null
 Assert-Equal "parse error count" $parseErrors.Count 0
 
+$proxySource = Get-Content -Raw (Join-Path $PSScriptRoot "acme-https-proxy.go")
+if ($proxySource -notmatch "X-Forwarded-Proto") {
+    throw "ACME HTTPS proxy must forward X-Forwarded-Proto"
+}
+
 $port = Get-FreePort
 $job = Start-DirectoryStub -Port $port
 try {
@@ -134,6 +139,33 @@ try {
     if ($standalonePreflight.Output -notmatch "--standalone" -or $standalonePreflight.Output -notmatch "--http-01-port") {
         throw "standalone preflight output missing standalone certbot args"
     }
+
+    $missingLego = "definitely-missing-lego-for-modern-pki-smoke"
+    $legoPreflight = Invoke-Runner -RunnerArgs @(
+        "-ServiceUrl", $serviceUrl,
+        "-Client", "lego",
+        "-LegoPath", $missingLego,
+        "-WorkDir", ".tmp\acme-smoke-test"
+    )
+    Assert-Equal "lego preflight exit code without lego" $legoPreflight.ExitCode 0
+    if ($legoPreflight.Output -notmatch "lego unavailable") {
+        throw "lego preflight output missing lego unavailable marker"
+    }
+    if ($legoPreflight.Output -notmatch "--http.webroot" -or $legoPreflight.Output -notmatch "--domains") {
+        throw "lego preflight output missing lego webroot args"
+    }
+    if ($legoPreflight.Output -notmatch "--tls-skip-verify" -or $legoPreflight.Output -notmatch "https://127.0.0.1:8443/acme/directory") {
+        throw "lego preflight output missing local HTTPS proxy args"
+    }
+
+    $legoRunMissing = Invoke-Runner -RunnerArgs @(
+        "-ServiceUrl", $serviceUrl,
+        "-Client", "lego",
+        "-LegoPath", $missingLego,
+        "-WorkDir", ".tmp\acme-smoke-test",
+        "-Run"
+    )
+    Assert-Equal "lego run exit code without lego" $legoRunMissing.ExitCode 2
 
     $runMissing = Invoke-Runner -RunnerArgs @(
         "-ServiceUrl", $serviceUrl,
@@ -169,6 +201,9 @@ try {
     $serviceCommand = Get-Content -Raw ".tmp\acme-smoke-test\service-logs\modern-pki-service.start.ps1"
     if ($serviceCommand -notmatch "GOCACHE" -or $serviceCommand -notmatch "GOMODCACHE") {
         throw "service startup command does not set workspace Go caches"
+    }
+    if ($serviceCommand -notmatch "MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF") {
+        throw "service startup command does not set ACME bootstrap issuer key ref"
     }
 } finally {
     Stop-DirectoryStub $job

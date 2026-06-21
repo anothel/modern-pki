@@ -9,12 +9,15 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -321,6 +324,129 @@ func TestACMEProtocolCertbotCompatibilityFixture(t *testing.T) {
 	if certResponse.ContentType != "application/pem-certificate-chain" || certResponse.Body != "issued:csr-pem" ||
 		certResponse.ReplayNonce == "" || !strings.Contains(certResponse.Link, "/acme/directory>;rel=\"index\"") {
 		t.Fatalf("POST-as-GET cert response = %#v", certResponse)
+	}
+}
+
+func TestACMEProtocolFinalizeAcceptsRFC8555CSR(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"allowed_ip_ranges":       []string{"127.0.0.0/8"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	orderResponse := api.doACMEJWSWithResponse(t, "/acme/new-order", nonce, account.Location, api.acmeSigner, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+			{"type": "ip", "value": "127.0.0.1"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &order)
+	assertStatus(t, orderResponse.StatusCode, http.StatusCreated)
+
+	for _, authzURL := range order.Authorizations {
+		var authz apiACMEProtocolAuthorization
+		authzResponse := api.doACMEPostAsGET(t, api.pathFromURL(t, authzURL), account.Location, api.acmeSigner, &authz)
+		assertStatus(t, authzResponse.StatusCode, http.StatusOK)
+		if len(authz.Challenges) != 1 {
+			t.Fatalf("authorization = %#v", authz)
+		}
+		_, _, nonce = api.doACMENonce(t)
+		var challenge apiACMEProtocolChallenge
+		challengeResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, authz.Challenges[0].URL), nonce, account.Location, api.acmeSigner, map[string]any{}, &challenge)
+		assertStatus(t, challengeResponse.StatusCode, http.StatusOK)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var finalized apiACMEProtocolOrder
+	finalizeResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, order.Finalize), nonce, account.Location, api.acmeSigner, map[string]any{
+		"csr": testACMECSRBase64URL(t),
+	}, &finalized)
+	assertStatus(t, finalizeResponse.StatusCode, http.StatusOK)
+	if finalized.Status != string(domain.ACMEOrderValid) || finalized.Certificate == "" {
+		t.Fatalf("finalized order = %#v", finalized)
+	}
+	if len(api.issuer.requests) != 1 ||
+		!strings.Contains(api.issuer.requests[0].CSRPEM, "BEGIN CERTIFICATE REQUEST") ||
+		api.issuer.requests[0].Subject != "CN=edge-01.example.test" {
+		t.Fatalf("issuer request = %#v", api.issuer.requests)
+	}
+}
+
+func TestACMEProtocolNewOrderUsesConfiguredDefaults(t *testing.T) {
+	api := newTestAPI(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+		"allowed_ip_ranges":       []string{"127.0.0.0/8"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	server := httptest.NewServer(NewWithAuthAndACME(api.service, AuthConfig{Mode: AuthModeDev}, ACMEConfig{
+		DefaultIdentityID:           identity.ID,
+		DefaultIssuerID:             issuer.ID,
+		DefaultCertificateProfileID: profile.ID,
+		DefaultValidityPeriod:       12 * time.Hour,
+	}))
+	t.Cleanup(server.Close)
+	api.client = server.Client()
+	api.url = server.URL
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	orderResponse := api.doACMEJWSWithResponse(t, "/acme/new-order", nonce, account.Location, api.acmeSigner, map[string]any{
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+		},
+	}, &order)
+	assertStatus(t, orderResponse.StatusCode, http.StatusCreated)
+	if len(order.Identifiers) != 1 ||
+		order.Identifiers[0].Type != "dns" ||
+		order.Identifiers[0].Value != "edge-01.example.test" {
+		t.Fatalf("order identifiers = %#v, want edge-01.example.test", order.Identifiers)
+	}
+	storedOrder, err := api.repo.GetACMEOrder(api.ctx, order.ID)
+	if err != nil {
+		t.Fatalf("GetACMEOrder returned error: %v", err)
+	}
+	if storedOrder.IdentityID != identity.ID || storedOrder.IssuerID != issuer.ID || storedOrder.CertificateProfileID != profile.ID {
+		t.Fatalf("stored order defaults = %#v, want identity=%s issuer=%s profile=%s", storedOrder, identity.ID, issuer.ID, profile.ID)
+	}
+	if order.Expires.IsZero() {
+		t.Fatalf("order missing expires: %#v", order)
 	}
 }
 
@@ -2390,6 +2516,26 @@ func assertStatus(t *testing.T, got int, want int) {
 	}
 }
 
+func testACMECSRBase64URL(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: "edge-01.example.test",
+		},
+		DNSNames:    []string{"edge-01.example.test"},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest returned error: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(der)
+}
+
 type fakeIssuer struct {
 	requests                          []corecli.IssueRequest
 	crlRequests                       []corecli.GenerateCRLRequest
@@ -2571,13 +2717,14 @@ type apiACMEProtocolAccount struct {
 }
 
 type apiACMEProtocolOrder struct {
-	ID             string    `json:"id"`
-	Status         string    `json:"status"`
-	URL            string    `json:"url"`
-	Authorizations []string  `json:"authorizations"`
-	Finalize       string    `json:"finalize"`
-	Certificate    string    `json:"certificate"`
-	Expires        time.Time `json:"expires"`
+	ID             string                   `json:"id"`
+	Status         string                   `json:"status"`
+	URL            string                   `json:"url"`
+	Identifiers    []acmeProtocolIdentifier `json:"identifiers"`
+	Authorizations []string                 `json:"authorizations"`
+	Finalize       string                   `json:"finalize"`
+	Certificate    string                   `json:"certificate"`
+	Expires        time.Time                `json:"expires"`
 }
 
 type apiACMEProtocolAuthorization struct {

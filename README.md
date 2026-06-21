@@ -92,8 +92,8 @@ go run ./cmd/modern-pki-service
 - [Roadmap](docs/ROADMAP.md): completed work, next big work, backlog, and verification policy.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
-- [ACME smoke harness](scripts/acme-smoke/README.md): local certbot-compatible smoke test scaffold; preflight works without certbot, live `-Run` requires certbot and administrative rights on Windows.
+- [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
 ## Current Status
 
-This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, and ACME adapter foundations exist. The current next big work is running a live certbot smoke harness and converting compatibility gaps into tests.
+This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, and ACME adapter foundations exist. A live lego HTTP-01 smoke now reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. The next big work is ACME compatibility hardening around certbot runs, chain behavior, and broader client/account-key coverage.
