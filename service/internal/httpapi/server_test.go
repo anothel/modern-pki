@@ -40,9 +40,13 @@ func TestCreateIdentity(t *testing.T) {
 
 	var created apiIdentity
 	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
-		"type":        string(domain.IdentityMachine),
-		"name":        "edge-01",
-		"external_id": "asset-123",
+		"type":                 string(domain.IdentityMachine),
+		"name":                 "edge-01",
+		"external_id":          "asset-123",
+		"owner":                "platform",
+		"metadata_json":        `{"rack":"r1"}`,
+		"allowed_dns_names":    []string{"edge-01.example.test"},
+		"allowed_ip_addresses": []string{},
 	}, &created)
 	assertStatus(t, status, http.StatusCreated)
 	if created.ID == "" {
@@ -56,6 +60,12 @@ func TestCreateIdentity(t *testing.T) {
 	}
 	if created.Status != domain.IdentityActive {
 		t.Fatalf("created identity status = %q, want %q", created.Status, domain.IdentityActive)
+	}
+	if created.Owner != "platform" ||
+		created.MetadataJSON != `{"rack":"r1"}` ||
+		!reflect.DeepEqual(created.AllowedDNSNames, []string{"edge-01.example.test"}) ||
+		!reflect.DeepEqual(created.AllowedIPAddresses, []string{}) {
+		t.Fatalf("created identity machine policy = %#v", created)
 	}
 
 	var listed []apiIdentity
@@ -73,6 +83,12 @@ func TestCreateIdentity(t *testing.T) {
 	assertStatus(t, status, http.StatusOK)
 	if got.ID != created.ID {
 		t.Fatalf("got identity ID = %q, want %q", got.ID, created.ID)
+	}
+	if got.Owner != created.Owner ||
+		got.MetadataJSON != created.MetadataJSON ||
+		!reflect.DeepEqual(got.AllowedDNSNames, created.AllowedDNSNames) ||
+		!reflect.DeepEqual(got.AllowedIPAddresses, created.AllowedIPAddresses) {
+		t.Fatalf("got identity machine policy = %#v, want %#v", got, created)
 	}
 }
 
@@ -2791,13 +2807,17 @@ func (g *fakeIDGenerator) NewID() string {
 }
 
 type apiIdentity struct {
-	ID         string                `json:"id"`
-	Type       domain.IdentityType   `json:"type"`
-	Name       string                `json:"name"`
-	ExternalID string                `json:"external_id"`
-	Status     domain.IdentityStatus `json:"status"`
-	CreatedAt  time.Time             `json:"created_at"`
-	UpdatedAt  time.Time             `json:"updated_at"`
+	ID                 string                `json:"id"`
+	Type               domain.IdentityType   `json:"type"`
+	Name               string                `json:"name"`
+	ExternalID         string                `json:"external_id"`
+	Owner              string                `json:"owner"`
+	MetadataJSON       string                `json:"metadata_json"`
+	AllowedDNSNames    []string              `json:"allowed_dns_names"`
+	AllowedIPAddresses []string              `json:"allowed_ip_addresses"`
+	Status             domain.IdentityStatus `json:"status"`
+	CreatedAt          time.Time             `json:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at"`
 }
 
 type apiIssuer struct {

@@ -3,6 +3,10 @@ CREATE TABLE IF NOT EXISTS identities (
     type TEXT NOT NULL,
     name TEXT NOT NULL,
     external_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    allowed_dns_names TEXT NOT NULL,
+    allowed_ip_addresses TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

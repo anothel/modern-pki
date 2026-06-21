@@ -58,6 +58,10 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		name       string
 		definition string
 	}{
+		{table: "identities", name: "owner", definition: "owner TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "metadata_json", definition: "metadata_json TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "allowed_dns_names", definition: "allowed_dns_names TEXT NOT NULL DEFAULT '[]'"},
+		{table: "identities", name: "allowed_ip_addresses", definition: "allowed_ip_addresses TEXT NOT NULL DEFAULT '[]'"},
 		{table: "issuers", name: "parent_issuer_id", definition: "parent_issuer_id TEXT NOT NULL DEFAULT ''"},
 		{table: "issuers", name: "aia_url", definition: "aia_url TEXT NOT NULL DEFAULT ''"},
 		{table: "issuers", name: "crl_distribution_points", definition: "crl_distribution_points TEXT NOT NULL DEFAULT '[]'"},
@@ -300,6 +304,10 @@ func sqliteColumnExists(ctx context.Context, db *sql.DB, table string, name stri
 
 func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	statements := []string{
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS metadata_json TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS allowed_dns_names TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS allowed_ip_addresses TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE certificate_profiles ADD COLUMN IF NOT EXISTS subject_key_identifier BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS parent_issuer_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE issuers ADD COLUMN IF NOT EXISTS aia_url TEXT NOT NULL DEFAULT ''",

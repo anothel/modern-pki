@@ -104,7 +104,7 @@ func (s *MemoryStore) CreateIdentity(ctx context.Context, identity domain.Identi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.identities[identity.ID] = identity
+	s.identities[identity.ID] = copyIdentity(identity)
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (s *MemoryStore) GetIdentity(ctx context.Context, id string) (domain.Identi
 	if !ok {
 		return domain.Identity{}, domain.ErrIdentityNotFound
 	}
-	return identity, nil
+	return copyIdentity(identity), nil
 }
 
 func (s *MemoryStore) ListIdentities(ctx context.Context) ([]domain.Identity, error) {
@@ -125,7 +125,7 @@ func (s *MemoryStore) ListIdentities(ctx context.Context) ([]domain.Identity, er
 
 	identities := make([]domain.Identity, 0, len(s.identities))
 	for _, identity := range s.identities {
-		identities = append(identities, identity)
+		identities = append(identities, copyIdentity(identity))
 	}
 	return identities, nil
 }
@@ -1011,7 +1011,7 @@ func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) err
 }
 
 func (tx *memoryTx) CreateIdentity(ctx context.Context, identity domain.Identity) error {
-	tx.identities[identity.ID] = identity
+	tx.identities[identity.ID] = copyIdentity(identity)
 	return nil
 }
 
@@ -1020,13 +1020,13 @@ func (tx *memoryTx) GetIdentity(ctx context.Context, id string) (domain.Identity
 	if !ok {
 		return domain.Identity{}, domain.ErrIdentityNotFound
 	}
-	return identity, nil
+	return copyIdentity(identity), nil
 }
 
 func (tx *memoryTx) ListIdentities(ctx context.Context) ([]domain.Identity, error) {
 	identities := make([]domain.Identity, 0, len(tx.identities))
 	for _, identity := range tx.identities {
-		identities = append(identities, identity)
+		identities = append(identities, copyIdentity(identity))
 	}
 	return identities, nil
 }
@@ -1381,9 +1381,22 @@ func (tx *memoryTx) UpdateACMEChallengeIfStatus(ctx context.Context, challenge d
 func cloneIdentities(src map[string]domain.Identity) map[string]domain.Identity {
 	dst := make(map[string]domain.Identity, len(src))
 	for id, identity := range src {
-		dst[id] = identity
+		dst[id] = copyIdentity(identity)
 	}
 	return dst
+}
+
+func copyIdentity(identity domain.Identity) domain.Identity {
+	identity.AllowedDNSNames = copyStringSlice(identity.AllowedDNSNames)
+	identity.AllowedIPAddresses = copyStringSlice(identity.AllowedIPAddresses)
+	return identity
+}
+
+func copyStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }
 
 func cloneIssuers(src map[string]domain.Issuer) map[string]domain.Issuer {

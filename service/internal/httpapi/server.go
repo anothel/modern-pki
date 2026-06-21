@@ -194,9 +194,13 @@ func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity, err := s.service.CreateIdentity(r.Context(), requestActor(r), lifecycle.CreateIdentityRequest{
-		Type:       req.Type,
-		Name:       req.Name,
-		ExternalID: req.ExternalID,
+		Type:               req.Type,
+		Name:               req.Name,
+		ExternalID:         req.ExternalID,
+		Owner:              req.Owner,
+		MetadataJSON:       req.MetadataJSON,
+		AllowedDNSNames:    req.AllowedDNSNames,
+		AllowedIPAddresses: req.AllowedIPAddresses,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -1928,9 +1932,13 @@ func statusForError(err error) int {
 }
 
 type createIdentityRequest struct {
-	Type       domain.IdentityType `json:"type"`
-	Name       string              `json:"name"`
-	ExternalID string              `json:"external_id"`
+	Type               domain.IdentityType `json:"type"`
+	Name               string              `json:"name"`
+	ExternalID         string              `json:"external_id"`
+	Owner              string              `json:"owner"`
+	MetadataJSON       string              `json:"metadata_json"`
+	AllowedDNSNames    []string            `json:"allowed_dns_names"`
+	AllowedIPAddresses []string            `json:"allowed_ip_addresses"`
 }
 
 type createIssuerRequest struct {
@@ -2098,13 +2106,17 @@ type errorResponse struct {
 }
 
 type identityResponse struct {
-	ID         string                `json:"id"`
-	Type       domain.IdentityType   `json:"type"`
-	Name       string                `json:"name"`
-	ExternalID string                `json:"external_id"`
-	Status     domain.IdentityStatus `json:"status"`
-	CreatedAt  time.Time             `json:"created_at"`
-	UpdatedAt  time.Time             `json:"updated_at"`
+	ID                 string                `json:"id"`
+	Type               domain.IdentityType   `json:"type"`
+	Name               string                `json:"name"`
+	ExternalID         string                `json:"external_id"`
+	Owner              string                `json:"owner"`
+	MetadataJSON       string                `json:"metadata_json"`
+	AllowedDNSNames    []string              `json:"allowed_dns_names"`
+	AllowedIPAddresses []string              `json:"allowed_ip_addresses"`
+	Status             domain.IdentityStatus `json:"status"`
+	CreatedAt          time.Time             `json:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at"`
 }
 
 type issuerResponse struct {
@@ -2344,13 +2356,17 @@ type auditEventResponse struct {
 
 func toIdentityResponse(identity domain.Identity) identityResponse {
 	return identityResponse{
-		ID:         identity.ID,
-		Type:       identity.Type,
-		Name:       identity.Name,
-		ExternalID: identity.ExternalID,
-		Status:     identity.Status,
-		CreatedAt:  identity.CreatedAt,
-		UpdatedAt:  identity.UpdatedAt,
+		ID:                 identity.ID,
+		Type:               identity.Type,
+		Name:               identity.Name,
+		ExternalID:         identity.ExternalID,
+		Owner:              identity.Owner,
+		MetadataJSON:       identity.MetadataJSON,
+		AllowedDNSNames:    identity.AllowedDNSNames,
+		AllowedIPAddresses: identity.AllowedIPAddresses,
+		Status:             identity.Status,
+		CreatedAt:          identity.CreatedAt,
+		UpdatedAt:          identity.UpdatedAt,
 	}
 }
 

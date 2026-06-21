@@ -94,9 +94,13 @@ type auditRequestMetadataContextKey struct{}
 type apiKeyAuditMetadataContextKey struct{}
 
 type CreateIdentityRequest struct {
-	Type       domain.IdentityType
-	Name       string
-	ExternalID string
+	Type               domain.IdentityType
+	Name               string
+	ExternalID         string
+	Owner              string
+	MetadataJSON       string
+	AllowedDNSNames    []string
+	AllowedIPAddresses []string
 }
 
 type CreateIssuerRequest struct {
@@ -483,13 +487,17 @@ func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateId
 
 	now := s.clock.Now()
 	identity := domain.Identity{
-		ID:         s.idgen.NewID(),
-		Type:       req.Type,
-		Name:       req.Name,
-		ExternalID: req.ExternalID,
-		Status:     domain.IdentityActive,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:                 s.idgen.NewID(),
+		Type:               req.Type,
+		Name:               req.Name,
+		ExternalID:         req.ExternalID,
+		Owner:              req.Owner,
+		MetadataJSON:       req.MetadataJSON,
+		AllowedDNSNames:    copyStringSlice(req.AllowedDNSNames),
+		AllowedIPAddresses: copyStringSlice(req.AllowedIPAddresses),
+		Status:             domain.IdentityActive,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
@@ -498,6 +506,9 @@ func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateId
 		}
 		return s.createAuditEvent(ctx, repo, actor, "identity.created", "identity", identity.ID, now, auditFields(
 			"identity_id", identity.ID,
+			"owner", identity.Owner,
+			"allowed_dns_names", fmt.Sprintf("%d", len(identity.AllowedDNSNames)),
+			"allowed_ip_addresses", fmt.Sprintf("%d", len(identity.AllowedIPAddresses)),
 		))
 	}); err != nil {
 		return domain.Identity{}, err
@@ -910,7 +921,18 @@ func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateA
 		if account.Status != domain.ACMEAccountValid {
 			return domain.ErrInvalidRequest
 		}
-		if _, err := repo.GetIdentity(ctx, req.IdentityID); err != nil {
+		identity, err := repo.GetIdentity(ctx, req.IdentityID)
+		if err != nil {
+			return err
+		}
+		if err := validateEnrollmentIdentityPolicy(CreateEnrollmentRequest{
+			IdentityID:           req.IdentityID,
+			IssuerID:             req.IssuerID,
+			CertificateProfileID: req.CertificateProfileID,
+			RequestedDNSNames:    req.RequestedDNSNames,
+			RequestedIPAddresses: req.RequestedIPAddresses,
+			RequestedNotAfter:    req.RequestedNotAfter,
+		}, identity); err != nil {
 			return err
 		}
 		if _, err := repo.GetIssuer(ctx, req.IssuerID); err != nil {
@@ -1261,7 +1283,8 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 		return domain.Enrollment{}, err
 	}
 
-	if _, err := s.repo.GetIdentity(ctx, req.IdentityID); err != nil {
+	identity, err := s.repo.GetIdentity(ctx, req.IdentityID)
+	if err != nil {
 		return domain.Enrollment{}, err
 	}
 	if _, err := s.repo.GetIssuer(ctx, req.IssuerID); err != nil {
@@ -1287,6 +1310,9 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 		return domain.Enrollment{}, domain.ErrInvalidRequest
 	}
 	if err := validateEnrollmentProfilePolicy(req, profile, now); err != nil {
+		return domain.Enrollment{}, err
+	}
+	if err := validateEnrollmentIdentityPolicy(req, identity); err != nil {
 		return domain.Enrollment{}, err
 	}
 
@@ -1456,6 +1482,13 @@ func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, ac
 	if err := validateEnrollmentProfilePolicy(createReq, profile, now); err != nil {
 		return domain.Enrollment{}, err
 	}
+	identity, err := s.repo.GetIdentity(ctx, createReq.IdentityID)
+	if err != nil {
+		return domain.Enrollment{}, err
+	}
+	if err := validateEnrollmentIdentityPolicy(createReq, identity); err != nil {
+		return domain.Enrollment{}, err
+	}
 
 	enrollment := domain.Enrollment{
 		ID:                   s.idgen.NewID(),
@@ -1607,6 +1640,10 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err != nil {
 		return domain.Certificate{}, err
 	}
+	identity, err := s.repo.GetIdentity(ctx, enrollment.IdentityID)
+	if err != nil {
+		return domain.Certificate{}, err
+	}
 	var profile domain.CertificateProfile
 	if enrollment.CertificateProfileID != "" {
 		profile, err = s.repo.GetCertificateProfile(ctx, enrollment.CertificateProfileID)
@@ -1617,6 +1654,9 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 
 	now := s.clock.Now()
 	if err := validateEnrollmentProfilePolicy(enrollmentProfilePolicyRequest(enrollment), profile, now); err != nil {
+		return domain.Certificate{}, err
+	}
+	if err := validateEnrollmentIdentityPolicy(enrollmentProfilePolicyRequest(enrollment), identity); err != nil {
 		return domain.Certificate{}, err
 	}
 	// MVP limit: signing precedes DB commit; conditional finalization below prevents stale issuers from persisting duplicates.
@@ -2787,6 +2827,23 @@ func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain
 	return nil
 }
 
+func validateEnrollmentIdentityPolicy(req CreateEnrollmentRequest, identity domain.Identity) error {
+	if identity.ID == "" {
+		return nil
+	}
+	for _, dnsName := range req.RequestedDNSNames {
+		if !valueAllowedByList(dnsName, identity.AllowedDNSNames) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, ipAddress := range req.RequestedIPAddresses {
+		if !valueAllowedByList(ipAddress, identity.AllowedIPAddresses) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
 func enrollmentProfilePolicyRequest(enrollment domain.Enrollment) CreateEnrollmentRequest {
 	return CreateEnrollmentRequest{
 		IdentityID:           enrollment.IdentityID,
@@ -2798,6 +2855,22 @@ func enrollmentProfilePolicyRequest(enrollment domain.Enrollment) CreateEnrollme
 		RequestedIPAddresses: append([]string(nil), enrollment.RequestedIPAddresses...),
 		RequestedNotAfter:    enrollment.RequestedNotAfter,
 	}
+}
+
+func valueAllowedByList(value string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, candidate := range allowed {
+		if strings.TrimSpace(candidate) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func dnsAllowedByProfile(name string, patterns []string) bool {
@@ -2978,4 +3051,11 @@ func sameStringSet(left []string, right []string) bool {
 func copyStringListExtensionPolicy(policy domain.StringListExtensionPolicy) domain.StringListExtensionPolicy {
 	policy.Values = append([]string(nil), policy.Values...)
 	return policy
+}
+
+func copyStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }

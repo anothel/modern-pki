@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -63,6 +64,67 @@ func TestMemoryStoreNestedWithinTxUsesSameTransaction(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+}
+
+func TestMemoryStoreIdentityPolicyFieldsRoundTrip(t *testing.T) {
+	repo := NewMemoryStore()
+	testIdentityPolicyFieldsRoundTrip(t, repo)
+}
+
+func testIdentityPolicyFieldsRoundTrip(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	identity := domain.Identity{
+		ID:                 "identity-1",
+		Type:               domain.IdentityWorkload,
+		Name:               "payments-api",
+		ExternalID:         "k8s:prod:payments:payments-api",
+		Owner:              "platform",
+		MetadataJSON:       `{"namespace":"prod"}`,
+		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+		AllowedIPAddresses: []string{"192.0.2.42"},
+		Status:             domain.IdentityActive,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+
+	if err := repo.CreateIdentity(ctx, identity); err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	identity.AllowedDNSNames[0] = "mutated.example.test"
+	identity.AllowedIPAddresses[0] = "192.0.2.99"
+
+	stored, err := repo.GetIdentity(ctx, "identity-1")
+	if err != nil {
+		t.Fatalf("GetIdentity returned error: %v", err)
+	}
+	if stored.Owner != "platform" ||
+		stored.MetadataJSON != `{"namespace":"prod"}` ||
+		!reflect.DeepEqual(stored.AllowedDNSNames, []string{"payments.prod.svc.cluster.local"}) ||
+		!reflect.DeepEqual(stored.AllowedIPAddresses, []string{"192.0.2.42"}) {
+		t.Fatalf("stored identity = %#v", stored)
+	}
+
+	emptyIdentity := domain.Identity{
+		ID:        "identity-2",
+		Type:      domain.IdentityMachine,
+		Name:      "edge-02",
+		Status:    domain.IdentityActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := repo.CreateIdentity(ctx, emptyIdentity); err != nil {
+		t.Fatalf("CreateIdentity empty returned error: %v", err)
+	}
+	storedEmpty, err := repo.GetIdentity(ctx, "identity-2")
+	if err != nil {
+		t.Fatalf("GetIdentity empty returned error: %v", err)
+	}
+	if !reflect.DeepEqual(storedEmpty.AllowedDNSNames, []string{}) ||
+		!reflect.DeepEqual(storedEmpty.AllowedIPAddresses, []string{}) {
+		t.Fatalf("stored empty identity allow lists = %#v", storedEmpty)
 	}
 }
 

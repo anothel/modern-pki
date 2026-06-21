@@ -320,16 +320,28 @@ func (r sqlRepository) WithinTx(ctx context.Context, fn func(Repository) error) 
 }
 
 func (r sqlRepository) CreateIdentity(ctx context.Context, identity domain.Identity) error {
-	_, err := r.exec.ExecContext(ctx, `
+	allowedDNSNames, err := marshalStringSlice(identity.AllowedDNSNames)
+	if err != nil {
+		return err
+	}
+	allowedIPAddresses, err := marshalStringSlice(identity.AllowedIPAddresses)
+	if err != nil {
+		return err
+	}
+	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO identities (
-	id, type, name, external_id, status, created_at, updated_at
+	id, type, name, external_id, owner, metadata_json, allowed_dns_names, allowed_ip_addresses, status, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )`,
 		identity.ID,
 		string(identity.Type),
 		identity.Name,
 		identity.ExternalID,
+		identity.Owner,
+		identity.MetadataJSON,
+		allowedDNSNames,
+		allowedIPAddresses,
 		string(identity.Status),
 		formatSQLTime(identity.CreatedAt),
 		formatSQLTime(identity.UpdatedAt),
@@ -339,7 +351,7 @@ INSERT INTO identities (
 
 func (r sqlRepository) GetIdentity(ctx context.Context, id string) (domain.Identity, error) {
 	identity, err := scanIdentity(r.exec.QueryRowContext(ctx, `
-SELECT id, type, name, external_id, status, created_at, updated_at
+SELECT id, type, name, external_id, owner, metadata_json, allowed_dns_names, allowed_ip_addresses, status, created_at, updated_at
 FROM identities
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -353,7 +365,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListIdentities(ctx context.Context) ([]domain.Identity, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, type, name, external_id, status, created_at, updated_at
+SELECT id, type, name, external_id, owner, metadata_json, allowed_dns_names, allowed_ip_addresses, status, created_at, updated_at
 FROM identities
 ORDER BY created_at, id`)
 	if err != nil {
@@ -2170,6 +2182,8 @@ func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 	var identity domain.Identity
 	var identityType string
 	var status string
+	var allowedDNSNames string
+	var allowedIPAddresses string
 	var createdAt any
 	var updatedAt any
 
@@ -2178,6 +2192,10 @@ func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 		&identityType,
 		&identity.Name,
 		&identity.ExternalID,
+		&identity.Owner,
+		&identity.MetadataJSON,
+		&allowedDNSNames,
+		&allowedIPAddresses,
 		&status,
 		&createdAt,
 		&updatedAt,
@@ -2193,8 +2211,18 @@ func scanIdentity(scanner sqlScanner) (domain.Identity, error) {
 	if err != nil {
 		return domain.Identity{}, err
 	}
+	parsedAllowedDNSNames, err := unmarshalStringSlice(allowedDNSNames)
+	if err != nil {
+		return domain.Identity{}, err
+	}
+	parsedAllowedIPAddresses, err := unmarshalStringSlice(allowedIPAddresses)
+	if err != nil {
+		return domain.Identity{}, err
+	}
 
 	identity.Type = domain.IdentityType(identityType)
+	identity.AllowedDNSNames = parsedAllowedDNSNames
+	identity.AllowedIPAddresses = parsedAllowedIPAddresses
 	identity.Status = domain.IdentityStatus(status)
 	identity.CreatedAt = parsedCreatedAt
 	identity.UpdatedAt = parsedUpdatedAt
@@ -2754,6 +2782,9 @@ func scanCRLPublication(scanner sqlScanner) (domain.CRLPublication, error) {
 }
 
 func marshalStringSlice(values []string) (string, error) {
+	if values == nil {
+		values = []string{}
+	}
 	data, err := json.Marshal(values)
 	if err != nil {
 		return "", err
@@ -2791,12 +2822,15 @@ func unmarshalBasicConstraintsPolicy(data string, value *domain.BasicConstraints
 
 func unmarshalStringSlice(data string) ([]string, error) {
 	if data == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 
 	var values []string
 	if err := json.Unmarshal([]byte(data), &values); err != nil {
 		return nil, err
+	}
+	if values == nil {
+		return []string{}, nil
 	}
 	return values, nil
 }

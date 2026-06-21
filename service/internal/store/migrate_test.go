@@ -79,6 +79,10 @@ CREATE TABLE certificates (
 		table string
 		name  string
 	}{
+		{table: "identities", name: "owner"},
+		{table: "identities", name: "metadata_json"},
+		{table: "identities", name: "allowed_dns_names"},
+		{table: "identities", name: "allowed_ip_addresses"},
 		{table: "certificate_profiles", name: "subject_key_identifier"},
 		{table: "certificate_profiles", name: "authority_key_identifier"},
 		{table: "enrollments", name: "certificate_profile_id"},

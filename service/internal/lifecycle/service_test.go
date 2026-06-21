@@ -1572,6 +1572,36 @@ func TestCreateIdentityRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestCreateIdentityRecordsMachineMetadata(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type:               domain.IdentityWorkload,
+		Name:               "payments-api",
+		ExternalID:         "k8s:prod:payments:payments-api",
+		Owner:              "platform",
+		MetadataJSON:       `{"namespace":"prod","service_account":"payments"}`,
+		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+		AllowedIPAddresses: []string{"192.0.2.42"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+
+	if identity.Owner != "platform" ||
+		identity.MetadataJSON != `{"namespace":"prod","service_account":"payments"}` ||
+		!reflect.DeepEqual(identity.AllowedDNSNames, []string{"payments.prod.svc.cluster.local"}) ||
+		!reflect.DeepEqual(identity.AllowedIPAddresses, []string{"192.0.2.42"}) {
+		t.Fatalf("identity machine metadata = %#v", identity)
+	}
+}
+
 func TestCreateIssuerRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	valid := CreateIssuerRequest{
@@ -2013,6 +2043,85 @@ func TestCreateEnrollmentRejectsSANMismatch(t *testing.T) {
 	}
 }
 
+func TestCreateEnrollmentEnforcesIdentitySANPolicy(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		csrInfo corecli.CSRInfo
+		mutate  func(*CreateEnrollmentRequest)
+	}{
+		{
+			name: "dns outside identity allow list",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=payments-api",
+				DNSNames:    []string{"other.prod.svc.cluster.local"},
+				IPAddresses: []string{"192.0.2.42"},
+			},
+			mutate: func(req *CreateEnrollmentRequest) {
+				req.RequestedDNSNames = []string{"other.prod.svc.cluster.local"}
+			},
+		},
+		{
+			name: "ip outside identity allow list",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=payments-api",
+				DNSNames:    []string{"payments.prod.svc.cluster.local"},
+				IPAddresses: []string{"192.0.2.99"},
+			},
+			mutate: func(req *CreateEnrollmentRequest) {
+				req.RequestedIPAddresses = []string{"192.0.2.99"}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := New(
+				store.NewMemoryStore(),
+				&fakeIssuer{csrInfo: tt.csrInfo},
+				fixedClock{now: now},
+				&fakeIDGenerator{},
+			)
+			identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+				Type:               domain.IdentityWorkload,
+				Name:               "payments-api",
+				ExternalID:         "k8s:prod:payments:payments-api",
+				Owner:              "platform",
+				AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+				AllowedIPAddresses: []string{"192.0.2.42"},
+			})
+			if err != nil {
+				t.Fatalf("CreateIdentity returned error: %v", err)
+			}
+			issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+				Name:           "intermediate-ca",
+				Kind:           domain.IssuerIntermediateCA,
+				CertificatePEM: "issuer-cert-pem",
+				KeyRef:         "issuer-key-ref",
+			})
+			if err != nil {
+				t.Fatalf("CreateIssuer returned error: %v", err)
+			}
+			req := CreateEnrollmentRequest{
+				IdentityID:           identity.ID,
+				IssuerID:             issuer.ID,
+				CSRPEM:               "csr-pem",
+				RequestedSubject:     "CN=payments-api",
+				RequestedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+				RequestedIPAddresses: []string{"192.0.2.42"},
+				RequestedNotAfter:    now.Add(24 * time.Hour),
+			}
+			tt.mutate(&req)
+
+			_, err = service.CreateEnrollment(ctx, "operator", req)
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("CreateEnrollment error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
 func TestCreateEnrollmentEnforcesCertificateProfilePolicy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
@@ -2114,6 +2223,58 @@ func TestIssueCertificateEnforcesProfilePolicyBeforeSigning(t *testing.T) {
 	}
 
 	_, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("IssueCertificate error = %v, want ErrInvalidRequest", err)
+	}
+	if len(issuerClient.requests) != 0 {
+		t.Fatalf("Issue call count = %d, want 0", len(issuerClient.requests))
+	}
+}
+
+func TestIssueCertificateEnforcesIdentitySANPolicyBeforeSigning(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	service := New(repo, issuerClient, fixedClock{now: now}, &fakeIDGenerator{})
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type:               domain.IdentityWorkload,
+		Name:               "payments-api",
+		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+		AllowedIPAddresses: []string{"192.0.2.42"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	enrollment := domain.Enrollment{
+		ID:                   "enrollment-1",
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		Status:               domain.EnrollmentApproved,
+		RequestedSubject:     "CN=payments-api",
+		RequestedDNSNames:    []string{"other.prod.svc.cluster.local"},
+		RequestedIPAddresses: []string{"192.0.2.42"},
+		RequestedNotAfter:    now.Add(24 * time.Hour),
+		ApprovedBy:           "approver",
+		ApprovedAt:           now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := repo.CreateEnrollment(ctx, enrollment); err != nil {
+		t.Fatalf("CreateEnrollment fixture returned error: %v", err)
+	}
+
+	_, err = service.IssueCertificate(ctx, "issuer", enrollment.ID)
 	if !errors.Is(err, domain.ErrInvalidRequest) {
 		t.Fatalf("IssueCertificate error = %v, want ErrInvalidRequest", err)
 	}
@@ -2408,6 +2569,67 @@ func TestRenewCertificateCreatesPendingEnrollmentFromCertificate(t *testing.T) {
 	metadata := auditMetadata(t, last)
 	if metadata["certificate_id"] != certificate.ID || metadata["enrollment_id"] != renewal.ID {
 		t.Fatalf("renewal audit metadata = %#v", metadata)
+	}
+}
+
+func TestRenewCertificateEnforcesIdentitySANPolicy(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	service := New(
+		repo,
+		&fakeIssuer{csrInfo: corecli.CSRInfo{
+			Subject:     "CN=payments-api",
+			DNSNames:    []string{"other.prod.svc.cluster.local"},
+			IPAddresses: []string{"192.0.2.42"},
+		}},
+		fixedClock{now: now},
+		&fakeIDGenerator{},
+	)
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type:               domain.IdentityWorkload,
+		Name:               "payments-api",
+		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+		AllowedIPAddresses: []string{"192.0.2.42"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	certificate := domain.Certificate{
+		ID:             "certificate-1",
+		IdentityID:     identity.ID,
+		IssuerID:       issuer.ID,
+		EnrollmentID:   "enrollment-1",
+		SerialNumber:   "123",
+		Subject:        "CN=payments-api",
+		DNSNames:       []string{"other.prod.svc.cluster.local"},
+		IPAddresses:    []string{"192.0.2.42"},
+		NotBefore:      now,
+		NotAfter:       now.Add(24 * time.Hour),
+		Status:         domain.CertificateValid,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.CreateCertificate(ctx, certificate); err != nil {
+		t.Fatalf("CreateCertificate fixture returned error: %v", err)
+	}
+
+	_, err = service.RenewCertificate(ctx, "operator", certificate.ID, RenewCertificateRequest{
+		CSRPEM:            "renewal-csr-pem",
+		RequestedNotAfter: now.Add(48 * time.Hour),
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("RenewCertificate error = %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -2754,6 +2976,49 @@ func TestACMEOrderLifecycleFinalizesToCertificate(t *testing.T) {
 	}
 	if len(coreClient.requests) != 1 || coreClient.requests[0].CSRPEM != "csr-pem" {
 		t.Fatalf("issuer requests = %#v", coreClient.requests)
+	}
+}
+
+func TestCreateACMEOrderEnforcesIdentitySANPolicyBeforeAuthorization(t *testing.T) {
+	ctx := context.Background()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(store.NewMemoryStore(), &fakeIssuer{}, clock, &fakeIDGenerator{})
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type:               domain.IdentityWorkload,
+		Name:               "payments-api",
+		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
+		AllowedIPAddresses: []string{"192.0.2.42"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	_, err = service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		RequestedDNSNames:    []string{"other.prod.svc.cluster.local"},
+		RequestedIPAddresses: []string{"192.0.2.42"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateACMEOrder error = %v, want ErrInvalidRequest", err)
 	}
 }
 

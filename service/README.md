@@ -4,6 +4,8 @@ Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoint
 
 Enrollment creation inspects the CSR and stores CSR SANs separately from requested SANs. The current policy requires requested DNS/IP SANs to exactly match CSR DNS/IP SANs, ignoring order.
 
+Identities support machine lifecycle metadata through `owner`, `metadata_json`, `allowed_dns_names`, and `allowed_ip_addresses`. When an identity allow-list is non-empty, enrollment, renewal/reissue enrollment creation, and final signing reject requested SANs outside that identity policy. Empty allow-lists preserve the existing unrestricted identity behavior.
+
 Certificate profiles are first-class service records at:
 
 - `POST /certificate-profiles`

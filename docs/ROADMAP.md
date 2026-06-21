@@ -19,6 +19,8 @@ Build a service that can operate machine identity and certificate lifecycle infr
 ### Lifecycle MVP
 
 - Manual identity, issuer, enrollment, approval, issuance, inventory, revocation, and audit flow.
+- Machine/service/workload/device identity metadata with owner, metadata JSON, and identity-bound DNS/IP SAN allow-lists.
+- Identity SAN policy enforcement during enrollment, renewal/reissue enrollment creation, and final signing.
 - CSR inspection through the core CLI boundary.
 - CSR SAN capture and policy requiring requested SANs to match CSR SANs.
 - Certificate profile model with validity, subject, DNS/IP constraints, key usage, EKU, basic constraints, SKI, AKI, and SAN emission.
@@ -99,21 +101,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ## Prioritized Backlog
 
-### 2. Machine Identity Enrollment
-
-- First-class machine identity records for services, workloads, devices, and pods.
-- Identity-bound issuance policy.
-- Service/workload metadata and ownership.
-- Audit views by machine identity.
-
-### 3. Kubernetes Workload Identity
+### 2. Kubernetes Workload Identity
 
 - Kubernetes service account identity mapping.
 - Pod/workload certificate enrollment API.
 - Optional Kubernetes CSR or projected token verification.
 - Rotation workflow for workloads.
 
-### 4. Certificate Rotation Automation
+### 3. Certificate Rotation Automation
 
 - Rotation schedules.
 - Pre-expiry renewal windows.
@@ -121,21 +116,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Evented rotation notifications.
 - Safe cutover state tracking.
 
-### 5. HSM And PKCS#11
+### 4. HSM And PKCS#11
 
 - Issuer key reference model for HSM-backed keys.
 - PKCS#11 signing boundary.
 - Operator configuration for slots, labels, and PIN sources.
 - Tests with a software token if available.
 
-### 6. Crypto Agility
+### 5. Crypto Agility
 
 - Profile-level key algorithm and signature algorithm policy.
 - RSA/ECDSA algorithm selection in issuance paths.
 - Ed25519 feasibility check.
 - Migration plan for algorithm deprecation.
 
-### 7. PQC And Hybrid Experiments
+### 6. PQC And Hybrid Experiments
 
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.

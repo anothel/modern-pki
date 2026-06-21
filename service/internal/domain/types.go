@@ -163,13 +163,17 @@ const (
 )
 
 type Identity struct {
-	ID         string
-	Type       IdentityType
-	Name       string
-	ExternalID string
-	Status     IdentityStatus
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID                 string
+	Type               IdentityType
+	Name               string
+	ExternalID         string
+	Owner              string
+	MetadataJSON       string
+	AllowedDNSNames    []string
+	AllowedIPAddresses []string
+	Status             IdentityStatus
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type Issuer struct {
