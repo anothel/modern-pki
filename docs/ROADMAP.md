@@ -48,8 +48,8 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 - ACME directory and nonce endpoints.
 - JWS envelope parsing and one-time nonce replay protection.
-- ES256/P-256 and RS256/RSA JWS signature verification.
-- Account key binding through EC/RSA JWK thumbprint and canonical JWK persistence.
+- ES256/P-256, RS256/RSA, and EdDSA/Ed25519 JWS signature verification.
+- Account key binding through EC/RSA/OKP JWK thumbprint and canonical JWK persistence.
 - Existing account reuse by JWK thumbprint, contact update, account deactivation, and deactivated-account enforcement.
 - Account ownership enforcement for new-order, challenge, finalize, and certificate download.
 - ACME order, authorization, challenge, finalize, and certificate download flow.
@@ -88,7 +88,7 @@ Current status:
 Next shape:
 
 - Run certbot from an administrative Windows shell or non-Windows environment and convert any differences into protocol fixture coverage.
-- Add account key algorithm matrix coverage beyond the current ES256/RS256 path.
+- Run certbot/lego account-key variants where clients expose them.
 - Keep lego smoke as the non-admin local regression check.
 
 Known-good lego command:
@@ -99,26 +99,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ## Prioritized Backlog
 
-### 2. ACME Key Algorithm Expansion
-
-- Ed25519 account keys if supported by selected clients.
-- Keep ES256 as default fixture.
-
-### 3. Machine Identity Enrollment
+### 2. Machine Identity Enrollment
 
 - First-class machine identity records for services, workloads, devices, and pods.
 - Identity-bound issuance policy.
 - Service/workload metadata and ownership.
 - Audit views by machine identity.
 
-### 4. Kubernetes Workload Identity
+### 3. Kubernetes Workload Identity
 
 - Kubernetes service account identity mapping.
 - Pod/workload certificate enrollment API.
 - Optional Kubernetes CSR or projected token verification.
 - Rotation workflow for workloads.
 
-### 5. Certificate Rotation Automation
+### 4. Certificate Rotation Automation
 
 - Rotation schedules.
 - Pre-expiry renewal windows.
@@ -126,21 +121,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Evented rotation notifications.
 - Safe cutover state tracking.
 
-### 6. HSM And PKCS#11
+### 5. HSM And PKCS#11
 
 - Issuer key reference model for HSM-backed keys.
 - PKCS#11 signing boundary.
 - Operator configuration for slots, labels, and PIN sources.
 - Tests with a software token if available.
 
-### 7. Crypto Agility
+### 6. Crypto Agility
 
 - Profile-level key algorithm and signature algorithm policy.
 - RSA/ECDSA algorithm selection in issuance paths.
 - Ed25519 feasibility check.
 - Migration plan for algorithm deprecation.
 
-### 8. PQC And Hybrid Experiments
+### 7. PQC And Hybrid Experiments
 
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.

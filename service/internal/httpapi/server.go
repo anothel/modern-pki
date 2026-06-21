@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -1299,7 +1300,7 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 }
 
 func isSupportedACMEJWSAlg(alg string) bool {
-	return alg == "ES256" || alg == "RS256"
+	return alg == "ES256" || alg == "RS256" || alg == "EdDSA"
 }
 
 func (s *Server) issueACMENonce() (string, error) {
@@ -1446,7 +1447,7 @@ func acmeJWKFromProtected(value any) (acmeJWK, error) {
 	if err := json.Unmarshal(encoded, &jwk); err != nil {
 		return acmeJWK{}, err
 	}
-	if isValidACMEECJWK(jwk) || isValidACMERSAJWK(jwk) {
+	if isValidACMEECJWK(jwk) || isValidACMERSAJWK(jwk) || isValidACMEOKPJWK(jwk) {
 		return jwk, nil
 	}
 	return acmeJWK{}, domain.ErrInvalidRequest
@@ -1494,6 +1495,15 @@ func verifyACMEJWS(alg string, jwk acmeJWK, signingInput string, signatureB64 st
 			return domain.ErrInvalidRequest
 		}
 		return nil
+	case "EdDSA":
+		publicKey, err := acmeOKPJWKPublicKey(jwk)
+		if err != nil {
+			return err
+		}
+		if !ed25519.Verify(publicKey, []byte(signingInput), signature) {
+			return domain.ErrInvalidRequest
+		}
+		return nil
 	default:
 		return domain.ErrInvalidRequest
 	}
@@ -1505,6 +1515,10 @@ func isValidACMEECJWK(jwk acmeJWK) bool {
 
 func isValidACMERSAJWK(jwk acmeJWK) bool {
 	return jwk.KTY == "RSA" && jwk.N != "" && jwk.E != "" && jwk.CRV == "" && jwk.X == "" && jwk.Y == ""
+}
+
+func isValidACMEOKPJWK(jwk acmeJWK) bool {
+	return jwk.KTY == "OKP" && jwk.CRV == "Ed25519" && jwk.X != "" && jwk.Y == "" && jwk.N == "" && jwk.E == ""
 }
 
 func acmeECJWKPublicKey(jwk acmeJWK) (*ecdsa.PublicKey, error) {
@@ -1548,6 +1562,17 @@ func acmeRSAJWKPublicKey(jwk acmeJWK) (*rsa.PublicKey, error) {
 	return &rsa.PublicKey{N: n, E: int(e.Int64())}, nil
 }
 
+func acmeOKPJWKPublicKey(jwk acmeJWK) (ed25519.PublicKey, error) {
+	if !isValidACMEOKPJWK(jwk) {
+		return nil, domain.ErrInvalidRequest
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil || len(xBytes) != ed25519.PublicKeySize {
+		return nil, domain.ErrInvalidRequest
+	}
+	return ed25519.PublicKey(xBytes), nil
+}
+
 func canonicalACMEJWKJSON(jwk acmeJWK) (string, error) {
 	switch jwk.KTY {
 	case "EC":
@@ -1560,6 +1585,11 @@ func canonicalACMEJWKJSON(jwk acmeJWK) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf(`{"e":"%s","kty":"%s","n":"%s"}`, jwk.E, jwk.KTY, jwk.N), nil
+	case "OKP":
+		if _, err := acmeOKPJWKPublicKey(jwk); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`{"crv":"%s","kty":"%s","x":"%s"}`, jwk.CRV, jwk.KTY, jwk.X), nil
 	default:
 		return "", domain.ErrInvalidRequest
 	}

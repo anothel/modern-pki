@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -674,6 +675,99 @@ func TestACMEProtocolRSAAccountKeyCreatesOrderAndFinalizes(t *testing.T) {
 	assertStatus(t, status, http.StatusOK)
 	if finalized.Status != string(domain.ACMEOrderValid) || finalized.Certificate == "" {
 		t.Fatalf("RSA finalized order = %#v", finalized)
+	}
+}
+
+func TestACMEProtocolEd25519AccountKeyCreatesOrder(t *testing.T) {
+	api := newTestAPI(t)
+	edSigner := newACMEEd25519TestSigner(t)
+	identity := api.createIdentity(t)
+	issuer := api.createIssuer(t)
+	var profile apiCertificateProfile
+	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+		"name":                    "machine-server",
+		"issuer_id":               issuer.ID,
+		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
+		"allowed_dns_patterns":    []string{"*.example.test"},
+	}, &profile)
+	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", edSigner, map[string]any{
+		"contact":              []string{"mailto:ed25519-ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+	if account.Status != string(domain.ACMEAccountValid) || account.Location == "" {
+		t.Fatalf("Ed25519 account = %#v headers = %#v", account, accountResponse)
+	}
+	storedAccount, err := api.repo.GetACMEAccount(api.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetACMEAccount returned error: %v", err)
+	}
+	wantJWK := fmt.Sprintf(`{"crv":"Ed25519","kty":"OKP","x":"%s"}`, edSigner.jwk()["x"])
+	if storedAccount.KeyJWKJSON != wantJWK || storedAccount.KeyThumbprint == "" {
+		t.Fatalf("stored Ed25519 account = %#v", storedAccount)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var order apiACMEProtocolOrder
+	status = api.doACMEJWSWithSigner(t, "/acme/new-order", nonce, account.Location, edSigner, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &order)
+	assertStatus(t, status, http.StatusCreated)
+	if order.Status != string(domain.ACMEOrderPending) || len(order.Authorizations) != 1 {
+		t.Fatalf("Ed25519 order = %#v", order)
+	}
+}
+
+func TestACMEOKPJWKRejectsMalformedKeys(t *testing.T) {
+	validX := base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	for _, tt := range []struct {
+		name string
+		jwk  acmeJWK
+	}{
+		{
+			name: "wrong curve",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed448", X: validX},
+		},
+		{
+			name: "missing x",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed25519"},
+		},
+		{
+			name: "invalid base64",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed25519", X: "not base64"},
+		},
+		{
+			name: "wrong public key length",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed25519", X: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize-1))},
+		},
+		{
+			name: "extra y",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed25519", X: validX, Y: "extra"},
+		},
+		{
+			name: "extra rsa fields",
+			jwk:  acmeJWK{KTY: "OKP", CRV: "Ed25519", X: validX, N: "extra", E: "extra"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := canonicalACMEJWKJSON(tt.jwk); !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("canonicalACMEJWKJSON error = %v, want ErrInvalidRequest", err)
+			}
+			if _, err := acmeOKPJWKPublicKey(tt.jwk); !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("acmeOKPJWKPublicKey error = %v, want ErrInvalidRequest", err)
+			}
+		})
 	}
 }
 
@@ -2379,6 +2473,41 @@ func (s *acmeRSATestSigner) sign(t *testing.T, input string) string {
 	if err != nil {
 		t.Fatalf("sign ACME RSA test JWS: %v", err)
 	}
+	return base64.RawURLEncoding.EncodeToString(signature)
+}
+
+type acmeEd25519TestSigner struct {
+	publicKey  ed25519.PublicKey
+	privateKey ed25519.PrivateKey
+}
+
+func newACMEEd25519TestSigner(t *testing.T) acmeTestSigner {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ACME Ed25519 test key: %v", err)
+	}
+	return &acmeEd25519TestSigner{
+		publicKey:  publicKey,
+		privateKey: privateKey,
+	}
+}
+
+func (s *acmeEd25519TestSigner) alg() string {
+	return "EdDSA"
+}
+
+func (s *acmeEd25519TestSigner) jwk() map[string]string {
+	return map[string]string{
+		"kty": "OKP",
+		"crv": "Ed25519",
+		"x":   base64.RawURLEncoding.EncodeToString(s.publicKey),
+	}
+}
+
+func (s *acmeEd25519TestSigner) sign(t *testing.T, input string) string {
+	t.Helper()
+	signature := ed25519.Sign(s.privateKey, []byte(input))
 	return base64.RawURLEncoding.EncodeToString(signature)
 }
 
