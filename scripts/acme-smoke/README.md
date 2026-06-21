@@ -70,6 +70,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-certbot-smoke.
 - `MODERN_PKI_DB_DRIVER=sqlite`
 - a temporary SQLite database under `.tmp\acme-smoke`
 - `MODERN_PKI_ACME_HTTP01_BASE_URL=http://127.0.0.1:{Http01Port}`
+- workspace-local Go caches under `.gocache` and `.gomodcache`
+- a temporary service binary under `.tmp\acme-smoke`
 
 Logs and temporary state are written under `.tmp\acme-smoke`.
 
@@ -80,7 +82,23 @@ certbot installed. Use it to verify the local service and inspect the certbot
 command that would be run.
 
 `-Run` performs the live certbot smoke. In this mode, certbot must be available
-on `PATH`; if it is missing, the harness exits `2`.
+on `PATH` or passed with `-CertbotPath`; if it is missing, the harness exits
+`2`.
+
+The default challenge mode is `webroot`. The harness starts a local Python
+static-file server on `127.0.0.1:{Http01Port}` and passes `--webroot` to
+certbot. This avoids binding certbot standalone to a local port.
+
+Standalone mode is still available:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-certbot-smoke.ps1 -ChallengeMode standalone -Run
+```
+
+On Windows, certbot 5.6.0 exits before ACME traffic unless the shell has
+administrative rights, even in webroot mode. In a non-admin shell this harness
+can verify service startup and print the certbot command, but the live certbot
+run stops at certbot's own administrative-rights check.
 
 ## HTTP-01 local limitation
 

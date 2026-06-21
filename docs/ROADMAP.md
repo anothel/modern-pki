@@ -73,9 +73,12 @@ Current status:
 - Harness scaffold added under `scripts/acme-smoke/`.
 - Harness preflight now works without certbot installed.
 - Harness can optionally start `modern-pki-service` with temporary SQLite state by passing `-StartService`.
+- Harness starts a temporary service binary instead of `go run`, using workspace-local Go caches.
+- Harness defaults to certbot `webroot` mode and starts a local HTTP-01 static-file server.
 - Runner behavior is covered by `scripts/acme-smoke/test-run-certbot-smoke.ps1`.
 - Opt-in `MODERN_PKI_ACME_HTTP01_BASE_URL` support added for non-port-80 local HTTP-01 smoke.
-- Next unblocker: install certbot and run the harness against the local service.
+- Certbot 5.6.0 was installed into a workspace-local Python virtualenv and invoked against the local service.
+- Current blocker: certbot on this Windows shell exits before ACME traffic with `certbot must be run on a shell with administrative rights`.
 
 Recommended shape:
 
@@ -87,7 +90,7 @@ Recommended shape:
 
 Expected output:
 
-- First live certbot transcript from `scripts/acme-smoke/run-certbot-smoke.ps1 -StartService -Run`.
+- First live certbot transcript from an administrative shell, or from a non-Windows environment.
 - Clear unsupported areas list after first real-client run.
 
 Likely gaps:

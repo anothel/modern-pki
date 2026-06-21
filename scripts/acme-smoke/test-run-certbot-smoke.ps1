@@ -85,10 +85,16 @@ function Stop-DirectoryStub {
 function Invoke-Runner {
     param([string[]]$RunnerArgs)
 
-    $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $Runner @RunnerArgs 2>&1
-    return [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
-        Output = ($output -join [Environment]::NewLine)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $Runner @RunnerArgs 2>&1
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output = ($output -join [Environment]::NewLine)
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
@@ -114,6 +120,20 @@ try {
     if ($preflight.Output -notmatch "certbot unavailable") {
         throw "preflight output missing certbot unavailable marker"
     }
+    if ($preflight.Output -notmatch "--webroot" -or $preflight.Output -notmatch "--webroot-path") {
+        throw "preflight output missing default webroot certbot args"
+    }
+
+    $standalonePreflight = Invoke-Runner -RunnerArgs @(
+        "-ServiceUrl", $serviceUrl,
+        "-CertbotPath", $missingCertbot,
+        "-ChallengeMode", "standalone",
+        "-WorkDir", ".tmp\acme-smoke-test"
+    )
+    Assert-Equal "standalone preflight exit code without certbot" $standalonePreflight.ExitCode 0
+    if ($standalonePreflight.Output -notmatch "--standalone" -or $standalonePreflight.Output -notmatch "--http-01-port") {
+        throw "standalone preflight output missing standalone certbot args"
+    }
 
     $runMissing = Invoke-Runner -RunnerArgs @(
         "-ServiceUrl", $serviceUrl,
@@ -130,6 +150,26 @@ try {
         "-WorkDir", ".tmp\acme-smoke-test"
     )
     Assert-Equal "unavailable service exit code" $unavailable.ExitCode 3
+
+    $startServiceUnavailable = Invoke-Runner -RunnerArgs @(
+        "-ServiceUrl", $serviceUrl,
+        "-CertbotPath", $missingCertbot,
+        "-DirectoryTimeoutSec", "1",
+        "-WorkDir", ".tmp\acme-smoke-test",
+        "-ServiceBin", ".tmp\acme-smoke-test\modern-pki-service.exe",
+        "-ServiceLogDir", ".tmp\acme-smoke-test\service-logs",
+        "-StartService"
+    )
+    if ($startServiceUnavailable.ExitCode -ne 0) {
+        throw "start service preflight exit code = $($startServiceUnavailable.ExitCode), want 0`n$($startServiceUnavailable.Output)"
+    }
+    if ($startServiceUnavailable.Output -match "Key in dictionary") {
+        throw "start service failed before directory wait: $($startServiceUnavailable.Output)"
+    }
+    $serviceCommand = Get-Content -Raw ".tmp\acme-smoke-test\service-logs\modern-pki-service.start.ps1"
+    if ($serviceCommand -notmatch "GOCACHE" -or $serviceCommand -notmatch "GOMODCACHE") {
+        throw "service startup command does not set workspace Go caches"
+    }
 } finally {
     Stop-DirectoryStub $job
 }

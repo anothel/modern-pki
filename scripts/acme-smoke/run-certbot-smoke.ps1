@@ -4,9 +4,12 @@ param(
     [string]$Email = "ops@example.test",
     [string]$WorkDir = ".tmp\acme-smoke",
     [int]$Http01Port = 5002,
+    [ValidateSet("webroot", "standalone")]
+    [string]$ChallengeMode = "webroot",
     [string]$CertbotPath = "certbot",
     [switch]$StartService,
     [string]$ServiceProjectPath = "service",
+    [string]$ServiceBin = ".tmp\acme-smoke\modern-pki-service.exe",
     [string]$CoreBin = "build\Debug\modern-pki-core.exe",
     [string]$DbDsn = ".tmp\acme-smoke\modern-pki.db",
     [string]$ServiceLogDir = ".tmp\acme-smoke\service-logs",
@@ -43,6 +46,20 @@ function Resolve-OptionalCommand {
         return $null
     }
     return [pscustomobject]@{ Source = $command.Source }
+}
+
+function Resolve-WebRootPython {
+    param([string]$CertbotPath)
+
+    if (Test-Path -LiteralPath $CertbotPath -PathType Leaf) {
+        $certbotDir = Split-Path -Parent (Resolve-Path -LiteralPath $CertbotPath).Path
+        $venvPython = Join-Path $certbotDir "python.exe"
+        if (Test-Path -LiteralPath $venvPython -PathType Leaf) {
+            return [pscustomobject]@{ Source = (Resolve-Path -LiteralPath $venvPython).Path }
+        }
+    }
+
+    return Resolve-OptionalCommand "python"
 }
 
 function Test-ACMEDirectory {
@@ -96,6 +113,7 @@ function Start-SmokeService {
     param(
         [string]$ServiceUrl,
         [string]$ServiceProjectPath,
+        [string]$ServiceBin,
         [string]$CoreBin,
         [string]$DbDsn,
         [string]$ServiceLogDir,
@@ -105,39 +123,85 @@ function Start-SmokeService {
     $serviceUri = [Uri]$ServiceUrl
     $serviceAddr = "$($serviceUri.Host):$($serviceUri.Port)"
     $serviceProject = Resolve-SmokePath $ServiceProjectPath
+    $serviceBinPath = Resolve-SmokePath $ServiceBin
     $coreBinPath = Resolve-SmokePath $CoreBin
     $dbDsnPath = Resolve-SmokePath $DbDsn
     $logDir = Resolve-SmokePath $ServiceLogDir
+    $goCachePath = Resolve-SmokePath ".gocache"
+    $goModCachePath = Resolve-SmokePath ".gomodcache"
     $dbDir = Split-Path -Parent $dbDsnPath
+    $serviceBinDir = Split-Path -Parent $serviceBinPath
 
-    New-Item -ItemType Directory -Force -Path $dbDir, $logDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $dbDir, $logDir, $serviceBinDir, $goCachePath, $goModCachePath | Out-Null
 
     $stdout = Join-Path $logDir "modern-pki-service.stdout.log"
     $stderr = Join-Path $logDir "modern-pki-service.stderr.log"
+    $commandPath = Join-Path $logDir "modern-pki-service.start.ps1"
     $http01BaseURL = "http://127.0.0.1:$Http01Port"
     $command = @"
-`$ErrorActionPreference = 'Stop'
-`$env:MODERN_PKI_ADDR = '$(Escape-SingleQuotedPowerShell $serviceAddr)'
-`$env:MODERN_PKI_DB_DRIVER = 'sqlite'
-`$env:MODERN_PKI_DB_DSN = '$(Escape-SingleQuotedPowerShell $dbDsnPath)'
-`$env:MODERN_PKI_CORE_BIN = '$(Escape-SingleQuotedPowerShell $coreBinPath)'
-`$env:MODERN_PKI_ACME_HTTP01_BASE_URL = '$(Escape-SingleQuotedPowerShell $http01BaseURL)'
-Set-Location -LiteralPath '$(Escape-SingleQuotedPowerShell $serviceProject)'
-go run .\cmd\modern-pki-service
+MODERN_PKI_ADDR=$serviceAddr
+MODERN_PKI_DB_DRIVER=sqlite
+MODERN_PKI_DB_DSN=$dbDsnPath
+MODERN_PKI_CORE_BIN=$coreBinPath
+MODERN_PKI_ACME_HTTP01_BASE_URL=$http01BaseURL
+GOCACHE=$goCachePath
+GOMODCACHE=$goModCachePath
+SERVICE_BIN=$serviceBinPath
 "@
 
-    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
-    $process = Start-Process -FilePath "powershell" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded) `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr `
-        -WindowStyle Hidden `
-        -PassThru
+    Set-Content -LiteralPath $commandPath -Value $command -Encoding ASCII
+
+    $previousGoCache = $env:GOCACHE
+    $previousGoModCache = $env:GOMODCACHE
+    try {
+        $env:GOCACHE = $goCachePath
+        $env:GOMODCACHE = $goModCachePath
+        Push-Location -LiteralPath $serviceProject
+        try {
+            $buildOutput = & go build -o $serviceBinPath .\cmd\modern-pki-service 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $buildOutput | Out-File -LiteralPath $stderr -Encoding utf8
+                throw "build modern-pki-service failed; see $stderr"
+            }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        $env:GOCACHE = $previousGoCache
+        $env:GOMODCACHE = $previousGoModCache
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $serviceBinPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $previousModernPKIAddr = $env:MODERN_PKI_ADDR
+    $previousModernPKIDBDriver = $env:MODERN_PKI_DB_DRIVER
+    $previousModernPKIDBDSN = $env:MODERN_PKI_DB_DSN
+    $previousModernPKICoreBin = $env:MODERN_PKI_CORE_BIN
+    $previousModernPKIACMEHTTP01BaseURL = $env:MODERN_PKI_ACME_HTTP01_BASE_URL
+    try {
+        $env:MODERN_PKI_ADDR = $serviceAddr
+        $env:MODERN_PKI_DB_DRIVER = "sqlite"
+        $env:MODERN_PKI_DB_DSN = $dbDsnPath
+        $env:MODERN_PKI_CORE_BIN = $coreBinPath
+        $env:MODERN_PKI_ACME_HTTP01_BASE_URL = $http01BaseURL
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+    } finally {
+        $env:MODERN_PKI_ADDR = $previousModernPKIAddr
+        $env:MODERN_PKI_DB_DRIVER = $previousModernPKIDBDriver
+        $env:MODERN_PKI_DB_DSN = $previousModernPKIDBDSN
+        $env:MODERN_PKI_CORE_BIN = $previousModernPKICoreBin
+        $env:MODERN_PKI_ACME_HTTP01_BASE_URL = $previousModernPKIACMEHTTP01BaseURL
+    }
 
     return [pscustomobject]@{
         Process = $process
         Stdout = $stdout
         Stderr = $stderr
+        Command = $commandPath
         HTTP01BaseURL = $http01BaseURL
     }
 }
@@ -152,9 +216,52 @@ function Stop-SmokeService {
         Stop-Process -Id $ServiceProcess.Process.Id -Force -ErrorAction SilentlyContinue
         $ServiceProcess.Process.WaitForExit(5000) | Out-Null
     }
+    $stdoutText = $ServiceProcess.Process.StandardOutput.ReadToEnd()
+    if ($stdoutText -ne "") {
+        $stdoutText | Out-File -LiteralPath $ServiceProcess.Stdout -Encoding utf8 -Append
+    }
+    $stderrText = $ServiceProcess.Process.StandardError.ReadToEnd()
+    if ($stderrText -ne "") {
+        $stderrText | Out-File -LiteralPath $ServiceProcess.Stderr -Encoding utf8 -Append
+    }
+}
+
+function Start-WebRootServer {
+    param(
+        [string]$CertbotPath,
+        [string]$WebRootDir,
+        [int]$Http01Port
+    )
+
+    $python = Resolve-WebRootPython $CertbotPath
+    if ($null -eq $python) {
+        Write-Host "python unavailable: required for webroot HTTP-01 mode"
+        exit 5
+    }
+
+    New-Item -ItemType Directory -Force -Path $WebRootDir | Out-Null
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $python.Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Arguments = "-m http.server $Http01Port --bind 127.0.0.1 --directory `"$WebRootDir`""
+    return [System.Diagnostics.Process]::Start($startInfo)
+}
+
+function Stop-WebRootServer {
+    param($Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+    if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        $Process.WaitForExit(5000) | Out-Null
+    }
 }
 
 $serviceProcess = $null
+$webRootProcess = $null
 
 try {
     $certbot = Resolve-OptionalCommand $CertbotPath
@@ -173,11 +280,13 @@ try {
         $serviceProcess = Start-SmokeService `
             -ServiceUrl $ServiceUrl `
             -ServiceProjectPath $ServiceProjectPath `
+            -ServiceBin $ServiceBin `
             -CoreBin $CoreBin `
             -DbDsn $DbDsn `
             -ServiceLogDir $ServiceLogDir `
             -Http01Port $Http01Port
         Write-Host "started modern-pki-service pid: $($serviceProcess.Process.Id)"
+        Write-Host "service command: $($serviceProcess.Command)"
         Write-Host "service stdout: $($serviceProcess.Stdout)"
         Write-Host "service stderr: $($serviceProcess.Stderr)"
         Write-Host "http-01 override: $($serviceProcess.HTTP01BaseURL)"
@@ -192,25 +301,44 @@ try {
     $configDir = Join-Path $WorkDir "config"
     $clientWorkDir = Join-Path $WorkDir "work"
     $logsDir = Join-Path $WorkDir "logs"
+    $webRootDir = Join-Path $WorkDir "http01-webroot"
     $server = "$ServiceUrl/acme/directory"
 
-    $certbotArgs = @(
-        "certonly",
-        "--server", $server,
-        "--standalone",
-        "--http-01-port", "$Http01Port",
-        "--non-interactive",
-        "--agree-tos",
-        "--email", $Email,
-        "--no-eff-email",
-        "--config-dir", $configDir,
-        "--work-dir", $clientWorkDir,
-        "--logs-dir", $logsDir,
-        "-d", $Domain
-    )
+    if ($ChallengeMode -eq "standalone") {
+        $certbotArgs = @(
+            "certonly",
+            "--server", $server,
+            "--standalone",
+            "--http-01-port", "$Http01Port",
+            "--non-interactive",
+            "--agree-tos",
+            "--email", $Email,
+            "--no-eff-email",
+            "--config-dir", $configDir,
+            "--work-dir", $clientWorkDir,
+            "--logs-dir", $logsDir,
+            "-d", $Domain
+        )
+    } else {
+        $certbotArgs = @(
+            "certonly",
+            "--server", $server,
+            "--webroot",
+            "--webroot-path", $webRootDir,
+            "--non-interactive",
+            "--agree-tos",
+            "--email", $Email,
+            "--no-eff-email",
+            "--config-dir", $configDir,
+            "--work-dir", $clientWorkDir,
+            "--logs-dir", $logsDir,
+            "-d", $Domain
+        )
+    }
 
     Write-Host "service: $ServiceUrl"
     Write-Host "domain: $Domain"
+    Write-Host "challenge-mode: $ChallengeMode"
     Write-Host "http-01-port: $Http01Port"
     Write-Host "work-dir: $WorkDir"
 
@@ -222,8 +350,14 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $configDir, $clientWorkDir, $logsDir | Out-Null
+    if ($ChallengeMode -eq "webroot") {
+        $webRootProcess = Start-WebRootServer -CertbotPath $CertbotPath -WebRootDir $webRootDir -Http01Port $Http01Port
+        Write-Host "webroot server pid: $($webRootProcess.Id)"
+        Write-Host "webroot path: $webRootDir"
+    }
     & $certbot.Source @certbotArgs
     exit $LASTEXITCODE
 } finally {
+    Stop-WebRootServer $webRootProcess
     Stop-SmokeService $serviceProcess
 }

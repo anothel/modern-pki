@@ -92,7 +92,7 @@ go run ./cmd/modern-pki-service
 - [Roadmap](docs/ROADMAP.md): completed work, next big work, backlog, and verification policy.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
-- [ACME smoke harness](scripts/acme-smoke/README.md): local certbot-compatible smoke test scaffold; preflight works without certbot, live `-Run` requires certbot.
+- [ACME smoke harness](scripts/acme-smoke/README.md): local certbot-compatible smoke test scaffold; preflight works without certbot, live `-Run` requires certbot and administrative rights on Windows.
 
 ## Current Status
 
