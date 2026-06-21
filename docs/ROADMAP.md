@@ -62,6 +62,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - Certbot-shaped Go fixture for account, order, POST-as-GET, challenge, finalize, and certificate download.
 - Live lego HTTP-01 smoke against a harness-started local service through account creation, order creation, authorization, challenge validation, finalize, and certificate response.
 - ACME protocol compatibility fixes from live smoke: standard order `identifiers`, RFC8555 finalize `csr` payload support, HTTPS loopback proxy for local clients, and real smoke CA material for core issuance.
+- ACME certificate download returns leaf PEM followed by issuer chain PEMs for GET and POST-as-GET.
 
 ## Current Next Big Work
 
@@ -87,7 +88,6 @@ Current status:
 Next shape:
 
 - Run certbot from an administrative Windows shell or non-Windows environment and convert any differences into protocol fixture coverage.
-- Add explicit certificate chain response tests for real-client expectations.
 - Add account key algorithm matrix coverage beyond the current ES256/RS256 path.
 - Keep lego smoke as the non-admin local regression check.
 

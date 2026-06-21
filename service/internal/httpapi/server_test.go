@@ -321,7 +321,7 @@ func TestACMEProtocolCertbotCompatibilityFixture(t *testing.T) {
 
 	certResponse := api.doACMEPostAsGETRaw(t, api.pathFromURL(t, finalized.Certificate), account.Location, api.acmeSigner)
 	assertStatus(t, certResponse.StatusCode, http.StatusOK)
-	if certResponse.ContentType != "application/pem-certificate-chain" || certResponse.Body != "issued:csr-pem" ||
+	if certResponse.ContentType != "application/pem-certificate-chain" || certResponse.Body != "issued:csr-pem\nissuer-cert-pem\n" ||
 		certResponse.ReplayNonce == "" || !strings.Contains(certResponse.Link, "/acme/directory>;rel=\"index\"") {
 		t.Fatalf("POST-as-GET cert response = %#v", certResponse)
 	}
@@ -680,9 +680,26 @@ func TestACMEProtocolRSAAccountKeyCreatesOrderAndFinalizes(t *testing.T) {
 func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	api := newTestAPI(t)
 	identity := api.createIdentity(t)
-	issuer := api.createIssuer(t)
+	var root apiIssuer
+	status := api.doJSON(t, http.MethodPost, "/issuers", "admin", map[string]any{
+		"name":            "root-ca",
+		"kind":            string(domain.IssuerRootCA),
+		"certificate_pem": "root-cert-pem",
+		"key_ref":         "root-key-ref",
+		"trust_anchor":    true,
+	}, &root)
+	assertStatus(t, status, http.StatusCreated)
+	var issuer apiIssuer
+	status = api.doJSON(t, http.MethodPost, "/issuers", "admin", map[string]any{
+		"name":             "intermediate-ca",
+		"kind":             string(domain.IssuerIntermediateCA),
+		"parent_issuer_id": root.ID,
+		"certificate_pem":  "issuer-cert-pem",
+		"key_ref":          "issuer-key-ref",
+	}, &issuer)
+	assertStatus(t, status, http.StatusCreated)
 	var profile apiCertificateProfile
-	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
+	status = api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
 		"name":                    "machine-server",
 		"issuer_id":               issuer.ID,
 		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
@@ -815,8 +832,16 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 	if contentType != "application/pem-certificate-chain" {
 		t.Fatalf("certificate content type = %q, want application/pem-certificate-chain", contentType)
 	}
-	if string(certificatePEM) != "issued:csr-pem" {
-		t.Fatalf("certificate PEM = %q, want issued:csr-pem", string(certificatePEM))
+	if string(certificatePEM) != "issued:csr-pem\nissuer-cert-pem\nroot-cert-pem\n" {
+		t.Fatalf("certificate PEM = %q, want leaf plus issuer chain", string(certificatePEM))
+	}
+	postAsGetCert := api.doACMEPostAsGETRaw(t, certificatePath, accountKID, accountSigner)
+	assertStatus(t, postAsGetCert.StatusCode, http.StatusOK)
+	if postAsGetCert.ContentType != "application/pem-certificate-chain" ||
+		postAsGetCert.Body != "issued:csr-pem\nissuer-cert-pem\nroot-cert-pem\n" ||
+		postAsGetCert.ReplayNonce == "" ||
+		!strings.Contains(postAsGetCert.Link, "/acme/directory>;rel=\"index\"") {
+		t.Fatalf("POST-as-GET cert response = %#v", postAsGetCert)
 	}
 	if len(api.acmeHTTP01.requests) != len(order.Authorizations) {
 		t.Fatalf("HTTP-01 verifier request count = %d, want %d", len(api.acmeHTTP01.requests), len(order.Authorizations))

@@ -804,14 +804,14 @@ func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeGetCertificate(w http.ResponseWriter, r *http.Request) {
-	certificate, err := s.service.GetCertificate(r.Context(), r.PathValue("id"))
+	chainPEM, err := s.acmeCertificateChainPEM(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(certificate.CertificatePEM))
+	_, _ = w.Write([]byte(chainPEM))
 }
 
 func normalizeACMEFinalizeRequest(req finalizeACMEOrderRequest) (string, string, error) {
@@ -865,7 +865,7 @@ func (s *Server) acmePostAsGetCertificate(w http.ResponseWriter, r *http.Request
 		s.writeError(w, r, err)
 		return
 	}
-	certificate, err := s.service.GetCertificate(r.Context(), r.PathValue("id"))
+	chainPEM, err := s.acmeCertificateChainPEM(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -877,7 +877,38 @@ func (s *Server) acmePostAsGetCertificate(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Link", acmeDirectoryLink(r))
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(certificate.CertificatePEM))
+	_, _ = w.Write([]byte(chainPEM))
+}
+
+func (s *Server) acmeCertificateChainPEM(ctx context.Context, certificateID string) (string, error) {
+	certificate, err := s.service.GetCertificate(ctx, certificateID)
+	if err != nil {
+		return "", err
+	}
+	chain, err := s.service.GetIssuerChain(ctx, certificate.IssuerID)
+	if err != nil {
+		return "", err
+	}
+	var builder strings.Builder
+	acmeAppendCertificateChainBlock(&builder, certificate.CertificatePEM)
+	for _, issuer := range chain {
+		acmeAppendCertificateChainBlock(&builder, issuer.CertificatePEM)
+	}
+	if builder.Len() > 0 {
+		builder.WriteByte('\n')
+	}
+	return builder.String(), nil
+}
+
+func acmeAppendCertificateChainBlock(builder *strings.Builder, block string) {
+	normalized := strings.TrimRight(block, "\r\n")
+	if normalized == "" {
+		return
+	}
+	if builder.Len() > 0 {
+		builder.WriteByte('\n')
+	}
+	builder.WriteString(normalized)
 }
 
 func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request) {
