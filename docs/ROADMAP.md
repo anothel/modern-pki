@@ -71,6 +71,9 @@ Current status:
 
 - Local client availability checked: `certbot`, `lego`, and `step` are not present on `PATH` in the current workspace shell.
 - Harness scaffold added under `scripts/acme-smoke/`.
+- Harness preflight now works without certbot installed.
+- Harness can optionally start `modern-pki-service` with temporary SQLite state by passing `-StartService`.
+- Runner behavior is covered by `scripts/acme-smoke/test-run-certbot-smoke.ps1`.
 - Opt-in `MODERN_PKI_ACME_HTTP01_BASE_URL` support added for non-port-80 local HTTP-01 smoke.
 - Next unblocker: install certbot and run the harness against the local service.
 
@@ -84,8 +87,7 @@ Recommended shape:
 
 Expected output:
 
-- `scripts/acme-smoke/` or `service/internal/httpapi` integration harness.
-- Documented local command.
+- First live certbot transcript from `scripts/acme-smoke/run-certbot-smoke.ps1 -StartService -Run`.
 - Clear unsupported areas list after first real-client run.
 
 Likely gaps:
