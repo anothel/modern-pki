@@ -71,6 +71,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - POST-as-GET for order, authorization, and certificate resources.
 - ACME `Replay-Nonce`, directory `Link`, `Location`, and `application/problem+json` responses.
 - `badNonce` problem type mapping.
+- Malformed JWS and badNonce retry matrix coverage.
 - Order and authorization expiration metadata and expired ready-order rejection.
 - Certbot-shaped Go fixture for account, order, POST-as-GET, challenge, finalize, and certificate download.
 - Live lego HTTP-01 smoke against a harness-started local service through account creation, order creation, authorization, challenge validation, finalize, and certificate response.
@@ -92,6 +93,7 @@ Current status:
 - Public `/healthz`, `/readyz`, and `/version` endpoints exist; readiness checks database reachability.
 - ACME nonces expire after 10 minutes and are capped at 1024 in-memory entries.
 - Default ACME HTTP-01 validation blocks unsafe network targets and unsafe redirect targets; local smoke override remains explicit opt-in config.
+- Malformed ACME JWS requests and badNonce retry behavior are covered by protocol tests.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 - `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
 - GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
@@ -123,7 +125,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add malformed JWS and badNonce retry matrix coverage before broader ACME client hardening.
+- Add ACME account-key variant coverage across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
 - Keep CI and local verification checks passing as changes land.
 
 ### 2. ACME Client Compatibility Hardening
@@ -161,7 +163,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ### 3. ACME Security Hardening
 
-- ACME malformed JWS and badNonce retry matrix.
 - ACME account key matrix across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
 - Certbot Linux/elevated smoke coverage.
 - Keep lego smoke as the non-admin local regression check.

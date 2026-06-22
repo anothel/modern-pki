@@ -1268,6 +1268,9 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	if !isSupportedACMEJWSAlg(protected.Alg) || protected.Nonce == "" || protected.URL == "" || protected.URL != requestAbsoluteURL(r) {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
+	if (protected.KID == "") == (protected.JWK == nil) {
+		return acmeJWSResult{}, domain.ErrInvalidRequest
+	}
 	if !s.consumeACMENonce(protected.Nonce) {
 		return acmeJWSResult{}, errACMEBadNonce
 	}

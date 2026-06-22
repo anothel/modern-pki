@@ -266,6 +266,195 @@ func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
 	}
 }
 
+func TestACMEProtocolMalformedJWSProblemResponses(t *testing.T) {
+	api := newTestAPI(t)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+	accountKID := account.Location
+
+	payloadB64 := acmeRawPayloadB64(t, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	})
+	validProtected := func(nonce string) map[string]any {
+		return map[string]any{
+			"alg":   api.acmeSigner.alg(),
+			"nonce": nonce,
+			"url":   api.url + "/acme/new-account",
+			"jwk":   api.acmeSigner.jwk(),
+		}
+	}
+
+	tests := []struct {
+		name  string
+		build func(t *testing.T, nonce string) map[string]string
+	}{
+		{
+			name: "missing protected",
+			build: func(t *testing.T, nonce string) map[string]string {
+				body := api.makeRawACMEJWS(t, validProtected(nonce), payloadB64, api.acmeSigner)
+				delete(body, "protected")
+				return body
+			},
+		},
+		{
+			name: "missing signature",
+			build: func(t *testing.T, nonce string) map[string]string {
+				body := api.makeRawACMEJWS(t, validProtected(nonce), payloadB64, api.acmeSigner)
+				delete(body, "signature")
+				return body
+			},
+		},
+		{
+			name: "invalid protected base64",
+			build: func(t *testing.T, nonce string) map[string]string {
+				return map[string]string{
+					"protected": "!",
+					"payload":   payloadB64,
+					"signature": "invalid",
+				}
+			},
+		},
+		{
+			name: "invalid protected JSON",
+			build: func(t *testing.T, nonce string) map[string]string {
+				return map[string]string{
+					"protected": base64.RawURLEncoding.EncodeToString([]byte("{")),
+					"payload":   payloadB64,
+					"signature": "invalid",
+				}
+			},
+		},
+		{
+			name: "unsupported alg",
+			build: func(t *testing.T, nonce string) map[string]string {
+				protected := validProtected(nonce)
+				protected["alg"] = "HS256"
+				return api.makeRawACMEJWS(t, protected, payloadB64, api.acmeSigner)
+			},
+		},
+		{
+			name: "URL mismatch",
+			build: func(t *testing.T, nonce string) map[string]string {
+				protected := validProtected(nonce)
+				protected["url"] = api.url + "/acme/new-order"
+				return api.makeRawACMEJWS(t, protected, payloadB64, api.acmeSigner)
+			},
+		},
+		{
+			name: "invalid payload base64",
+			build: func(t *testing.T, nonce string) map[string]string {
+				return api.makeRawACMEJWS(t, validProtected(nonce), "!", api.acmeSigner)
+			},
+		},
+		{
+			name: "invalid signature",
+			build: func(t *testing.T, nonce string) map[string]string {
+				body := api.makeRawACMEJWS(t, validProtected(nonce), payloadB64, api.acmeSigner)
+				body["signature"] = base64.RawURLEncoding.EncodeToString([]byte("invalid signature"))
+				return body
+			},
+		},
+		{
+			name: "protected header without kid or jwk",
+			build: func(t *testing.T, nonce string) map[string]string {
+				protected := validProtected(nonce)
+				delete(protected, "jwk")
+				return api.makeRawACMEJWS(t, protected, payloadB64, api.acmeSigner)
+			},
+		},
+		{
+			name: "protected header with both kid and jwk",
+			build: func(t *testing.T, nonce string) map[string]string {
+				protected := validProtected(nonce)
+				protected["kid"] = accountKID
+				return api.makeRawACMEJWS(t, protected, payloadB64, api.acmeSigner)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, nonce := api.doACMENonce(t)
+			var body acmeProblemResponse
+			response := api.doRawACMEJWS(t, "/acme/new-account", tt.build(t, nonce), &body)
+			assertACMEMalformedProblem(t, response, body, nonce)
+		})
+	}
+}
+
+func TestACMEProtocolBadNonceRetry(t *testing.T) {
+	tests := []struct {
+		name                string
+		nonce               func(t *testing.T, api *testAPI) string
+		wantRetryStatusCode int
+	}{
+		{
+			name: "unknown nonce",
+			nonce: func(t *testing.T, api *testAPI) string {
+				return "unknown-nonce"
+			},
+			wantRetryStatusCode: http.StatusCreated,
+		},
+		{
+			name: "replayed nonce",
+			nonce: func(t *testing.T, api *testAPI) string {
+				_, _, nonce := api.doACMENonce(t)
+				var account apiACMEProtocolAccount
+				response := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+					"contact":              []string{"mailto:ops@example.test"},
+					"termsOfServiceAgreed": true,
+				}, &account)
+				assertStatus(t, response.StatusCode, http.StatusCreated)
+				return nonce
+			},
+			wantRetryStatusCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newTestAPI(t)
+			payload := map[string]any{
+				"contact":              []string{"mailto:ops@example.test"},
+				"termsOfServiceAgreed": true,
+			}
+			nonce := tt.nonce(t, api)
+
+			var problem acmeProblemResponse
+			response := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, payload, &problem)
+			assertStatus(t, response.StatusCode, http.StatusBadRequest)
+			if response.ContentType != "application/problem+json" {
+				t.Fatalf("content type = %q, want application/problem+json", response.ContentType)
+			}
+			if response.ReplayNonce == "" || response.ReplayNonce == nonce {
+				t.Fatalf("badNonce Replay-Nonce = %q, request nonce = %q", response.ReplayNonce, nonce)
+			}
+			if problem.Type != "urn:ietf:params:acme:error:badNonce" ||
+				problem.Detail != domain.ErrInvalidRequest.Error() ||
+				problem.Status != http.StatusBadRequest {
+				t.Fatalf("problem body = %#v", problem)
+			}
+
+			var account apiACMEProtocolAccount
+			retry := api.doACMEJWSWithResponse(t, "/acme/new-account", response.ReplayNonce, "", api.acmeSigner, payload, &account)
+			assertStatus(t, retry.StatusCode, tt.wantRetryStatusCode)
+			if retry.ReplayNonce == "" {
+				t.Fatal("retry Replay-Nonce header is empty")
+			}
+			if account.Status != string(domain.ACMEAccountValid) || account.Location == "" {
+				t.Fatalf("retry account = %#v", account)
+			}
+		})
+	}
+}
+
 func TestACMENonceExpiresAndIsRemoved(t *testing.T) {
 	server := New(nil)
 	nonce := "expired"
@@ -2480,6 +2669,85 @@ func (api *testAPI) doACMEJWSRawPayload(t *testing.T, path string, nonce string,
 		Link:        res.Header.Get("Link"),
 		RetryAfter:  res.Header.Get("Retry-After"),
 		Body:        string(responseBody),
+	}
+}
+
+func (api *testAPI) makeRawACMEJWS(t *testing.T, protectedHeader map[string]any, payloadB64 string, signer acmeTestSigner) map[string]string {
+	t.Helper()
+
+	protected, err := json.Marshal(protectedHeader)
+	if err != nil {
+		t.Fatalf("marshal raw ACME protected header: %v", err)
+	}
+	protectedB64 := base64.RawURLEncoding.EncodeToString(protected)
+	return map[string]string{
+		"protected": protectedB64,
+		"payload":   payloadB64,
+		"signature": signer.sign(t, protectedB64+"."+payloadB64),
+	}
+}
+
+func (api *testAPI) doRawACMEJWS(t *testing.T, path string, body map[string]string, into any) acmeJWSHTTPResponse {
+	t.Helper()
+
+	requestBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal raw ACME JWS: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, api.url+path, bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("create raw ACME request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/jose+json")
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send raw ACME request: %v", err)
+	}
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read raw ACME response: %v", err)
+	}
+	if into != nil && res.StatusCode >= http.StatusBadRequest {
+		if err := json.Unmarshal(responseBody, into); err != nil {
+			t.Fatalf("decode raw ACME response: %v", err)
+		}
+	}
+	return acmeJWSHTTPResponse{
+		StatusCode:  res.StatusCode,
+		ContentType: res.Header.Get("Content-Type"),
+		ReplayNonce: res.Header.Get("Replay-Nonce"),
+		Location:    res.Header.Get("Location"),
+		Link:        res.Header.Get("Link"),
+		RetryAfter:  res.Header.Get("Retry-After"),
+		Body:        string(responseBody),
+	}
+}
+
+func acmeRawPayloadB64(t *testing.T, payload any) string {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal raw ACME payload: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func assertACMEMalformedProblem(t *testing.T, response acmeJWSHTTPResponse, body acmeProblemResponse, requestNonce string) {
+	t.Helper()
+
+	assertStatus(t, response.StatusCode, http.StatusBadRequest)
+	if response.ContentType != "application/problem+json" {
+		t.Fatalf("content type = %q, want application/problem+json", response.ContentType)
+	}
+	if response.ReplayNonce == "" || response.ReplayNonce == requestNonce {
+		t.Fatalf("Replay-Nonce = %q, request nonce = %q", response.ReplayNonce, requestNonce)
+	}
+	if body.Type != "urn:ietf:params:acme:error:malformed" ||
+		body.Detail != domain.ErrInvalidRequest.Error() ||
+		body.Status != http.StatusBadRequest {
+		t.Fatalf("problem body = %#v", body)
 	}
 }
 
