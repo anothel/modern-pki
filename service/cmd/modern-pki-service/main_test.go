@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,19 @@ func TestLoadOutboxConfigDefaults(t *testing.T) {
 	}
 	if !cfg.Enabled || cfg.Interval != 5*time.Second || cfg.BatchSize != 10 {
 		t.Fatalf("config = %#v, want enabled 5s batch 10", cfg)
+	}
+}
+
+func TestNewHTTPServerAppliesOperationalTimeouts(t *testing.T) {
+	srv := newHTTPServer(":8080", http.NewServeMux())
+
+	if srv.Addr != ":8080" ||
+		srv.ReadHeaderTimeout != 5*time.Second ||
+		srv.ReadTimeout != 15*time.Second ||
+		srv.WriteTimeout != 30*time.Second ||
+		srv.IdleTimeout != 60*time.Second ||
+		srv.MaxHeaderBytes != 1<<20 {
+		t.Fatalf("server config = %#v", srv)
 	}
 }
 

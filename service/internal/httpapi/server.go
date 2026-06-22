@@ -41,6 +41,11 @@ var errACMEBadNonce = errors.New("acme bad nonce")
 
 const acmeRetryAfterSeconds = "5"
 
+const (
+	defaultJSONBodyLimit = 1 << 20
+	defaultOCSPBodyLimit = 16 << 10
+)
+
 type AuthMode string
 
 const (
@@ -99,6 +104,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		StartedAt: time.Now(),
 	})
 	r = r.WithContext(ctx)
+	r.Body = http.MaxBytesReader(w, r.Body, requestBodyLimit(r))
 	authenticated, err := s.authenticateRequest(r)
 	if err != nil {
 		r = r.WithContext(context.WithValue(r.Context(), actorContextKey{}, "anonymous"))
@@ -107,6 +113,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(authenticated)
 	s.mux.ServeHTTP(w, r)
+}
+
+func requestBodyLimit(r *http.Request) int64 {
+	if r.Method == http.MethodPost && r.URL.Path == "/ocsp" {
+		return defaultOCSPBodyLimit
+	}
+	return defaultJSONBodyLimit
 }
 
 func (s *Server) registerRoutes() {

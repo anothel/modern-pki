@@ -92,6 +92,20 @@ func TestCreateIdentity(t *testing.T) {
 	}
 }
 
+func TestBodySizeLimitRejectsOversizedJSON(t *testing.T) {
+	api := newTestAPI(t)
+
+	status, _, _ := api.doBinary(t, http.MethodPost, "/identities", "admin", "application/json", bytes.Repeat([]byte(" "), defaultJSONBodyLimit+1))
+	assertStatus(t, status, http.StatusBadRequest)
+}
+
+func TestBodySizeLimitRejectsOversizedOCSPRequest(t *testing.T) {
+	api := newTestAPI(t)
+
+	status, _, _ := api.doBinary(t, http.MethodPost, "/ocsp", "client", "application/ocsp-request", bytes.Repeat([]byte{0}, defaultOCSPBodyLimit+1))
+	assertStatus(t, status, http.StatusBadRequest)
+}
+
 func TestCreateIssuer(t *testing.T) {
 	api := newTestAPI(t)
 

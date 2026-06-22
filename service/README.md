@@ -6,6 +6,8 @@ Enrollment creation inspects the CSR and stores CSR SANs separately from request
 
 Identities support machine lifecycle metadata through `owner`, `metadata_json`, `allowed_dns_names`, and `allowed_ip_addresses`. When an identity allow-list is non-empty, enrollment, renewal/reissue enrollment creation, and final signing reject requested SANs outside that identity policy. Empty allow-lists preserve the existing unrestricted identity behavior.
 
+The HTTP service applies operational request safety limits. The process uses explicit server timeouts and a 1 MiB default request body limit. OCSP requests are capped at 16 KiB.
+
 Certificate profiles are first-class service records at:
 
 - `POST /certificate-profiles`

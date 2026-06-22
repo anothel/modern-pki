@@ -96,4 +96,4 @@ go run ./cmd/modern-pki-service
 
 ## Current Status
 
-This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, and ACME adapter foundations exist. A live lego HTTP-01 smoke now reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. The next big work is ACME compatibility hardening around certbot runs, chain behavior, and broader client/account-key coverage.
+This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is the operational safety baseline: production-safe defaults, CI, health/readiness, and ACME nonce hardening before broader client coverage.

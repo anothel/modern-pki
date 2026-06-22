@@ -40,6 +40,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - API key auth mode with bootstrap operator key.
 - API key scopes: operator, write, read.
 - Audit metadata for request ID, client IP, actor, resource IDs, and failure codes.
+- HTTP server operational timeouts and request body size limits.
 - Lifecycle outbox messages.
 - Webhook notification endpoints.
 - Signed webhook delivery.
@@ -68,7 +69,53 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 ## Current Next Big Work
 
-### 1. ACME Client Compatibility Hardening
+### 1. Operational Safety Baseline
+
+Goal: make local/demo defaults unable to leak into production by accident, and make service operation predictable before adding more feature surface.
+
+Current status:
+
+- HTTP server now uses explicit `http.Server` timeouts and max header size.
+- HTTP API requests are capped at 1 MiB by default, with OCSP requests capped at 16 KiB.
+- API key auth mode exists with operator, write, and read scopes.
+- Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
+
+External review triage from `modern-pki-analysis-and-roadmap.md`:
+
+Nothing from the review is silently discarded. Each item is either implemented, accepted into this roadmap, or deferred with a reason.
+
+| Review item | Decision | Reason | Roadmap slot |
+| --- | --- | --- | --- |
+| GitHub Actions CI for Go and CMake/CTest | Accepted | This is required before claiming the service is operable beyond local manual checks. | Operational Safety Baseline |
+| Certbot real-client verification | Accepted | Lego already passes locally; certbot needs elevated Windows or non-Windows smoke to close the compatibility gap. | ACME Client Compatibility Hardening |
+| Production guard for `dev` auth | Accepted | Demo auth must not be usable by accident in production mode. | Operational Safety Baseline |
+| HTTP server timeouts and max header size | Implemented | Service operation should not depend on Go server zero-value timeout behavior. | Completed / Operator Operations |
+| HTTP request body size limits | Implemented | JSON and OCSP handlers need bounded request bodies before broader exposure. | Completed / Operator Operations |
+| ACME HTTP-01 SSRF defense | Accepted | HTTP-01 validation touches attacker-controlled hostnames and must block unsafe network targets. | ACME Security Hardening |
+| ACME nonce TTL, cap, and cleanup | Accepted | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Operational Safety Baseline |
+| API key HMAC/pepper, expiry, rotation, and `last_used_at` | Accepted, split out | Important, but it changes storage and token semantics; production default-key rejection lands first. | Auth hardening follow-up after baseline |
+| `SECURITY.md` and `CONTRIBUTING.md` | Accepted | Operators and contributors need a security policy and development path before broader usage. | Operational Safety Baseline |
+| `LICENSE` | Owner decision needed | License is a project/legal ownership choice, not a technical default. It should not be guessed by the agent. | Release readiness |
+| Delegated OCSP responder required mode | Accepted later | Current fallback keeps local/dev issuance usable; strict production OCSP mode should be configurable. | Operations security follow-up |
+| Richer audit fields | Partially accepted | Request ID/client IP/actor/resource/result/error are present; auth method, user agent, state transition, and approval reason remain useful. | Audit hardening follow-up |
+| `/healthz`, `/readyz`, and `/version` | Accepted | Needed for deployment and smoke checks; readiness semantics should include DB/key/worker checks. | Operational Safety Baseline |
+| Code splitting for HTTP/API/lifecycle packages | Deferred | Useful only after behavior stabilizes; doing it now adds conflict risk without changing runtime capability. | Refactor after security and compatibility work |
+| Versioned migrations, locks, checksum, and PostgreSQL tests | Accepted | Required for real upgrades and non-SQLite deployments, but after production safety gates. | Storage And Migration Hardening |
+| Pagination, filters, and concurrency tests | Accepted | Needed before large inventories and concurrent operator traffic. | Storage And Migration Hardening |
+| OpenAPI, runbooks, backup/restore, and operations docs | Accepted | Important for operators, but should follow the stabilized API and baseline deployment behavior. | Documentation hardening |
+| DNS-01, EAB, UI, Kubernetes controller, PQC production path | Deferred | Useful capabilities, but they depend on the ACME, security, and operational baseline being solid first. | Not Next / later roadmap |
+
+Next shape:
+
+- Add `MODERN_PKI_ENV=production`.
+- Reject `dev` auth mode in production.
+- Reject default/weak bootstrap API keys in production.
+- Add ACME nonce TTL/cap and cleanup.
+- Add basic `/healthz`, `/readyz`, and `/version` endpoints.
+- Add `SECURITY.md` and `CONTRIBUTING.md`.
+- Add CI for Go tests/build and CMake/CTest.
+
+### 2. ACME Client Compatibility Hardening
 
 Goal: make the ACME adapter boring under real clients, not only internal fixtures.
 
@@ -101,14 +148,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ## Prioritized Backlog
 
-### 2. Kubernetes Workload Identity
+### 3. ACME Security Hardening
 
-- Kubernetes service account identity mapping.
-- Pod/workload certificate enrollment API.
-- Optional Kubernetes CSR or projected token verification.
-- Rotation workflow for workloads.
+- HTTP-01 SSRF guard for loopback, private, link-local, multicast, metadata IPs, localhost names, redirect targets, and DNS rebinding.
+- ACME malformed JWS and badNonce retry matrix.
+- ACME account key matrix across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
+- Certbot Linux/elevated smoke coverage.
+- Keep lego smoke as the non-admin local regression check.
 
-### 3. Certificate Rotation Automation
+### 4. Storage And Migration Hardening
+
+- Versioned migration table.
+- Migration checksum and lock.
+- PostgreSQL integration test.
+- Pagination and filters for list APIs.
+- Concurrency tests for serial allocation, CRL number allocation, ACME finalize, nonce replay, OCSP rotation, outbox retry, API key disable, and enrollment approval.
+
+### 5. Certificate Rotation Automation
 
 - Rotation schedules.
 - Pre-expiry renewal windows.
@@ -116,21 +172,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Evented rotation notifications.
 - Safe cutover state tracking.
 
-### 4. HSM And PKCS#11
+### 6. HSM And PKCS#11
 
 - Issuer key reference model for HSM-backed keys.
 - PKCS#11 signing boundary.
 - Operator configuration for slots, labels, and PIN sources.
 - Tests with a software token if available.
 
-### 5. Crypto Agility
+### 7. Crypto Agility
 
 - Profile-level key algorithm and signature algorithm policy.
 - RSA/ECDSA algorithm selection in issuance paths.
 - Ed25519 feasibility check.
 - Migration plan for algorithm deprecation.
 
-### 6. PQC And Hybrid Experiments
+### 8. Kubernetes Workload Identity
+
+- Kubernetes service account identity mapping.
+- Pod/workload certificate enrollment API.
+- Optional Kubernetes CSR or projected token verification.
+- Rotation workflow for workloads.
+
+### 9. PQC And Hybrid Experiments
 
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.
