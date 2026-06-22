@@ -34,7 +34,7 @@ type Server struct {
 	auth    AuthConfig
 	acme    ACMEConfig
 	nonceMu sync.Mutex
-	nonces  map[string]struct{}
+	nonces  map[string]time.Time
 }
 
 var errACMEBadNonce = errors.New("acme bad nonce")
@@ -42,8 +42,10 @@ var errACMEBadNonce = errors.New("acme bad nonce")
 const acmeRetryAfterSeconds = "5"
 
 const (
-	defaultJSONBodyLimit = 1 << 20
-	defaultOCSPBodyLimit = 16 << 10
+	defaultJSONBodyLimit      = 1 << 20
+	defaultOCSPBodyLimit      = 16 << 10
+	defaultACMENonceTTL       = 10 * time.Minute
+	defaultACMENonceCacheSize = 1024
 )
 
 type AuthMode string
@@ -91,7 +93,7 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 		mux:     http.NewServeMux(),
 		auth:    auth,
 		acme:    acme,
-		nonces:  make(map[string]struct{}),
+		nonces:  make(map[string]time.Time),
 	}
 	s.registerRoutes()
 	return s
@@ -1326,20 +1328,51 @@ func (s *Server) issueACMENonce() (string, error) {
 		return "", err
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(raw[:])
+	now := time.Now()
 	s.nonceMu.Lock()
 	defer s.nonceMu.Unlock()
-	s.nonces[nonce] = struct{}{}
+	s.removeExpiredACMENoncesLocked(now)
+	s.evictOldestACMENoncesLocked(defaultACMENonceCacheSize - 1)
+	s.nonces[nonce] = now
 	return nonce, nil
 }
 
 func (s *Server) consumeACMENonce(nonce string) bool {
+	now := time.Now()
 	s.nonceMu.Lock()
 	defer s.nonceMu.Unlock()
+	s.removeExpiredACMENoncesLocked(now)
 	if _, ok := s.nonces[nonce]; !ok {
 		return false
 	}
 	delete(s.nonces, nonce)
 	return true
+}
+
+func (s *Server) removeExpiredACMENoncesLocked(now time.Time) {
+	for nonce, issuedAt := range s.nonces {
+		if acmeNonceExpired(issuedAt, now) {
+			delete(s.nonces, nonce)
+		}
+	}
+}
+
+func (s *Server) evictOldestACMENoncesLocked(maxSize int) {
+	for len(s.nonces) > maxSize {
+		var oldestNonce string
+		var oldestIssuedAt time.Time
+		for nonce, issuedAt := range s.nonces {
+			if oldestNonce == "" || issuedAt.Before(oldestIssuedAt) {
+				oldestNonce = nonce
+				oldestIssuedAt = issuedAt
+			}
+		}
+		delete(s.nonces, oldestNonce)
+	}
+}
+
+func acmeNonceExpired(issuedAt time.Time, now time.Time) bool {
+	return !issuedAt.Add(defaultACMENonceTTL).After(now)
 }
 
 func (s *Server) writeACMEJSON(w http.ResponseWriter, r *http.Request, status int, value any) {

@@ -52,6 +52,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 ### ACME Protocol Adapter
 
 - ACME directory and nonce endpoints.
+- ACME nonce TTL, bounded in-memory retention, and expired nonce cleanup.
 - JWS envelope parsing and one-time nonce replay protection.
 - ES256/P-256, RS256/RSA, and EdDSA/Ed25519 JWS signature verification.
 - Account key binding through EC/RSA/OKP JWK thumbprint and canonical JWK persistence.
@@ -82,6 +83,7 @@ Current status:
 - API key auth mode exists with operator, write, and read scopes.
 - `MODERN_PKI_ENV=production` rejects `dev` auth and weak configured bootstrap API keys.
 - Public `/healthz`, `/readyz`, and `/version` endpoints exist; readiness checks database reachability.
+- ACME nonces expire after 10 minutes and are capped at 1024 in-memory entries.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 
 External review triage from `modern-pki-analysis-and-roadmap.md`:
@@ -96,7 +98,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | HTTP server timeouts and max header size | Implemented | Service operation should not depend on Go server zero-value timeout behavior. | Completed / Operator Operations |
 | HTTP request body size limits | Implemented | JSON and OCSP handlers need bounded request bodies before broader exposure. | Completed / Operator Operations |
 | ACME HTTP-01 SSRF defense | Accepted | HTTP-01 validation touches attacker-controlled hostnames and must block unsafe network targets. | ACME Security Hardening |
-| ACME nonce TTL, cap, and cleanup | Accepted | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Operational Safety Baseline |
+| ACME nonce TTL, cap, and cleanup | Implemented | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Completed / ACME Protocol Adapter |
 | API key HMAC/pepper, expiry, rotation, and `last_used_at` | Accepted, split out | Important, but it changes storage and token semantics; production default-key rejection lands first. | Auth hardening follow-up after baseline |
 | `SECURITY.md` and `CONTRIBUTING.md` | Accepted | Operators and contributors need a security policy and development path before broader usage. | Operational Safety Baseline |
 | `LICENSE` | Owner decision needed | License is a project/legal ownership choice, not a technical default. It should not be guessed by the agent. | Release readiness |
@@ -111,7 +113,6 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add ACME nonce TTL/cap and cleanup.
 - Add `SECURITY.md` and `CONTRIBUTING.md`.
 - Add CI for Go tests/build and CMake/CTest.
 

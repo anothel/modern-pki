@@ -266,6 +266,85 @@ func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
 	}
 }
 
+func TestACMENonceExpiresAndIsRemoved(t *testing.T) {
+	server := New(nil)
+	nonce := "expired"
+	server.nonces[nonce] = time.Now().Add(-defaultACMENonceTTL - time.Second)
+
+	if server.consumeACMENonce(nonce) {
+		t.Fatal("consumeACMENonce accepted expired nonce")
+	}
+	if _, ok := server.nonces[nonce]; ok {
+		t.Fatal("expired nonce was not removed")
+	}
+}
+
+func TestACMENonceIssueCleansExpiredEntries(t *testing.T) {
+	server := New(nil)
+	expired := "expired"
+	valid := "valid"
+	server.nonces[expired] = time.Now().Add(-defaultACMENonceTTL - time.Second)
+	server.nonces[valid] = time.Now()
+
+	issued, err := server.issueACMENonce()
+	if err != nil {
+		t.Fatalf("issueACMENonce returned error: %v", err)
+	}
+	if _, ok := server.nonces[expired]; ok {
+		t.Fatal("expired nonce was not removed")
+	}
+	if _, ok := server.nonces[valid]; !ok {
+		t.Fatal("valid nonce was removed")
+	}
+	if _, ok := server.nonces[issued]; !ok {
+		t.Fatal("issued nonce was not stored")
+	}
+}
+
+func TestACMENonceIssueEnforcesCacheLimit(t *testing.T) {
+	server := New(nil)
+	now := time.Now().Add(-time.Minute)
+	for i := 0; i < defaultACMENonceCacheSize; i++ {
+		server.nonces[fmt.Sprintf("nonce-%04d", i)] = now.Add(time.Duration(i) * time.Second)
+	}
+
+	issued, err := server.issueACMENonce()
+	if err != nil {
+		t.Fatalf("issueACMENonce returned error: %v", err)
+	}
+	if len(server.nonces) != defaultACMENonceCacheSize {
+		t.Fatalf("nonce cache size = %d, want %d", len(server.nonces), defaultACMENonceCacheSize)
+	}
+	if _, ok := server.nonces["nonce-0000"]; ok {
+		t.Fatal("oldest nonce was not evicted")
+	}
+	if _, ok := server.nonces[fmt.Sprintf("nonce-%04d", defaultACMENonceCacheSize-1)]; !ok {
+		t.Fatal("newest existing nonce was evicted")
+	}
+	if _, ok := server.nonces[issued]; !ok {
+		t.Fatal("issued nonce was not retained")
+	}
+}
+
+func TestACMENonceIssueKeepsReturnedNonceWhenExistingEntriesAreNewer(t *testing.T) {
+	server := New(nil)
+	future := time.Now().Add(time.Hour)
+	for i := 0; i < defaultACMENonceCacheSize; i++ {
+		server.nonces[fmt.Sprintf("nonce-%04d", i)] = future.Add(time.Duration(i) * time.Second)
+	}
+
+	issued, err := server.issueACMENonce()
+	if err != nil {
+		t.Fatalf("issueACMENonce returned error: %v", err)
+	}
+	if len(server.nonces) != defaultACMENonceCacheSize {
+		t.Fatalf("nonce cache size = %d, want %d", len(server.nonces), defaultACMENonceCacheSize)
+	}
+	if _, ok := server.nonces[issued]; !ok {
+		t.Fatal("issued nonce was evicted")
+	}
+}
+
 func TestACMEProtocolCertbotCompatibilityFixture(t *testing.T) {
 	api := newTestAPI(t)
 	identity := api.createIdentity(t)
