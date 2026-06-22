@@ -90,10 +90,12 @@ go run ./cmd/modern-pki-service
 
 - [Service README](service/README.md): API behavior, configuration, ACME status, auth, workers, and operator endpoints.
 - [Roadmap](docs/ROADMAP.md): completed work, next big work, backlog, and verification policy.
+- [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
+- [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
 ## Current Status
 
-This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is the remaining operational safety baseline: CI, ACME nonce hardening, and security docs before broader client coverage.
+This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, security/contribution docs, CI workflow, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is remaining ACME security hardening and broader client coverage.

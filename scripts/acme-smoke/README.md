@@ -8,6 +8,10 @@ prints the exact client command, and can run it when `-Run` is supplied.
 Preflight mode does not require an ACME client to be installed. Live run mode
 requires the selected client and exits `2` when it is missing.
 
+See the root [contributing guide](../../CONTRIBUTING.md) before changing the
+harness, and the root [security policy](../../SECURITY.md) before using
+smoke-only environment variables around real infrastructure.
+
 ## Current local status
 
 The current workspace shell does not have these clients on `PATH`:

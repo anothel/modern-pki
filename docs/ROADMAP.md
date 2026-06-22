@@ -49,6 +49,12 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - Bounded outbox retry and dead-letter handling.
 - Operator APIs for outbox listing and manual retry.
 
+### Project Governance And Verification
+
+- `SECURITY.md` documents project security status, private reporting, supported version status, production expectations, secret handling, known constraints, and disclosure process.
+- `CONTRIBUTING.md` documents project scope, prerequisites, local verification, roadmap rules, documentation expectations, agent Git ownership, and commit message guidance.
+- GitHub Actions CI workflow exists for Go tests/build and CMake/CTest.
+
 ### ACME Protocol Adapter
 
 - ACME directory and nonce endpoints.
@@ -85,6 +91,8 @@ Current status:
 - Public `/healthz`, `/readyz`, and `/version` endpoints exist; readiness checks database reachability.
 - ACME nonces expire after 10 minutes and are capped at 1024 in-memory entries.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
+- `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
+- GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
 
 External review triage from `modern-pki-analysis-and-roadmap.md`:
 
@@ -92,7 +100,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 | Review item | Decision | Reason | Roadmap slot |
 | --- | --- | --- | --- |
-| GitHub Actions CI for Go and CMake/CTest | Accepted | This is required before claiming the service is operable beyond local manual checks. | Operational Safety Baseline |
+| GitHub Actions CI for Go and CMake/CTest | Implemented | A local workflow exists under `.github/workflows/ci.yml`; remote run status is not claimed here. | Completed / Project Governance And Verification |
 | Certbot real-client verification | Accepted | Lego already passes locally; certbot needs elevated Windows or non-Windows smoke to close the compatibility gap. | ACME Client Compatibility Hardening |
 | Production guard for `dev` auth | Implemented | Demo auth must not be usable by accident in production mode. | Completed / Operator Operations |
 | HTTP server timeouts and max header size | Implemented | Service operation should not depend on Go server zero-value timeout behavior. | Completed / Operator Operations |
@@ -100,7 +108,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | ACME HTTP-01 SSRF defense | Accepted | HTTP-01 validation touches attacker-controlled hostnames and must block unsafe network targets. | ACME Security Hardening |
 | ACME nonce TTL, cap, and cleanup | Implemented | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Completed / ACME Protocol Adapter |
 | API key HMAC/pepper, expiry, rotation, and `last_used_at` | Accepted, split out | Important, but it changes storage and token semantics; production default-key rejection lands first. | Auth hardening follow-up after baseline |
-| `SECURITY.md` and `CONTRIBUTING.md` | Accepted | Operators and contributors need a security policy and development path before broader usage. | Operational Safety Baseline |
+| `SECURITY.md` and `CONTRIBUTING.md` | Implemented | Operators and contributors now have a security policy and development path before broader usage. | Completed / Project Governance And Verification |
 | `LICENSE` | Owner decision needed | License is a project/legal ownership choice, not a technical default. It should not be guessed by the agent. | Release readiness |
 | Delegated OCSP responder required mode | Accepted later | Current fallback keeps local/dev issuance usable; strict production OCSP mode should be configurable. | Operations security follow-up |
 | Richer audit fields | Partially accepted | Request ID/client IP/actor/resource/result/error are present; auth method, user agent, state transition, and approval reason remain useful. | Audit hardening follow-up |
@@ -113,8 +121,8 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add `SECURITY.md` and `CONTRIBUTING.md`.
-- Add CI for Go tests/build and CMake/CTest.
+- Add ACME HTTP-01 SSRF defense before broader exposure.
+- Keep CI and local verification checks passing as changes land.
 
 ### 2. ACME Client Compatibility Hardening
 
