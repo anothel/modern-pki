@@ -4,7 +4,7 @@
 
 `modern-pki` is pre-1.0 and still in active development. It has security controls for local development and early operational hardening, but it is not yet a stable supported production release.
 
-Current security-relevant controls include API key authentication, scoped API keys, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, CRL publication, OCSP handling, and a production startup guard.
+Current security-relevant controls include API key authentication, scoped API keys, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, ACME HTTP-01 unsafe target blocking, CRL publication, OCSP handling, and a production startup guard.
 
 Production deployments must set:
 
@@ -61,7 +61,6 @@ If a secret is committed or exposed, assume compromise. Remove it from active us
 
 The following areas are not complete yet:
 
-- ACME HTTP-01 validation does not yet block unsafe network targets such as loopback, private, link-local, multicast, metadata IPs, unsafe redirects, or DNS rebinding cases.
 - No HSM or PKCS#11 signing boundary.
 - No multi-node ACME nonce persistence.
 - Certbot live coverage still has a known local Windows non-admin gap.

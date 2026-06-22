@@ -67,6 +67,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - ACME order, authorization, challenge, finalize, and certificate download flow.
 - HTTP-01 challenge validation.
 - Challenge `processing` state, retryable HTTP-01 validation failures, authorization polling, and `Retry-After`.
+- HTTP-01 unsafe target blocking for localhost names, loopback, private, link-local, multicast, unspecified, metadata/link-local addresses, redirects, and dial-time DNS resolution.
 - POST-as-GET for order, authorization, and certificate resources.
 - ACME `Replay-Nonce`, directory `Link`, `Location`, and `application/problem+json` responses.
 - `badNonce` problem type mapping.
@@ -90,6 +91,7 @@ Current status:
 - `MODERN_PKI_ENV=production` rejects `dev` auth and weak configured bootstrap API keys.
 - Public `/healthz`, `/readyz`, and `/version` endpoints exist; readiness checks database reachability.
 - ACME nonces expire after 10 minutes and are capped at 1024 in-memory entries.
+- Default ACME HTTP-01 validation blocks unsafe network targets and unsafe redirect targets; local smoke override remains explicit opt-in config.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 - `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
 - GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
@@ -105,7 +107,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | Production guard for `dev` auth | Implemented | Demo auth must not be usable by accident in production mode. | Completed / Operator Operations |
 | HTTP server timeouts and max header size | Implemented | Service operation should not depend on Go server zero-value timeout behavior. | Completed / Operator Operations |
 | HTTP request body size limits | Implemented | JSON and OCSP handlers need bounded request bodies before broader exposure. | Completed / Operator Operations |
-| ACME HTTP-01 SSRF defense | Accepted | HTTP-01 validation touches attacker-controlled hostnames and must block unsafe network targets. | ACME Security Hardening |
+| ACME HTTP-01 SSRF defense | Implemented | Default HTTP-01 validation blocks unsafe hosts, redirects, and unsafe resolved IPs; explicit local smoke override remains opt-in. | Completed / ACME Protocol Adapter |
 | ACME nonce TTL, cap, and cleanup | Implemented | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Completed / ACME Protocol Adapter |
 | API key HMAC/pepper, expiry, rotation, and `last_used_at` | Accepted, split out | Important, but it changes storage and token semantics; production default-key rejection lands first. | Auth hardening follow-up after baseline |
 | `SECURITY.md` and `CONTRIBUTING.md` | Implemented | Operators and contributors now have a security policy and development path before broader usage. | Completed / Project Governance And Verification |
@@ -121,7 +123,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add ACME HTTP-01 SSRF defense before broader exposure.
+- Add malformed JWS and badNonce retry matrix coverage before broader ACME client hardening.
 - Keep CI and local verification checks passing as changes land.
 
 ### 2. ACME Client Compatibility Hardening
@@ -159,7 +161,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ### 3. ACME Security Hardening
 
-- HTTP-01 SSRF guard for loopback, private, link-local, multicast, metadata IPs, localhost names, redirect targets, and DNS rebinding.
 - ACME malformed JWS and badNonce retry matrix.
 - ACME account key matrix across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
 - Certbot Linux/elevated smoke coverage.

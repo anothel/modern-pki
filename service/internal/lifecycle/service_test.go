@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -3182,6 +3185,103 @@ func TestACMEHTTP01VerifierUsesOverrideBaseURL(t *testing.T) {
 	}
 	if gotPath != "/.well-known/acme-challenge/token-1" {
 		t.Fatalf("challenge path = %q", gotPath)
+	}
+}
+
+func TestACMEHTTP01VerifierRejectsLoopbackIdentifierBeforeFetch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("token-1.thumbprint-1"))
+	}))
+	defer server.Close()
+
+	verifier, err := NewACMEHTTP01Verifier("")
+	if err != nil {
+		t.Fatalf("NewACMEHTTP01Verifier returned error: %v", err)
+	}
+	err = verifier.VerifyHTTP01(context.Background(), strings.TrimPrefix(server.URL, "http://"), "token-1", "token-1.thumbprint-1")
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("VerifyHTTP01 error = %v, want ErrInvalidRequest", err)
+	}
+	if requests != 0 {
+		t.Fatalf("loopback challenge server requests = %d, want 0", requests)
+	}
+}
+
+func TestACMEHTTP01VerifierRejectsLocalhostIdentifierBeforeFetch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("token-1.thumbprint-1"))
+	}))
+	defer server.Close()
+
+	verifier, err := NewACMEHTTP01Verifier("")
+	if err != nil {
+		t.Fatalf("NewACMEHTTP01Verifier returned error: %v", err)
+	}
+	identifier := strings.Replace(strings.TrimPrefix(server.URL, "http://"), "127.0.0.1", "localhost", 1)
+	err = verifier.VerifyHTTP01(context.Background(), identifier, "token-1", "token-1.thumbprint-1")
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("VerifyHTTP01 error = %v, want ErrInvalidRequest", err)
+	}
+	if requests != 0 {
+		t.Fatalf("localhost challenge server requests = %d, want 0", requests)
+	}
+}
+
+func TestACMEHTTP01VerifierAllowsOverrideBaseURLToLoopback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("token-1.thumbprint-1"))
+	}))
+	defer server.Close()
+
+	verifier, err := NewACMEHTTP01Verifier(server.URL)
+	if err != nil {
+		t.Fatalf("NewACMEHTTP01Verifier returned error: %v", err)
+	}
+	err = verifier.VerifyHTTP01(context.Background(), "edge-01.example.test", "token-1", "token-1.thumbprint-1")
+	if err != nil {
+		t.Fatalf("VerifyHTTP01 returned error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("override challenge server requests = %d, want 1", requests)
+	}
+}
+
+func TestACMEHTTP01GuardRejectsUnsafeRedirectTarget(t *testing.T) {
+	redirectURL, err := url.Parse("http://127.0.0.1/.well-known/acme-challenge/token-1")
+	if err != nil {
+		t.Fatalf("url.Parse returned error: %v", err)
+	}
+	if err := validateACMEHTTP01FetchURL(redirectURL); !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("validateACMEHTTP01FetchURL error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestACMEHTTP01GuardRejectsUnsafeResolvedIPs(t *testing.T) {
+	for _, ip := range []string{
+		"10.0.0.1",
+		"172.16.0.1",
+		"192.168.0.1",
+		"169.254.169.254",
+		"100.100.100.200",
+		"::1",
+		"fc00::1",
+		"fe80::1",
+		"ff02::1",
+		"0.0.0.0",
+	} {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			t.Fatalf("netip.ParseAddr(%q) returned error: %v", ip, err)
+		}
+		if acmeHTTP01SafeIP(addr) {
+			t.Fatalf("acmeHTTP01SafeIP(%q) = true, want false", ip)
+		}
 	}
 }
 

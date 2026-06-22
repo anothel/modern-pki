@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -276,7 +277,6 @@ func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
 }
 
 func NewACMEHTTP01Verifier(overrideBaseURL string) (ACMEHTTP01Verifier, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
 	var baseURL *url.URL
 	overrideBaseURL = strings.TrimSpace(overrideBaseURL)
 	if overrideBaseURL != "" {
@@ -292,8 +292,14 @@ func NewACMEHTTP01Verifier(overrideBaseURL string) (ACMEHTTP01Verifier, error) {
 		}
 		baseURL = parsed
 	}
+	client := newACMEHTTP01Client(baseURL == nil)
 	return ACMEHTTP01VerifierFunc(func(ctx context.Context, identifier string, token string, keyAuthorization string) error {
 		challengeURL := acmeHTTP01ChallengeURL(baseURL, identifier, token)
+		if baseURL == nil {
+			if err := validateACMEHTTP01FetchURL(&challengeURL); err != nil {
+				return err
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, challengeURL.String(), nil)
 		if err != nil {
 			return err
@@ -315,6 +321,100 @@ func NewACMEHTTP01Verifier(overrideBaseURL string) (ACMEHTTP01Verifier, error) {
 		}
 		return nil
 	}), nil
+}
+
+func newACMEHTTP01Client(guardTargets bool) *http.Client {
+	client := &http.Client{Timeout: 10 * time.Second}
+	if !guardTargets {
+		return client
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return domain.ErrInvalidRequest
+		}
+		return validateACMEHTTP01FetchURL(req.URL)
+	}
+	client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, domain.ErrInvalidRequest
+			}
+			if err := validateACMEHTTP01Host(host); err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			dialer := &net.Dialer{}
+			var lastErr error
+			for _, ip := range ips {
+				addr, ok := netip.AddrFromSlice(ip.IP)
+				if !ok {
+					continue
+				}
+				addr = addr.Unmap()
+				if !acmeHTTP01SafeIP(addr) {
+					continue
+				}
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), port))
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, domain.ErrInvalidRequest
+		},
+	}
+	return client
+}
+
+func validateACMEHTTP01FetchURL(fetchURL *url.URL) error {
+	if fetchURL == nil ||
+		(fetchURL.Scheme != "http" && fetchURL.Scheme != "https") ||
+		fetchURL.Host == "" ||
+		fetchURL.User != nil {
+		return domain.ErrInvalidRequest
+	}
+	return validateACMEHTTP01Host(fetchURL.Hostname())
+}
+
+func validateACMEHTTP01Host(host string) error {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return domain.ErrInvalidRequest
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !acmeHTTP01SafeIP(addr.Unmap()) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
+func acmeHTTP01SafeIP(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return false
+	}
+	addr = addr.Unmap()
+	if acmeHTTP01BlockedMetadataIP(addr) {
+		return false
+	}
+	return !addr.IsLoopback() &&
+		!addr.IsPrivate() &&
+		!addr.IsLinkLocalUnicast() &&
+		!addr.IsLinkLocalMulticast() &&
+		!addr.IsMulticast() &&
+		!addr.IsUnspecified()
+}
+
+func acmeHTTP01BlockedMetadataIP(addr netip.Addr) bool {
+	return addr == netip.MustParseAddr("169.254.169.254") ||
+		addr == netip.MustParseAddr("100.100.100.200")
 }
 
 func acmeHTTP01ChallengeURL(baseURL *url.URL, identifier string, token string) url.URL {
