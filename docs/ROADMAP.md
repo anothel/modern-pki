@@ -39,6 +39,8 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 - API key auth mode with bootstrap operator key.
 - API key scopes: operator, write, read.
+- Production mode guard for `dev` auth and weak bootstrap API keys.
+- Public `/healthz`, `/readyz`, and `/version` service endpoints.
 - Audit metadata for request ID, client IP, actor, resource IDs, and failure codes.
 - HTTP server operational timeouts and request body size limits.
 - Lifecycle outbox messages.
@@ -78,6 +80,8 @@ Current status:
 - HTTP server now uses explicit `http.Server` timeouts and max header size.
 - HTTP API requests are capped at 1 MiB by default, with OCSP requests capped at 16 KiB.
 - API key auth mode exists with operator, write, and read scopes.
+- `MODERN_PKI_ENV=production` rejects `dev` auth and weak configured bootstrap API keys.
+- Public `/healthz`, `/readyz`, and `/version` endpoints exist; readiness checks database reachability.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 
 External review triage from `modern-pki-analysis-and-roadmap.md`:
@@ -88,7 +92,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | --- | --- | --- | --- |
 | GitHub Actions CI for Go and CMake/CTest | Accepted | This is required before claiming the service is operable beyond local manual checks. | Operational Safety Baseline |
 | Certbot real-client verification | Accepted | Lego already passes locally; certbot needs elevated Windows or non-Windows smoke to close the compatibility gap. | ACME Client Compatibility Hardening |
-| Production guard for `dev` auth | Accepted | Demo auth must not be usable by accident in production mode. | Operational Safety Baseline |
+| Production guard for `dev` auth | Implemented | Demo auth must not be usable by accident in production mode. | Completed / Operator Operations |
 | HTTP server timeouts and max header size | Implemented | Service operation should not depend on Go server zero-value timeout behavior. | Completed / Operator Operations |
 | HTTP request body size limits | Implemented | JSON and OCSP handlers need bounded request bodies before broader exposure. | Completed / Operator Operations |
 | ACME HTTP-01 SSRF defense | Accepted | HTTP-01 validation touches attacker-controlled hostnames and must block unsafe network targets. | ACME Security Hardening |
@@ -98,7 +102,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | `LICENSE` | Owner decision needed | License is a project/legal ownership choice, not a technical default. It should not be guessed by the agent. | Release readiness |
 | Delegated OCSP responder required mode | Accepted later | Current fallback keeps local/dev issuance usable; strict production OCSP mode should be configurable. | Operations security follow-up |
 | Richer audit fields | Partially accepted | Request ID/client IP/actor/resource/result/error are present; auth method, user agent, state transition, and approval reason remain useful. | Audit hardening follow-up |
-| `/healthz`, `/readyz`, and `/version` | Accepted | Needed for deployment and smoke checks; readiness semantics should include DB/key/worker checks. | Operational Safety Baseline |
+| `/healthz`, `/readyz`, and `/version` | Implemented | Needed for deployment and smoke checks; readiness currently checks DB reachability. | Completed / Operator Operations |
 | Code splitting for HTTP/API/lifecycle packages | Deferred | Useful only after behavior stabilizes; doing it now adds conflict risk without changing runtime capability. | Refactor after security and compatibility work |
 | Versioned migrations, locks, checksum, and PostgreSQL tests | Accepted | Required for real upgrades and non-SQLite deployments, but after production safety gates. | Storage And Migration Hardening |
 | Pagination, filters, and concurrency tests | Accepted | Needed before large inventories and concurrent operator traffic. | Storage And Migration Hardening |
@@ -107,11 +111,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add `MODERN_PKI_ENV=production`.
-- Reject `dev` auth mode in production.
-- Reject default/weak bootstrap API keys in production.
 - Add ACME nonce TTL/cap and cleanup.
-- Add basic `/healthz`, `/readyz`, and `/version` endpoints.
 - Add `SECURITY.md` and `CONTRIBUTING.md`.
 - Add CI for Go tests/build and CMake/CTest.
 

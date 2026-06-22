@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +121,115 @@ func TestLoadAuthConfigRejectsInvalidMode(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_AUTH_MODE") {
 		t.Fatalf("loadAuthConfig error = %v, want MODERN_PKI_AUTH_MODE", err)
 	}
+}
+
+func TestLoadAuthConfigRejectsDevAuthInProduction(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_ENV", "production")
+
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_ENV") || !strings.Contains(err.Error(), "MODERN_PKI_AUTH_MODE") {
+		t.Fatalf("loadAuthConfig error = %v, want production auth mode error", err)
+	}
+}
+
+func TestLoadAuthConfigAllowsProductionAPIKeyWithoutBootstrapKey(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+
+	cfg, err := loadAuthConfig()
+	if err != nil {
+		t.Fatalf("loadAuthConfig returned error: %v", err)
+	}
+	if cfg.HTTP.Mode != httpapi.AuthModeAPIKey || cfg.BootstrapAPIKey != "" {
+		t.Fatalf("auth config = %#v", cfg)
+	}
+}
+
+func TestLoadAuthConfigRejectsWeakProductionBootstrapKey(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "change-me")
+
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_BOOTSTRAP_API_KEY") {
+		t.Fatalf("loadAuthConfig error = %v, want bootstrap key error", err)
+	}
+}
+
+func TestLoadAuthConfigRejectsRepeatedProductionBootstrapKey(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", strings.Repeat("a", 32))
+
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_BOOTSTRAP_API_KEY") {
+		t.Fatalf("loadAuthConfig error = %v, want bootstrap key error", err)
+	}
+}
+
+func TestLoadAuthConfigAllowsStrongProductionBootstrapKey(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "prod-bootstrap-key-0123456789abcdef")
+
+	cfg, err := loadAuthConfig()
+	if err != nil {
+		t.Fatalf("loadAuthConfig returned error: %v", err)
+	}
+	if cfg.BootstrapAPIKey != "prod-bootstrap-key-0123456789abcdef" {
+		t.Fatalf("bootstrap key = %q", cfg.BootstrapAPIKey)
+	}
+}
+
+func TestOperationalHandlerExposesHealthReadyAndVersion(t *testing.T) {
+	handler := newOperationalHandler(http.NotFoundHandler(), operationalConfig{
+		Version:   "test-version",
+		Ready:     func(context.Context) error { return nil },
+		StartedAt: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+	})
+
+	for _, path := range []string{"/healthz", "/readyz", "/version"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200 body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+	if body := httptestResponseBody(t, handler, "/version"); !strings.Contains(body, "test-version") {
+		t.Fatalf("/version response = %s, want version", body)
+	}
+}
+
+func TestOperationalHandlerReadinessFailureReturnsServiceUnavailable(t *testing.T) {
+	handler := newOperationalHandler(http.NotFoundHandler(), operationalConfig{
+		Version:   "test-version",
+		Ready:     func(context.Context) error { return errors.New("db unavailable") },
+		StartedAt: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz status = %d, want 503 body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "db unavailable") {
+		t.Fatalf("/readyz leaked readiness error detail: %s", rec.Body.String())
+	}
+}
+
+func httptestResponseBody(t *testing.T, handler http.Handler, path string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Body.String()
 }
 
 func TestLoadExpirationScanConfigDefaults(t *testing.T) {
@@ -276,6 +388,7 @@ func clearExpirationScanEnv(t *testing.T) {
 
 func clearAuthEnv(t *testing.T) {
 	t.Helper()
+	t.Setenv("MODERN_PKI_ENV", "")
 	t.Setenv("MODERN_PKI_AUTH_MODE", "")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", "")

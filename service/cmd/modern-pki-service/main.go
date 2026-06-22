@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -47,6 +48,18 @@ const (
 
 	defaultACMESmokeValidity     = 24 * time.Hour
 	defaultACMESmokeIssuerKeyRef = ".tmp/acme-smoke/acme-smoke-issuer.key"
+
+	productionEnv                   = "production"
+	minProductionBootstrapKeyLength = 32
+	defaultServiceVersion           = "dev"
+	defaultServiceCommit            = "unknown"
+	defaultServiceBuildTime         = "unknown"
+)
+
+var (
+	serviceVersion   = defaultServiceVersion
+	serviceCommit    = defaultServiceCommit
+	serviceBuildTime = defaultServiceBuildTime
 )
 
 type outboxConfig struct {
@@ -79,7 +92,16 @@ type authConfig struct {
 	BootstrapAPIKeyActor string
 }
 
+type operationalConfig struct {
+	Version   string
+	Commit    string
+	BuildTime string
+	StartedAt time.Time
+	Ready     func(context.Context) error
+}
+
 func main() {
+	startedAt := time.Now().UTC()
 	addr := envOrDefault("MODERN_PKI_ADDR", defaultAddr)
 	dbDriver := envOrDefault("MODERN_PKI_DB_DRIVER", defaultDBDriver)
 	dbDSN := envOrDefault("MODERN_PKI_DB_DSN", defaultDBDSN)
@@ -156,9 +178,20 @@ func main() {
 		go worker.Run(context.Background())
 		log.Printf("modern-pki expiration scan worker enabled interval=%s warning_window=%s batch=%d", expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize)
 	}
+	handler := newOperationalHandler(server, operationalConfig{
+		Version:   serviceVersion,
+		Commit:    serviceCommit,
+		BuildTime: serviceBuildTime,
+		StartedAt: startedAt,
+		Ready: func(ctx context.Context) error {
+			readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			return db.PingContext(readyCtx)
+		},
+	})
 
 	log.Printf("modern-pki service listening on %s", addr)
-	if err := newHTTPServer(addr, server).ListenAndServe(); err != nil {
+	if err := newHTTPServer(addr, handler).ListenAndServe(); err != nil {
 		log.Fatalf("serve HTTP: %v", err)
 	}
 }
@@ -173,6 +206,60 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+}
+
+func newOperationalHandler(next http.Handler, cfg operationalConfig) http.Handler {
+	if cfg.Version == "" {
+		cfg.Version = defaultServiceVersion
+	}
+	if cfg.Commit == "" {
+		cfg.Commit = defaultServiceCommit
+	}
+	if cfg.BuildTime == "" {
+		cfg.BuildTime = defaultServiceBuildTime
+	}
+	if cfg.StartedAt.IsZero() {
+		cfg.StartedAt = time.Now().UTC()
+	}
+	if cfg.Ready == nil {
+		cfg.Ready = func(context.Context) error { return nil }
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeOperationalJSON(w, http.StatusOK, map[string]any{
+			"status":     "ok",
+			"started_at": cfg.StartedAt.Format(time.RFC3339Nano),
+		})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Ready(r.Context()) != nil {
+			writeOperationalJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status": "not_ready",
+				"error":  "readiness check failed",
+			})
+			return
+		}
+		writeOperationalJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+		})
+	})
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
+		writeOperationalJSON(w, http.StatusOK, map[string]any{
+			"service":    "modern-pki-service",
+			"version":    cfg.Version,
+			"commit":     cfg.Commit,
+			"build_time": cfg.BuildTime,
+		})
+	})
+	mux.Handle("/", next)
+	return mux
+}
+
+func writeOperationalJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func envOrDefault(name string, fallback string) string {
@@ -192,14 +279,66 @@ func loadAuthConfig() (authConfig, error) {
 		return authConfig{}, fmt.Errorf("MODERN_PKI_AUTH_MODE must be %q or %q", httpapi.AuthModeDev, httpapi.AuthModeAPIKey)
 	}
 
+	bootstrapAPIKey := os.Getenv("MODERN_PKI_BOOTSTRAP_API_KEY")
+	if err := validateProductionAuthConfig(os.Getenv("MODERN_PKI_ENV"), mode, bootstrapAPIKey); err != nil {
+		return authConfig{}, err
+	}
+
 	return authConfig{
 		HTTP: httpapi.AuthConfig{
 			Mode: mode,
 		},
-		BootstrapAPIKey:      os.Getenv("MODERN_PKI_BOOTSTRAP_API_KEY"),
+		BootstrapAPIKey:      bootstrapAPIKey,
 		BootstrapAPIKeyName:  envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", defaultBootstrapAPIKeyName),
 		BootstrapAPIKeyActor: envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", defaultBootstrapAPIKeyActor),
 	}, nil
+}
+
+func validateProductionAuthConfig(env string, mode httpapi.AuthMode, bootstrapAPIKey string) error {
+	if !isProductionEnv(env) {
+		return nil
+	}
+	if mode == httpapi.AuthModeDev {
+		return fmt.Errorf("MODERN_PKI_ENV=%s requires MODERN_PKI_AUTH_MODE=%q", productionEnv, httpapi.AuthModeAPIKey)
+	}
+	if bootstrapAPIKey != "" && isWeakProductionBootstrapAPIKey(bootstrapAPIKey) {
+		return fmt.Errorf("MODERN_PKI_BOOTSTRAP_API_KEY must be at least %d characters and not a common default in production", minProductionBootstrapKeyLength)
+	}
+	return nil
+}
+
+func isProductionEnv(env string) bool {
+	return strings.EqualFold(strings.TrimSpace(env), productionEnv)
+}
+
+func isWeakProductionBootstrapAPIKey(token string) bool {
+	trimmed := strings.TrimSpace(token)
+	if len(trimmed) < minProductionBootstrapKeyLength {
+		return true
+	}
+	if isSingleRepeatedRune(trimmed) {
+		return true
+	}
+	switch strings.ToLower(trimmed) {
+	case "change-me", "changeme", "bootstrap", "bootstrap-token", "password", "secret", "admin", "modern-pki", "modern-pki-bootstrap":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSingleRepeatedRune(value string) bool {
+	var first rune
+	for idx, current := range value {
+		if idx == 0 {
+			first = current
+			continue
+		}
+		if current != first {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func loadOutboxConfig() (outboxConfig, error) {

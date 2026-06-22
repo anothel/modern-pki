@@ -106,6 +106,14 @@ Audit events include structured `metadata_json` for lifecycle resource IDs and s
 
 API authentication defaults to `dev` mode for local compatibility. In `dev` mode, the service uses `X-Actor` as the audit actor and allows requests without credentials. Set `MODERN_PKI_AUTH_MODE=api_key` to require `Authorization: Bearer <token>` for lifecycle and operator APIs. `POST /ocsp`, `GET /crls/{id}`, and `GET /issuers/{id}/crl` remain public distribution endpoints. Bootstrap an initial operator key by setting `MODERN_PKI_BOOTSTRAP_API_KEY`; the service stores only a SHA-256 token hash.
 
+Set `MODERN_PKI_ENV=production` for production startup checks. Production mode rejects `dev` auth mode and rejects configured bootstrap API keys shorter than 32 characters or matching common defaults such as `change-me`.
+
+Operational probes are public:
+
+- `GET /healthz` returns process liveness.
+- `GET /readyz` checks database reachability.
+- `GET /version` returns service build metadata.
+
 API keys are managed by operator-scoped keys:
 
 - `POST /api-keys`
@@ -140,8 +148,9 @@ Environment variables:
 | `MODERN_PKI_DB_DRIVER` | `sqlite` | Database driver name. Use `sqlite` locally or `pgx` for PostgreSQL. |
 | `MODERN_PKI_DB_DSN` | `modern-pki.db` | Database DSN passed to `database/sql`. |
 | `MODERN_PKI_CORE_BIN` | `modern-pki-core` | Path or command name for the core CLI. |
+| `MODERN_PKI_ENV` | empty | Set to `production` to enable production startup checks. |
 | `MODERN_PKI_AUTH_MODE` | `dev` | Auth mode. Use `dev` for local `X-Actor`; use `api_key` for Bearer token auth. |
-| `MODERN_PKI_BOOTSTRAP_API_KEY` | empty | Optional initial API key token. Stored as a SHA-256 hash. |
+| `MODERN_PKI_BOOTSTRAP_API_KEY` | empty | Optional initial API key token. Stored as a SHA-256 hash. In production, configured bootstrap tokens must be at least 32 characters and not common defaults. |
 | `MODERN_PKI_BOOTSTRAP_API_KEY_NAME` | `bootstrap` | Name stored for the bootstrap API key. |
 | `MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR` | `bootstrap` | Audit actor assigned to the bootstrap API key. |
 | `MODERN_PKI_OUTBOX_ENABLED` | `true` | Enables lifecycle outbox dispatch worker. |
