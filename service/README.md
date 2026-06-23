@@ -122,6 +122,8 @@ API keys are managed by operator-scoped keys:
 
 Scopes are ordered as `operator`, `write`, and `read`. `operator` can access all protected APIs, including API key management, outbox operations, audit events, and expiration scans. `write` can read and mutate lifecycle resources. `read` can only read non-operator APIs. Created API keys return the generated token once in the creation response. List and disable responses never include token material.
 
+API keys can include an optional `expires_at` timestamp. Expired keys are rejected during Bearer authentication. Successful API key authentication records `last_used_at`, which is visible to operator key listing.
+
 Example:
 
 ```powershell
@@ -135,7 +137,7 @@ curl.exe -H "Authorization: Bearer change-me" http://localhost:8080/identities
 curl.exe -X POST http://localhost:8080/api-keys `
   -H "Authorization: Bearer change-me" `
   -H "Content-Type: application/json" `
-  -d '{"name":"reader","actor":"read-client","scopes":["read"]}'
+  -d '{"name":"reader","actor":"read-client","scopes":["read"],"expires_at":"2026-07-23T00:00:00Z"}'
 ```
 
 ## Configuration

@@ -133,6 +133,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			status TEXT NOT NULL,
 			actor TEXT NOT NULL,
 			scopes TEXT NOT NULL DEFAULT '["operator"]',
+			expires_at TEXT,
+			last_used_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -233,6 +235,24 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	} else if !exists {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '["operator"]'`); err != nil {
 			return fmt.Errorf("add sqlite column api_keys.scopes: %w", err)
+		}
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "expires_at", definition: "expires_at TEXT"},
+		{name: "last_used_at", definition: "last_used_at TEXT"},
+	} {
+		exists, err := sqliteColumnExists(ctx, db, "api_keys", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE api_keys ADD COLUMN %s", column.definition)); err != nil {
+			return fmt.Errorf("add sqlite column api_keys.%s: %w", column.name, err)
 		}
 	}
 	for _, column := range []struct {
@@ -368,10 +388,14 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			status TEXT NOT NULL,
 			actor TEXT NOT NULL,
 			scopes TEXT NOT NULL DEFAULT '["operator"]',
+			expires_at TIMESTAMPTZ,
+			last_used_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '["operator"]'`,
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_hash
 			ON api_keys(token_hash)`,
 		`CREATE TABLE IF NOT EXISTS acme_accounts (

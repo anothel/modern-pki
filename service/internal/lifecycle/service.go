@@ -234,9 +234,10 @@ type EnsureAPIKeyRequest struct {
 }
 
 type CreateAPIKeyRequest struct {
-	Name   string
-	Actor  string
-	Scopes []domain.APIKeyScope
+	Name      string
+	Actor     string
+	Scopes    []domain.APIKeyScope
+	ExpiresAt time.Time
 }
 
 type CreateAPIKeyResult struct {
@@ -465,6 +466,18 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.
 	if len(key.Scopes) == 0 {
 		return domain.APIKey{}, domain.ErrUnauthorized
 	}
+	now := s.clock.Now()
+	if !key.ExpiresAt.IsZero() && !key.ExpiresAt.After(now) {
+		return domain.APIKey{}, domain.ErrUnauthorized
+	}
+	key.LastUsedAt = now
+	key.UpdatedAt = now
+	if err := s.repo.UpdateAPIKeyIfStatus(ctx, key, domain.APIKeyActive); err != nil {
+		if errors.Is(err, domain.ErrAPIKeyNotFound) || errors.Is(err, domain.ErrInvalidTransition) {
+			return domain.APIKey{}, domain.ErrUnauthorized
+		}
+		return domain.APIKey{}, err
+	}
 	return key, nil
 }
 
@@ -483,6 +496,22 @@ func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIK
 	tokenHash := HashAPIKeyToken(req.Token)
 	existing, err := s.repo.GetAPIKeyByTokenHash(ctx, tokenHash)
 	if err == nil {
+		if existing.Status != domain.APIKeyActive || strings.TrimSpace(existing.Actor) == "" || len(existing.Scopes) == 0 {
+			return domain.APIKey{}, domain.ErrInvalidTransition
+		}
+		if err := validateAPIKeyScopes(existing.Scopes); err != nil {
+			return domain.APIKey{}, err
+		}
+		hasOperatorScope := false
+		for _, scope := range existing.Scopes {
+			if scope == domain.APIKeyScopeOperator {
+				hasOperatorScope = true
+				break
+			}
+		}
+		if !hasOperatorScope {
+			return domain.APIKey{}, domain.ErrInvalidTransition
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, domain.ErrAPIKeyNotFound) {
@@ -522,12 +551,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor string, req CreateAPIK
 	if err := validateAPIKeyScopes(req.Scopes); err != nil {
 		return CreateAPIKeyResult{}, err
 	}
+	now := s.clock.Now()
+	if !req.ExpiresAt.IsZero() && !req.ExpiresAt.After(now) {
+		return CreateAPIKeyResult{}, domain.ErrInvalidRequest
+	}
 	token, err := generateAPIKeyToken()
 	if err != nil {
 		return CreateAPIKeyResult{}, err
 	}
 
-	now := s.clock.Now()
 	key := domain.APIKey{
 		ID:        s.idgen.NewID(),
 		Name:      strings.TrimSpace(req.Name),
@@ -535,6 +567,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor string, req CreateAPIK
 		Status:    domain.APIKeyActive,
 		Actor:     strings.TrimSpace(req.Actor),
 		Scopes:    append([]domain.APIKeyScope(nil), req.Scopes...),
+		ExpiresAt: req.ExpiresAt,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

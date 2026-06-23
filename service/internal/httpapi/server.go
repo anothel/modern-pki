@@ -397,9 +397,10 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.service.CreateAPIKey(r.Context(), requestActor(r), lifecycle.CreateAPIKeyRequest{
-		Name:   req.Name,
-		Actor:  req.Actor,
-		Scopes: req.Scopes,
+		Name:      req.Name,
+		Actor:     req.Actor,
+		Scopes:    req.Scopes,
+		ExpiresAt: req.ExpiresAt,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -2064,9 +2065,10 @@ type scanCertificateExpirationsRequest struct {
 }
 
 type createAPIKeyRequest struct {
-	Name   string               `json:"name"`
-	Actor  string               `json:"actor"`
-	Scopes []domain.APIKeyScope `json:"scopes"`
+	Name      string               `json:"name"`
+	Actor     string               `json:"actor"`
+	Scopes    []domain.APIKeyScope `json:"scopes"`
+	ExpiresAt time.Time            `json:"expires_at"`
 }
 
 type createACMEAccountRequest struct {
@@ -2219,15 +2221,17 @@ type outboxMessageResponse struct {
 }
 
 type apiKeyResponse struct {
-	ID        string               `json:"id"`
-	Name      string               `json:"name"`
-	Actor     string               `json:"actor"`
-	Status    domain.APIKeyStatus  `json:"status"`
-	Scopes    []domain.APIKeyScope `json:"scopes"`
-	Token     string               `json:"token,omitempty"`
-	TokenHash string               `json:"token_hash,omitempty"`
-	CreatedAt time.Time            `json:"created_at"`
-	UpdatedAt time.Time            `json:"updated_at"`
+	ID         string               `json:"id"`
+	Name       string               `json:"name"`
+	Actor      string               `json:"actor"`
+	Status     domain.APIKeyStatus  `json:"status"`
+	Scopes     []domain.APIKeyScope `json:"scopes"`
+	ExpiresAt  time.Time            `json:"expires_at"`
+	LastUsedAt time.Time            `json:"last_used_at"`
+	Token      string               `json:"token,omitempty"`
+	TokenHash  string               `json:"token_hash,omitempty"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
 type acmeAccountResponse struct {
@@ -2519,13 +2523,15 @@ func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageRe
 
 func toAPIKeyResponse(key domain.APIKey) apiKeyResponse {
 	return apiKeyResponse{
-		ID:        key.ID,
-		Name:      key.Name,
-		Actor:     key.Actor,
-		Status:    key.Status,
-		Scopes:    key.Scopes,
-		CreatedAt: key.CreatedAt,
-		UpdatedAt: key.UpdatedAt,
+		ID:         key.ID,
+		Name:       key.Name,
+		Actor:      key.Actor,
+		Status:     key.Status,
+		Scopes:     key.Scopes,
+		ExpiresAt:  key.ExpiresAt,
+		LastUsedAt: key.LastUsedAt,
+		CreatedAt:  key.CreatedAt,
+		UpdatedAt:  key.UpdatedAt,
 	}
 }
 

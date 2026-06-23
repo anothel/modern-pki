@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     status TEXT NOT NULL,
     actor TEXT NOT NULL,
     scopes TEXT NOT NULL,
+    expires_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );

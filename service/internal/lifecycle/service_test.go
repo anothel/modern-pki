@@ -3534,6 +3534,139 @@ func createProfilePolicyFixture(t *testing.T, ctx context.Context, service *Serv
 	return identity, issuer, profile
 }
 
+func TestAuthenticateAPIKeyRejectsExpiredKey(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "expired",
+		TokenHash: HashAPIKeyToken("expired-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		ExpiresAt: now.Add(-time.Second),
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	if _, err := service.AuthenticateAPIKey(ctx, "expired-token"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("AuthenticateAPIKey error = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestAuthenticateAPIKeyRecordsLastUsedAt(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+
+	key := domain.APIKey{
+		ID:        "key-1",
+		Name:      "operator",
+		TokenHash: HashAPIKeyToken("operator-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}
+	if err := repo.CreateAPIKey(ctx, key); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	authenticated, err := service.AuthenticateAPIKey(ctx, "operator-token")
+	if err != nil {
+		t.Fatalf("AuthenticateAPIKey returned error: %v", err)
+	}
+	if !authenticated.LastUsedAt.Equal(now) {
+		t.Fatalf("authenticated LastUsedAt = %s, want %s", authenticated.LastUsedAt, now)
+	}
+	stored, err := repo.GetAPIKey(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey returned error: %v", err)
+	}
+	if !stored.LastUsedAt.Equal(now) || !stored.UpdatedAt.Equal(now) {
+		t.Fatalf("stored timestamps LastUsedAt=%s UpdatedAt=%s, want %s", stored.LastUsedAt, stored.UpdatedAt, now)
+	}
+}
+
+func TestCreateAPIKeyRejectsPastExpiry(t *testing.T) {
+	service := New(store.NewMemoryStore(), &fakeIssuer{}, fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}, &fakeIDGenerator{})
+
+	_, err := service.CreateAPIKey(context.Background(), "admin", CreateAPIKeyRequest{
+		Name:      "expired",
+		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		ExpiresAt: time.Date(2026, time.January, 2, 3, 4, 4, 0, time.UTC),
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateAPIKey error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestEnsureAPIKeyRejectsDisabledExistingKey(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "bootstrap",
+		TokenHash: HashAPIKeyToken("bootstrap-token"),
+		Status:    domain.APIKeyDisabled,
+		Actor:     "bootstrap",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	_, err := service.EnsureAPIKey(ctx, "system", EnsureAPIKeyRequest{
+		Name:   "bootstrap",
+		Token:  "bootstrap-token",
+		Actor:  "bootstrap",
+		Scopes: []domain.APIKeyScope{domain.APIKeyScopeOperator},
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("EnsureAPIKey error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestEnsureAPIKeyRejectsExistingKeyWithoutOperatorScope(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "bootstrap",
+		TokenHash: HashAPIKeyToken("bootstrap-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "bootstrap",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	_, err := service.EnsureAPIKey(ctx, "system", EnsureAPIKeyRequest{
+		Name:   "bootstrap",
+		Token:  "bootstrap-token",
+		Actor:  "bootstrap",
+		Scopes: []domain.APIKeyScope{domain.APIKeyScopeOperator},
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("EnsureAPIKey error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 type fakeIssuer struct {
 	requests                        []corecli.IssueRequest
 	crlRequests                     []corecli.GenerateCRLRequest

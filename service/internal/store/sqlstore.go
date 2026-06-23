@@ -1500,9 +1500,9 @@ func (r sqlRepository) CreateAPIKey(ctx context.Context, key domain.APIKey) erro
 	}
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO api_keys (
-	id, name, token_hash, status, actor, scopes, created_at, updated_at
+	id, name, token_hash, status, actor, scopes, expires_at, last_used_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 )`,
 		key.ID,
 		key.Name,
@@ -1510,6 +1510,8 @@ INSERT INTO api_keys (
 		string(key.Status),
 		key.Actor,
 		scopes,
+		formatNullableSQLTime(key.ExpiresAt),
+		formatNullableSQLTime(key.LastUsedAt),
 		formatSQLTime(key.CreatedAt),
 		formatSQLTime(key.UpdatedAt),
 	)
@@ -1518,7 +1520,7 @@ INSERT INTO api_keys (
 
 func (r sqlRepository) GetAPIKey(ctx context.Context, id string) (domain.APIKey, error) {
 	key, err := scanAPIKey(r.exec.QueryRowContext(ctx, `
-SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
+SELECT id, name, token_hash, status, actor, scopes, expires_at, last_used_at, created_at, updated_at
 FROM api_keys
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1532,7 +1534,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) GetAPIKeyByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
 	key, err := scanAPIKey(r.exec.QueryRowContext(ctx, `
-SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
+SELECT id, name, token_hash, status, actor, scopes, expires_at, last_used_at, created_at, updated_at
 FROM api_keys
 WHERE token_hash = $1`, tokenHash))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1546,7 +1548,7 @@ WHERE token_hash = $1`, tokenHash))
 
 func (r sqlRepository) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, name, token_hash, status, actor, scopes, created_at, updated_at
+SELECT id, name, token_hash, status, actor, scopes, expires_at, last_used_at, created_at, updated_at
 FROM api_keys
 ORDER BY created_at, id`)
 	if err != nil {
@@ -1575,13 +1577,15 @@ func (r sqlRepository) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIK
 	}
 	result, err := r.exec.ExecContext(ctx, `
 UPDATE api_keys
-SET name = $1, token_hash = $2, status = $3, actor = $4, scopes = $5, updated_at = $6
-WHERE id = $7 AND status = $8`,
+SET name = $1, token_hash = $2, status = $3, actor = $4, scopes = $5, expires_at = $6, last_used_at = $7, updated_at = $8
+WHERE id = $9 AND status = $10`,
 		key.Name,
 		key.TokenHash,
 		string(key.Status),
 		key.Actor,
 		scopes,
+		formatNullableSQLTime(key.ExpiresAt),
+		formatNullableSQLTime(key.LastUsedAt),
 		formatSQLTime(key.UpdatedAt),
 		key.ID,
 		string(currentStatus),
@@ -2233,6 +2237,8 @@ func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 	var key domain.APIKey
 	var status string
 	var scopes string
+	var expiresAt any
+	var lastUsedAt any
 	var createdAt any
 	var updatedAt any
 
@@ -2243,6 +2249,8 @@ func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 		&status,
 		&key.Actor,
 		&scopes,
+		&expiresAt,
+		&lastUsedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -2261,9 +2269,19 @@ func scanAPIKey(scanner sqlScanner) (domain.APIKey, error) {
 	if err != nil {
 		return domain.APIKey{}, err
 	}
+	parsedExpiresAt, err := parseSQLTime(expiresAt)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	parsedLastUsedAt, err := parseSQLTime(lastUsedAt)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
 
 	key.Status = domain.APIKeyStatus(status)
 	key.Scopes = parsedScopes
+	key.ExpiresAt = parsedExpiresAt
+	key.LastUsedAt = parsedLastUsedAt
 	key.CreatedAt = parsedCreatedAt
 	key.UpdatedAt = parsedUpdatedAt
 	return key, nil

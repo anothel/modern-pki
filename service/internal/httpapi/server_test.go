@@ -2267,10 +2267,12 @@ func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
 	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
 
 	var created apiKeyResponse
+	expiresAt := testNow.Add(24 * time.Hour)
 	status := api.doJSONWithHeaders(t, http.MethodPost, "/api-keys", "", map[string]any{
-		"name":   "reader",
-		"actor":  "read-client",
-		"scopes": []string{string(domain.APIKeyScopeRead)},
+		"name":       "reader",
+		"actor":      "read-client",
+		"scopes":     []string{string(domain.APIKeyScopeRead)},
+		"expires_at": expiresAt.Format(time.RFC3339),
 	}, map[string]string{
 		"Authorization": "Bearer operator-token",
 	}, &created)
@@ -2286,6 +2288,9 @@ func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
 	}
 	if created.TokenHash != "" {
 		t.Fatalf("created response exposed token hash: %#v", created)
+	}
+	if !created.ExpiresAt.Equal(expiresAt) || !created.LastUsedAt.IsZero() {
+		t.Fatalf("created expiry/last_used_at = %s/%s, want %s/zero", created.ExpiresAt, created.LastUsedAt, expiresAt)
 	}
 
 	var identities []apiIdentity
@@ -2306,6 +2311,23 @@ func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
 		if key.Token != "" || key.TokenHash != "" {
 			t.Fatalf("list response exposed token material: %#v", key)
 		}
+		if key.ID == created.ID && (!key.ExpiresAt.Equal(expiresAt) || key.LastUsedAt.IsZero()) {
+			t.Fatalf("listed expiry/last_used_at = %s/%s, want %s/non-zero", key.ExpiresAt, key.LastUsedAt, expiresAt)
+		}
+	}
+}
+
+func TestAPIKeyAuthRejectsExpiredKey(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKeyWithExpiry(t, api.repo, "expired-key", "expired-token", "api-admin", domain.APIKeyActive, testNow.Add(-time.Second), domain.APIKeyScopeOperator)
+
+	var body errorResponse
+	status := api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer expired-token",
+	}, &body)
+	assertStatus(t, status, http.StatusUnauthorized)
+	if body.Error != domain.ErrUnauthorized.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
 	}
 }
 
@@ -2449,6 +2471,11 @@ func createTestAPIKey(t *testing.T, repo store.Repository, id string, token stri
 
 func createScopedTestAPIKey(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus, scopes ...domain.APIKeyScope) {
 	t.Helper()
+	createScopedTestAPIKeyWithExpiry(t, repo, id, token, actor, status, time.Time{}, scopes...)
+}
+
+func createScopedTestAPIKeyWithExpiry(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus, expiresAt time.Time, scopes ...domain.APIKeyScope) {
+	t.Helper()
 	if err := repo.CreateAPIKey(context.Background(), domain.APIKey{
 		ID:        id,
 		Name:      id,
@@ -2456,6 +2483,7 @@ func createScopedTestAPIKey(t *testing.T, repo store.Repository, id string, toke
 		Status:    status,
 		Actor:     actor,
 		Scopes:    scopes,
+		ExpiresAt: expiresAt,
 		CreatedAt: testNow,
 		UpdatedAt: testNow,
 	}); err != nil {

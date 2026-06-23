@@ -344,14 +344,16 @@ type JobAttempt struct {
 }
 
 type APIKey struct {
-	ID        string
-	Name      string
-	TokenHash string
-	Status    APIKeyStatus
-	Actor     string
-	Scopes    []APIKeyScope
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string
+	Name       string
+	TokenHash  string
+	Status     APIKeyStatus
+	Actor      string
+	Scopes     []APIKeyScope
+	ExpiresAt  time.Time
+	LastUsedAt time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type ACMEAccount struct {

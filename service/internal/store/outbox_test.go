@@ -503,14 +503,16 @@ func testAPIKeys(t *testing.T, repo Repository) {
 	ctx := context.Background()
 	now := time.Unix(10, 0)
 	key := domain.APIKey{
-		ID:        "key-1",
-		Name:      "admin",
-		TokenHash: "sha256:abc",
-		Status:    domain.APIKeyActive,
-		Actor:     "api-admin",
-		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:         "key-1",
+		Name:       "admin",
+		TokenHash:  "sha256:abc",
+		Status:     domain.APIKeyActive,
+		Actor:      "api-admin",
+		Scopes:     []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		ExpiresAt:  now.Add(time.Hour),
+		LastUsedAt: now.Add(time.Minute),
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	if err := repo.CreateAPIKey(ctx, key); err != nil {
 		t.Fatalf("CreateAPIKey returned error: %v", err)
@@ -520,7 +522,8 @@ func testAPIKeys(t *testing.T, repo Repository) {
 		t.Fatalf("GetAPIKeyByTokenHash returned error: %v", err)
 	}
 	if got.ID != key.ID || got.Actor != key.Actor || got.Status != key.Status ||
-		len(got.Scopes) != 1 || got.Scopes[0] != domain.APIKeyScopeOperator {
+		len(got.Scopes) != 1 || got.Scopes[0] != domain.APIKeyScopeOperator ||
+		!got.ExpiresAt.Equal(key.ExpiresAt) || !got.LastUsedAt.Equal(key.LastUsedAt) {
 		t.Fatalf("api key = %#v, want %#v", got, key)
 	}
 	listed, err := repo.ListAPIKeys(ctx)
@@ -531,6 +534,7 @@ func testAPIKeys(t *testing.T, repo Repository) {
 		t.Fatalf("api keys = %#v, want key-1", listed)
 	}
 	key.Status = domain.APIKeyDisabled
+	key.LastUsedAt = now.Add(2 * time.Minute)
 	key.UpdatedAt = now.Add(time.Second)
 	if err := repo.UpdateAPIKeyIfStatus(ctx, key, domain.APIKeyActive); err != nil {
 		t.Fatalf("UpdateAPIKeyIfStatus returned error: %v", err)
@@ -541,6 +545,9 @@ func testAPIKeys(t *testing.T, repo Repository) {
 	}
 	if disabled.Status != domain.APIKeyDisabled {
 		t.Fatalf("api key status = %q, want disabled", disabled.Status)
+	}
+	if !disabled.LastUsedAt.Equal(key.LastUsedAt) {
+		t.Fatalf("LastUsedAt = %s, want %s", disabled.LastUsedAt, key.LastUsedAt)
 	}
 	if _, err := repo.GetAPIKeyByTokenHash(ctx, "sha256:missing"); !errors.Is(err, domain.ErrAPIKeyNotFound) {
 		t.Fatalf("GetAPIKeyByTokenHash missing error = %v, want ErrAPIKeyNotFound", err)
