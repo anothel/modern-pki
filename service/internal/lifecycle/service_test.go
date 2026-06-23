@@ -3595,6 +3595,156 @@ func TestAuthenticateAPIKeyRecordsLastUsedAt(t *testing.T) {
 	}
 }
 
+func TestAuthenticateAPIKeyUsesPepperedHashAndFallsBackToLegacyHash(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := NewWithAPIKeyPepper(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{}, "pepper-secret-0123456789abcdef")
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "legacy-key",
+		Name:      "legacy",
+		TokenHash: HashAPIKeyToken("legacy-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "legacy-client",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey legacy returned error: %v", err)
+	}
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "peppered-key",
+		Name:      "peppered",
+		TokenHash: HashAPIKeyTokenWithPepper("peppered-token", "pepper-secret-0123456789abcdef"),
+		Status:    domain.APIKeyActive,
+		Actor:     "peppered-client",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey peppered returned error: %v", err)
+	}
+
+	legacy, err := service.AuthenticateAPIKey(ctx, "legacy-token")
+	if err != nil {
+		t.Fatalf("AuthenticateAPIKey legacy returned error: %v", err)
+	}
+	if legacy.ID != "legacy-key" {
+		t.Fatalf("legacy auth ID = %q, want legacy-key", legacy.ID)
+	}
+	peppered, err := service.AuthenticateAPIKey(ctx, "peppered-token")
+	if err != nil {
+		t.Fatalf("AuthenticateAPIKey peppered returned error: %v", err)
+	}
+	if peppered.ID != "peppered-key" {
+		t.Fatalf("peppered auth ID = %q, want peppered-key", peppered.ID)
+	}
+}
+
+func TestAuthenticateAPIKeyPrefersPepperedHashWhenBothExist(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	pepper := "pepper-secret-0123456789abcdef"
+	service := NewWithAPIKeyPepper(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{}, pepper)
+	for _, key := range []domain.APIKey{
+		{
+			ID:        "legacy-key",
+			Name:      "legacy",
+			TokenHash: HashAPIKeyToken("shared-token"),
+			Status:    domain.APIKeyActive,
+			Actor:     "legacy-client",
+			Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "peppered-key",
+			Name:      "peppered",
+			TokenHash: HashAPIKeyTokenWithPepper("shared-token", pepper),
+			Status:    domain.APIKeyActive,
+			Actor:     "peppered-client",
+			Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	} {
+		if err := repo.CreateAPIKey(ctx, key); err != nil {
+			t.Fatalf("CreateAPIKey returned error: %v", err)
+		}
+	}
+
+	key, err := service.AuthenticateAPIKey(ctx, "shared-token")
+	if err != nil {
+		t.Fatalf("AuthenticateAPIKey returned error: %v", err)
+	}
+	if key.ID != "peppered-key" {
+		t.Fatalf("authenticated key ID = %q, want peppered-key", key.ID)
+	}
+}
+
+func TestCreateAPIKeyStoresPepperedHashWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	pepper := "pepper-secret-0123456789abcdef"
+	service := NewWithAPIKeyPepper(repo, &fakeIssuer{}, fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}, &fakeIDGenerator{}, pepper)
+
+	result, err := service.CreateAPIKey(ctx, "admin", CreateAPIKeyRequest{
+		Name:   "reader",
+		Actor:  "read-client",
+		Scopes: []domain.APIKeyScope{domain.APIKeyScopeRead},
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+	stored, err := repo.GetAPIKey(ctx, result.Key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey returned error: %v", err)
+	}
+	if stored.TokenHash != HashAPIKeyTokenWithPepper(result.Token, pepper) || !strings.HasPrefix(stored.TokenHash, "hmac-sha256:") {
+		t.Fatalf("TokenHash = %q, want peppered hash", stored.TokenHash)
+	}
+}
+
+func TestEnsureAPIKeyFindsLegacyHashWhenPepperConfigured(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := NewWithAPIKeyPepper(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{}, "pepper-secret-0123456789abcdef")
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "legacy-key",
+		Name:      "bootstrap",
+		TokenHash: HashAPIKeyToken("bootstrap-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "bootstrap",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	key, err := service.EnsureAPIKey(ctx, "system", EnsureAPIKeyRequest{
+		Name:   "bootstrap",
+		Token:  "bootstrap-token",
+		Actor:  "bootstrap",
+		Scopes: []domain.APIKeyScope{domain.APIKeyScopeOperator},
+	})
+	if err != nil {
+		t.Fatalf("EnsureAPIKey returned error: %v", err)
+	}
+	if key.ID != "legacy-key" {
+		t.Fatalf("EnsureAPIKey ID = %q, want legacy-key", key.ID)
+	}
+	keys, err := repo.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListAPIKeys returned error: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("api key count = %d, want 1", len(keys))
+	}
+}
+
 func TestCreateAPIKeyRejectsPastExpiry(t *testing.T) {
 	service := New(store.NewMemoryStore(), &fakeIssuer{}, fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}, &fakeIDGenerator{})
 
@@ -3653,6 +3803,38 @@ func TestRotateAPIKeyDisablesOldKeyAndReturnsNewToken(t *testing.T) {
 	}
 	if _, err := service.AuthenticateAPIKey(ctx, rotated.Token); err != nil {
 		t.Fatalf("new token auth returned error: %v", err)
+	}
+}
+
+func TestRotateAPIKeyStoresPepperedHashWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	pepper := "pepper-secret-0123456789abcdef"
+	service := NewWithAPIKeyPepper(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{}, pepper)
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "reader",
+		TokenHash: HashAPIKeyToken("old-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "read-client",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	rotated, err := service.RotateAPIKey(ctx, "ops-admin", "key-1")
+	if err != nil {
+		t.Fatalf("RotateAPIKey returned error: %v", err)
+	}
+	stored, err := repo.GetAPIKey(ctx, rotated.Key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey returned error: %v", err)
+	}
+	if stored.TokenHash != HashAPIKeyTokenWithPepper(rotated.Token, pepper) || !strings.HasPrefix(stored.TokenHash, "hmac-sha256:") {
+		t.Fatalf("rotated TokenHash = %q, want peppered hash", stored.TokenHash)
 	}
 }
 

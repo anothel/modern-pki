@@ -100,6 +100,7 @@ func TestLoadAuthConfigAPIKeyMode(t *testing.T) {
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "bootstrap-token")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", "bootstrap-admin")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", "ops-admin")
+	t.Setenv("MODERN_PKI_API_KEY_PEPPER", "pepper-secret-0123456789abcdef-extra")
 
 	cfg, err := loadAuthConfig()
 	if err != nil {
@@ -108,7 +109,8 @@ func TestLoadAuthConfigAPIKeyMode(t *testing.T) {
 	if cfg.HTTP.Mode != httpapi.AuthModeAPIKey ||
 		cfg.BootstrapAPIKey != "bootstrap-token" ||
 		cfg.BootstrapAPIKeyName != "bootstrap-admin" ||
-		cfg.BootstrapAPIKeyActor != "ops-admin" {
+		cfg.BootstrapAPIKeyActor != "ops-admin" ||
+		cfg.APIKeyPepper != "pepper-secret-0123456789abcdef-extra" {
 		t.Fatalf("auth config = %#v", cfg)
 	}
 }
@@ -133,17 +135,30 @@ func TestLoadAuthConfigRejectsDevAuthInProduction(t *testing.T) {
 	}
 }
 
-func TestLoadAuthConfigAllowsProductionAPIKeyWithoutBootstrapKey(t *testing.T) {
+func TestLoadAuthConfigRejectsProductionAPIKeyWithoutPepper(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv("MODERN_PKI_ENV", "production")
 	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
 
-	cfg, err := loadAuthConfig()
-	if err != nil {
-		t.Fatalf("loadAuthConfig returned error: %v", err)
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_API_KEY_PEPPER") {
+		t.Fatalf("loadAuthConfig error = %v, want API key pepper error", err)
 	}
-	if cfg.HTTP.Mode != httpapi.AuthModeAPIKey || cfg.BootstrapAPIKey != "" {
-		t.Fatalf("auth config = %#v", cfg)
+}
+
+func TestLoadAuthConfigRejectsWeakProductionAPIKeyPepper(t *testing.T) {
+	for _, pepper := range []string{"short", strings.Repeat("p", 32), "change-me"} {
+		t.Run(pepper, func(t *testing.T) {
+			clearAuthEnv(t)
+			t.Setenv("MODERN_PKI_ENV", "production")
+			t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
+			t.Setenv("MODERN_PKI_API_KEY_PEPPER", pepper)
+
+			_, err := loadAuthConfig()
+			if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_API_KEY_PEPPER") {
+				t.Fatalf("loadAuthConfig error = %v, want API key pepper error", err)
+			}
+		})
 	}
 }
 
@@ -152,6 +167,7 @@ func TestLoadAuthConfigRejectsWeakProductionBootstrapKey(t *testing.T) {
 	t.Setenv("MODERN_PKI_ENV", "production")
 	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "change-me")
+	t.Setenv("MODERN_PKI_API_KEY_PEPPER", "pepper-secret-0123456789abcdef-extra")
 
 	_, err := loadAuthConfig()
 	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_BOOTSTRAP_API_KEY") {
@@ -164,6 +180,7 @@ func TestLoadAuthConfigRejectsRepeatedProductionBootstrapKey(t *testing.T) {
 	t.Setenv("MODERN_PKI_ENV", "production")
 	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", strings.Repeat("a", 32))
+	t.Setenv("MODERN_PKI_API_KEY_PEPPER", "pepper-secret-0123456789abcdef-extra")
 
 	_, err := loadAuthConfig()
 	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_BOOTSTRAP_API_KEY") {
@@ -176,13 +193,15 @@ func TestLoadAuthConfigAllowsStrongProductionBootstrapKey(t *testing.T) {
 	t.Setenv("MODERN_PKI_ENV", "production")
 	t.Setenv("MODERN_PKI_AUTH_MODE", "api_key")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "prod-bootstrap-key-0123456789abcdef")
+	t.Setenv("MODERN_PKI_API_KEY_PEPPER", "pepper-secret-0123456789abcdef-extra")
 
 	cfg, err := loadAuthConfig()
 	if err != nil {
 		t.Fatalf("loadAuthConfig returned error: %v", err)
 	}
-	if cfg.BootstrapAPIKey != "prod-bootstrap-key-0123456789abcdef" {
-		t.Fatalf("bootstrap key = %q", cfg.BootstrapAPIKey)
+	if cfg.BootstrapAPIKey != "prod-bootstrap-key-0123456789abcdef" ||
+		cfg.APIKeyPepper != "pepper-secret-0123456789abcdef-extra" {
+		t.Fatalf("auth config = %#v", cfg)
 	}
 }
 
@@ -393,4 +412,5 @@ func clearAuthEnv(t *testing.T) {
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY", "")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", "")
 	t.Setenv("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", "")
+	t.Setenv("MODERN_PKI_API_KEY_PEPPER", "")
 }

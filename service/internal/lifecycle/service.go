@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -70,6 +71,7 @@ type Service struct {
 	clock              Clock
 	idgen              IDGenerator
 	acmeHTTP01Verifier ACMEHTTP01Verifier
+	apiKeyPepper       string
 }
 
 type AuditRequestMetadata struct {
@@ -257,6 +259,14 @@ func New(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDG
 }
 
 func NewWithACMEHTTP01Verifier(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator, verifier ACMEHTTP01Verifier) *Service {
+	return NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo, issuer, clock, idgen, verifier, "")
+}
+
+func NewWithAPIKeyPepper(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator, pepper string) *Service {
+	return NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo, issuer, clock, idgen, nil, pepper)
+}
+
+func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer CertificateIssuer, clock Clock, idgen IDGenerator, verifier ACMEHTTP01Verifier, pepper string) *Service {
 	if verifier == nil {
 		verifier = defaultACMEHTTP01Verifier()
 	}
@@ -266,6 +276,7 @@ func NewWithACMEHTTP01Verifier(repo store.Repository, issuer CertificateIssuer, 
 		clock:              clock,
 		idgen:              idgen,
 		acmeHTTP01Verifier: verifier,
+		apiKeyPepper:       strings.TrimSpace(pepper),
 	}
 }
 
@@ -447,6 +458,16 @@ func HashAPIKeyToken(token string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+func HashAPIKeyTokenWithPepper(token string, pepper string) string {
+	pepper = strings.TrimSpace(pepper)
+	if pepper == "" {
+		return HashAPIKeyToken(token)
+	}
+	mac := hmac.New(sha256.New, []byte(pepper))
+	_, _ = mac.Write([]byte(token))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
 func APIKeyTokenFingerprint(tokenHash string) string {
 	algorithm, hash, ok := strings.Cut(tokenHash, ":")
 	if !ok || algorithm == "" || hash == "" {
@@ -464,7 +485,7 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.
 		return domain.APIKey{}, domain.ErrUnauthorized
 	}
 
-	key, err := s.repo.GetAPIKeyByTokenHash(ctx, HashAPIKeyToken(token))
+	key, err := s.getAPIKeyByToken(ctx, token)
 	if errors.Is(err, domain.ErrAPIKeyNotFound) {
 		return domain.APIKey{}, domain.ErrUnauthorized
 	}
@@ -492,6 +513,20 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.
 	return key, nil
 }
 
+func (s *Service) hashAPIKeyToken(token string) string {
+	return HashAPIKeyTokenWithPepper(token, s.apiKeyPepper)
+}
+
+func (s *Service) getAPIKeyByToken(ctx context.Context, token string) (domain.APIKey, error) {
+	if strings.TrimSpace(s.apiKeyPepper) != "" {
+		key, err := s.repo.GetAPIKeyByTokenHash(ctx, s.hashAPIKeyToken(token))
+		if err == nil || !errors.Is(err, domain.ErrAPIKeyNotFound) {
+			return key, err
+		}
+	}
+	return s.repo.GetAPIKeyByTokenHash(ctx, HashAPIKeyToken(token))
+}
+
 func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIKeyRequest) (domain.APIKey, error) {
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.Actor) == "" {
 		return domain.APIKey{}, domain.ErrInvalidRequest
@@ -504,8 +539,8 @@ func (s *Service) EnsureAPIKey(ctx context.Context, actor string, req EnsureAPIK
 		return domain.APIKey{}, err
 	}
 
-	tokenHash := HashAPIKeyToken(req.Token)
-	existing, err := s.repo.GetAPIKeyByTokenHash(ctx, tokenHash)
+	tokenHash := s.hashAPIKeyToken(req.Token)
+	existing, err := s.getAPIKeyByToken(ctx, req.Token)
 	if err == nil {
 		if existing.Status != domain.APIKeyActive || strings.TrimSpace(existing.Actor) == "" || len(existing.Scopes) == 0 {
 			return domain.APIKey{}, domain.ErrInvalidTransition
@@ -574,7 +609,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor string, req CreateAPIK
 	key := domain.APIKey{
 		ID:        s.idgen.NewID(),
 		Name:      strings.TrimSpace(req.Name),
-		TokenHash: HashAPIKeyToken(token),
+		TokenHash: s.hashAPIKeyToken(token),
 		Status:    domain.APIKeyActive,
 		Actor:     strings.TrimSpace(req.Actor),
 		Scopes:    append([]domain.APIKeyScope(nil), req.Scopes...),
@@ -651,7 +686,7 @@ func (s *Service) RotateAPIKey(ctx context.Context, actor string, id string) (Cr
 		newKey = domain.APIKey{
 			ID:        s.idgen.NewID(),
 			Name:      oldKey.Name,
-			TokenHash: HashAPIKeyToken(token),
+			TokenHash: s.hashAPIKeyToken(token),
 			Status:    domain.APIKeyActive,
 			Actor:     oldKey.Actor,
 			Scopes:    append([]domain.APIKeyScope(nil), oldKey.Scopes...),

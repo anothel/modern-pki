@@ -4,13 +4,14 @@
 
 `modern-pki` is pre-1.0 and still in active development. It has security controls for local development and early operational hardening, but it is not yet a stable supported production release.
 
-Current security-relevant controls include API key authentication, scoped API keys, API key expiry and rotation, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, ACME HTTP-01 unsafe target blocking, CRL publication, OCSP handling, and a production startup guard.
+Current security-relevant controls include API key authentication, scoped API keys, API key HMAC peppering, API key expiry and rotation, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, ACME HTTP-01 unsafe target blocking, CRL publication, OCSP handling, and a production startup guard.
 
 Production deployments must set:
 
 ```powershell
 $env:MODERN_PKI_ENV = "production"
 $env:MODERN_PKI_AUTH_MODE = "api_key"
+$env:MODERN_PKI_API_KEY_PEPPER = "<long-random-secret>"
 ```
 
 Do not use `dev` auth mode or ACME smoke bootstrap defaults in production. `MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS` is for local smoke tests only.
@@ -45,6 +46,7 @@ Security fixes are handled on the active development line until a supported rele
 
 - Run production services with `MODERN_PKI_ENV=production`.
 - Use `MODERN_PKI_AUTH_MODE=api_key` for production API access.
+- Set a long, random `MODERN_PKI_API_KEY_PEPPER`; production startup rejects missing or weak peppers.
 - Keep bootstrap API keys long, unique, and secret. Production startup rejects weak configured bootstrap keys.
 - Disable local smoke bootstrap settings outside local test runs.
 - Treat issuer private keys, API keys, database files, webhook secrets, and ACME account keys as secrets.

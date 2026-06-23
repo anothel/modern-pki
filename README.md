@@ -83,6 +83,7 @@ For API-key mode:
 $env:MODERN_PKI_AUTH_MODE = "api_key"
 $env:MODERN_PKI_BOOTSTRAP_API_KEY = "change-me"
 $env:MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR = "ops-admin"
+$env:MODERN_PKI_API_KEY_PEPPER = "local-dev-pepper-0123456789abcdef"
 go run ./cmd/modern-pki-service
 ```
 

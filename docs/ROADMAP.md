@@ -39,6 +39,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 
 - API key auth mode with bootstrap operator key.
 - API key scopes: operator, write, read.
+- API key HMAC-SHA256 pepper support for new token hashes, with legacy SHA-256 fallback for existing keys.
 - API key optional expiry enforcement and `last_used_at` tracking.
 - API key rotation with one-time replacement tokens and token fingerprints.
 - Production mode guard for `dev` auth and weak bootstrap API keys.
@@ -91,6 +92,7 @@ Current status:
 - HTTP server now uses explicit `http.Server` timeouts and max header size.
 - HTTP API requests are capped at 1 MiB by default, with OCSP requests capped at 16 KiB.
 - API key auth mode exists with operator, write, and read scopes.
+- API key HMAC peppering exists for new/bootstrap/rotated keys, and production API key mode requires a strong pepper.
 - API key create/list responses include optional expiry and last-used timestamps; expired Bearer tokens are rejected.
 - API key rotation disables the old key and returns a one-time replacement token with a stable fingerprint.
 - `MODERN_PKI_ENV=production` rejects `dev` auth and weak configured bootstrap API keys.
@@ -117,7 +119,7 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 | ACME nonce TTL, cap, and cleanup | Implemented | One-time nonce replay protection exists; bounded retention is needed for long-running service operation. | Completed / ACME Protocol Adapter |
 | API key expiry and `last_used_at` | Implemented | Adds bounded key lifetime and operator usage telemetry without changing token format. | Completed / Operator Operations |
 | API key rotation and token fingerprint | Implemented | Lets operators replace exposed keys without manually creating and disabling two records. | Completed / Operator Operations |
-| API key HMAC/pepper | Accepted | Important, but it changes storage and token semantics; land after rotation/fingerprint. | Auth hardening follow-up after baseline |
+| API key HMAC/pepper | Implemented | New token hashes use HMAC-SHA256 when `MODERN_PKI_API_KEY_PEPPER` is set; legacy SHA-256 rows remain readable for migration. | Completed / Operator Operations |
 | `SECURITY.md` and `CONTRIBUTING.md` | Implemented | Operators and contributors now have a security policy and development path before broader usage. | Completed / Project Governance And Verification |
 | `LICENSE` | Owner decision needed | License is a project/legal ownership choice, not a technical default. It should not be guessed by the agent. | Release readiness |
 | Delegated OCSP responder required mode | Accepted later | Current fallback keeps local/dev issuance usable; strict production OCSP mode should be configurable. | Operations security follow-up |

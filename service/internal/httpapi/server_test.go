@@ -2438,6 +2438,34 @@ func TestAPIKeyManagementRotatesKeys(t *testing.T) {
 	assertStatus(t, status, http.StatusOK)
 }
 
+func TestAPIKeyManagementUsesPepperedTokenFingerprint(t *testing.T) {
+	pepper := "pepper-secret-0123456789abcdef"
+	api := newTestAPIWithAuthAndAPIKeyPepper(t, AuthConfig{Mode: AuthModeAPIKey}, pepper)
+	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
+
+	var created apiKeyResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/api-keys", "", map[string]any{
+		"name":   "reader",
+		"actor":  "read-client",
+		"scopes": []string{string(domain.APIKeyScopeRead)},
+	}, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+	if created.TokenHash != "" || created.TokenFingerprint == "" || !strings.HasPrefix(created.TokenFingerprint, "hmac-sha256:") {
+		t.Fatalf("created token fields = %#v", created)
+	}
+	if created.TokenFingerprint != lifecycle.APIKeyTokenFingerprint(lifecycle.HashAPIKeyTokenWithPepper(created.Token, pepper)) {
+		t.Fatalf("created token fingerprint = %q, want peppered fingerprint", created.TokenFingerprint)
+	}
+
+	var identities []apiIdentity
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer " + created.Token,
+	}, &identities)
+	assertStatus(t, status, http.StatusOK)
+}
+
 func TestAPIKeyManagementDisablesKeys(t *testing.T) {
 	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
 	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
@@ -2487,16 +2515,22 @@ func newTestAPI(t *testing.T) *testAPI {
 
 func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 	t.Helper()
+	return newTestAPIWithAuthAndAPIKeyPepper(t, auth, "")
+}
+
+func newTestAPIWithAuthAndAPIKeyPepper(t *testing.T, auth AuthConfig, pepper string) *testAPI {
+	t.Helper()
 
 	issuer := &fakeIssuer{}
 	acmeHTTP01 := &fakeACMEHTTP01Verifier{}
 	repo := store.NewMemoryStore()
-	service := lifecycle.NewWithACMEHTTP01Verifier(
+	service := lifecycle.NewWithACMEHTTP01VerifierAndAPIKeyPepper(
 		repo,
 		issuer,
 		fixedClock{now: testNow},
 		&fakeIDGenerator{},
 		acmeHTTP01,
+		pepper,
 	)
 	server := httptest.NewServer(NewWithAuth(service, auth))
 	t.Cleanup(server.Close)

@@ -90,6 +90,7 @@ type authConfig struct {
 	BootstrapAPIKey      string
 	BootstrapAPIKeyName  string
 	BootstrapAPIKeyActor string
+	APIKeyPepper         string
 }
 
 type operationalConfig struct {
@@ -142,7 +143,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create ACME HTTP-01 verifier: %v", err)
 	}
-	svc := lifecycle.NewWithACMEHTTP01Verifier(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{}, acmeHTTP01Verifier)
+	svc := lifecycle.NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{}, acmeHTTP01Verifier, authCfg.APIKeyPepper)
 	if acmeHTTP01VerifierCfg.BaseURL != "" {
 		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
 	}
@@ -280,7 +281,8 @@ func loadAuthConfig() (authConfig, error) {
 	}
 
 	bootstrapAPIKey := os.Getenv("MODERN_PKI_BOOTSTRAP_API_KEY")
-	if err := validateProductionAuthConfig(os.Getenv("MODERN_PKI_ENV"), mode, bootstrapAPIKey); err != nil {
+	apiKeyPepper := os.Getenv("MODERN_PKI_API_KEY_PEPPER")
+	if err := validateProductionAuthConfig(os.Getenv("MODERN_PKI_ENV"), mode, bootstrapAPIKey, apiKeyPepper); err != nil {
 		return authConfig{}, err
 	}
 
@@ -291,15 +293,19 @@ func loadAuthConfig() (authConfig, error) {
 		BootstrapAPIKey:      bootstrapAPIKey,
 		BootstrapAPIKeyName:  envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", defaultBootstrapAPIKeyName),
 		BootstrapAPIKeyActor: envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", defaultBootstrapAPIKeyActor),
+		APIKeyPepper:         strings.TrimSpace(apiKeyPepper),
 	}, nil
 }
 
-func validateProductionAuthConfig(env string, mode httpapi.AuthMode, bootstrapAPIKey string) error {
+func validateProductionAuthConfig(env string, mode httpapi.AuthMode, bootstrapAPIKey string, apiKeyPepper string) error {
 	if !isProductionEnv(env) {
 		return nil
 	}
 	if mode == httpapi.AuthModeDev {
 		return fmt.Errorf("MODERN_PKI_ENV=%s requires MODERN_PKI_AUTH_MODE=%q", productionEnv, httpapi.AuthModeAPIKey)
+	}
+	if isWeakProductionSecret(apiKeyPepper) {
+		return fmt.Errorf("MODERN_PKI_API_KEY_PEPPER must be at least %d characters and not a common default in production", minProductionBootstrapKeyLength)
 	}
 	if bootstrapAPIKey != "" && isWeakProductionBootstrapAPIKey(bootstrapAPIKey) {
 		return fmt.Errorf("MODERN_PKI_BOOTSTRAP_API_KEY must be at least %d characters and not a common default in production", minProductionBootstrapKeyLength)
@@ -312,6 +318,10 @@ func isProductionEnv(env string) bool {
 }
 
 func isWeakProductionBootstrapAPIKey(token string) bool {
+	return isWeakProductionSecret(token)
+}
+
+func isWeakProductionSecret(token string) bool {
 	trimmed := strings.TrimSpace(token)
 	if len(trimmed) < minProductionBootstrapKeyLength {
 		return true
