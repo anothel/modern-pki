@@ -3609,6 +3609,102 @@ func TestCreateAPIKeyRejectsPastExpiry(t *testing.T) {
 	}
 }
 
+func TestRotateAPIKeyDisablesOldKeyAndReturnsNewToken(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	expiresAt := now.Add(24 * time.Hour)
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "reader",
+		TokenHash: HashAPIKeyToken("old-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "read-client",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeRead},
+		ExpiresAt: expiresAt,
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	rotated, err := service.RotateAPIKey(ctx, "ops-admin", "key-1")
+	if err != nil {
+		t.Fatalf("RotateAPIKey returned error: %v", err)
+	}
+	if rotated.Token == "" || rotated.Key.ID == "key-1" {
+		t.Fatalf("rotated result = %#v", rotated)
+	}
+	if rotated.Key.Name != "reader" || rotated.Key.Actor != "read-client" ||
+		len(rotated.Key.Scopes) != 1 || rotated.Key.Scopes[0] != domain.APIKeyScopeRead ||
+		!rotated.Key.ExpiresAt.Equal(expiresAt) || rotated.Key.Status != domain.APIKeyActive {
+		t.Fatalf("rotated key = %#v", rotated.Key)
+	}
+	oldKey, err := repo.GetAPIKey(ctx, "key-1")
+	if err != nil {
+		t.Fatalf("GetAPIKey old returned error: %v", err)
+	}
+	if oldKey.Status != domain.APIKeyDisabled {
+		t.Fatalf("old key status = %q, want disabled", oldKey.Status)
+	}
+	if _, err := service.AuthenticateAPIKey(ctx, "old-token"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("old token auth error = %v, want ErrUnauthorized", err)
+	}
+	if _, err := service.AuthenticateAPIKey(ctx, rotated.Token); err != nil {
+		t.Fatalf("new token auth returned error: %v", err)
+	}
+}
+
+func TestRotateAPIKeyRejectsInactiveKey(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "disabled",
+		TokenHash: HashAPIKeyToken("old-token"),
+		Status:    domain.APIKeyDisabled,
+		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	_, err := service.RotateAPIKey(ctx, "ops-admin", "key-1")
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("RotateAPIKey error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestRotateAPIKeyRejectsExpiredKey(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := repo.CreateAPIKey(ctx, domain.APIKey{
+		ID:        "key-1",
+		Name:      "expired",
+		TokenHash: HashAPIKeyToken("old-token"),
+		Status:    domain.APIKeyActive,
+		Actor:     "api-admin",
+		Scopes:    []domain.APIKeyScope{domain.APIKeyScopeOperator},
+		ExpiresAt: now.Add(-time.Second),
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateAPIKey returned error: %v", err)
+	}
+
+	_, err := service.RotateAPIKey(ctx, "ops-admin", "key-1")
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("RotateAPIKey error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 func TestEnsureAPIKeyRejectsDisabledExistingKey(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()

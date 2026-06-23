@@ -118,11 +118,12 @@ API keys are managed by operator-scoped keys:
 
 - `POST /api-keys`
 - `GET /api-keys`
+- `POST /api-keys/{id}/rotate`
 - `POST /api-keys/{id}/disable`
 
 Scopes are ordered as `operator`, `write`, and `read`. `operator` can access all protected APIs, including API key management, outbox operations, audit events, and expiration scans. `write` can read and mutate lifecycle resources. `read` can only read non-operator APIs. Created API keys return the generated token once in the creation response. List and disable responses never include token material.
 
-API keys can include an optional `expires_at` timestamp. Expired keys are rejected during Bearer authentication. Successful API key authentication records `last_used_at`, which is visible to operator key listing.
+API keys can include an optional `expires_at` timestamp. Expired keys are rejected during Bearer authentication. Successful API key authentication records `last_used_at`, which is visible to operator key listing. API key responses include a short `token_fingerprint` derived from the stored token hash so operators can identify keys without exposing token material. Rotating an active key disables the old key and returns the replacement token once.
 
 Example:
 

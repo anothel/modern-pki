@@ -447,6 +447,17 @@ func HashAPIKeyToken(token string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+func APIKeyTokenFingerprint(tokenHash string) string {
+	algorithm, hash, ok := strings.Cut(tokenHash, ":")
+	if !ok || algorithm == "" || hash == "" {
+		return ""
+	}
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	return algorithm + ":" + hash
+}
+
 func (s *Service) AuthenticateAPIKey(ctx context.Context, token string) (domain.APIKey, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -611,6 +622,53 @@ func (s *Service) DisableAPIKey(ctx context.Context, actor string, id string) (d
 		return domain.APIKey{}, err
 	}
 	return key, nil
+}
+
+func (s *Service) RotateAPIKey(ctx context.Context, actor string, id string) (CreateAPIKeyResult, error) {
+	if isBlank(id) {
+		return CreateAPIKeyResult{}, domain.ErrInvalidRequest
+	}
+	token, err := generateAPIKeyToken()
+	if err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	now := s.clock.Now()
+	var newKey domain.APIKey
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		oldKey, err := repo.GetAPIKey(ctx, id)
+		if err != nil {
+			return err
+		}
+		if oldKey.Status != domain.APIKeyActive || (!oldKey.ExpiresAt.IsZero() && !oldKey.ExpiresAt.After(now)) {
+			return domain.ErrInvalidTransition
+		}
+		oldKey.Status = domain.APIKeyDisabled
+		oldKey.UpdatedAt = now
+		if err := repo.UpdateAPIKeyIfStatus(ctx, oldKey, domain.APIKeyActive); err != nil {
+			return err
+		}
+
+		newKey = domain.APIKey{
+			ID:        s.idgen.NewID(),
+			Name:      oldKey.Name,
+			TokenHash: HashAPIKeyToken(token),
+			Status:    domain.APIKeyActive,
+			Actor:     oldKey.Actor,
+			Scopes:    append([]domain.APIKeyScope(nil), oldKey.Scopes...),
+			ExpiresAt: oldKey.ExpiresAt,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := repo.CreateAPIKey(ctx, newKey); err != nil {
+			return err
+		}
+		fields := apiKeyAuditFields(newKey)
+		fields["rotated_from_api_key_id"] = oldKey.ID
+		return s.createAuditEvent(ctx, repo, actor, "api_key.rotated", "api_key", newKey.ID, now, fields)
+	}); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	return CreateAPIKeyResult{Key: newKey, Token: token}, nil
 }
 
 func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateIdentityRequest) (domain.Identity, error) {

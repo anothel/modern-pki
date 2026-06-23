@@ -2289,6 +2289,9 @@ func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
 	if created.TokenHash != "" {
 		t.Fatalf("created response exposed token hash: %#v", created)
 	}
+	if created.TokenFingerprint != lifecycle.APIKeyTokenFingerprint(lifecycle.HashAPIKeyToken(created.Token)) {
+		t.Fatalf("created token fingerprint = %q, want derived fingerprint", created.TokenFingerprint)
+	}
 	if !created.ExpiresAt.Equal(expiresAt) || !created.LastUsedAt.IsZero() {
 		t.Fatalf("created expiry/last_used_at = %s/%s, want %s/zero", created.ExpiresAt, created.LastUsedAt, expiresAt)
 	}
@@ -2310,6 +2313,9 @@ func TestAPIKeyManagementCreatesKeyWithOneTimeToken(t *testing.T) {
 	for _, key := range listed {
 		if key.Token != "" || key.TokenHash != "" {
 			t.Fatalf("list response exposed token material: %#v", key)
+		}
+		if key.TokenFingerprint == "" {
+			t.Fatalf("list response missing token fingerprint: %#v", key)
 		}
 		if key.ID == created.ID && (!key.ExpiresAt.Equal(expiresAt) || key.LastUsedAt.IsZero()) {
 			t.Fatalf("listed expiry/last_used_at = %s/%s, want %s/non-zero", key.ExpiresAt, key.LastUsedAt, expiresAt)
@@ -2387,6 +2393,49 @@ func TestAPIKeyScopeAllowsWriteAndRejectsOperatorRoutes(t *testing.T) {
 	if body.Error != domain.ErrForbidden.Error() {
 		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrForbidden.Error())
 	}
+}
+
+func TestAPIKeyManagementRotatesKeys(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	createScopedTestAPIKey(t, api.repo, "operator-key", "operator-token", "ops-admin", domain.APIKeyActive, domain.APIKeyScopeOperator)
+
+	var created apiKeyResponse
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/api-keys", "", map[string]any{
+		"name":   "reader",
+		"actor":  "read-client",
+		"scopes": []string{string(domain.APIKeyScopeRead)},
+	}, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &created)
+	assertStatus(t, status, http.StatusCreated)
+
+	var rotated apiKeyResponse
+	status = api.doJSONWithHeaders(t, http.MethodPost, "/api-keys/"+created.ID+"/rotate", "", nil, map[string]string{
+		"Authorization": "Bearer operator-token",
+	}, &rotated)
+	assertStatus(t, status, http.StatusCreated)
+	if rotated.ID == "" || rotated.ID == created.ID || rotated.Token == "" || rotated.TokenHash != "" {
+		t.Fatalf("rotated api key response = %#v", rotated)
+	}
+	if rotated.Name != created.Name || rotated.Actor != created.Actor || rotated.Status != domain.APIKeyActive ||
+		len(rotated.Scopes) != 1 || rotated.Scopes[0] != domain.APIKeyScopeRead {
+		t.Fatalf("rotated api key fields = %#v, created = %#v", rotated, created)
+	}
+	if rotated.TokenFingerprint != lifecycle.APIKeyTokenFingerprint(lifecycle.HashAPIKeyToken(rotated.Token)) {
+		t.Fatalf("rotated token fingerprint = %q, want derived fingerprint", rotated.TokenFingerprint)
+	}
+
+	var body errorResponse
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer " + created.Token,
+	}, &body)
+	assertStatus(t, status, http.StatusUnauthorized)
+
+	var identities []apiIdentity
+	status = api.doJSONWithHeaders(t, http.MethodGet, "/identities", "", nil, map[string]string{
+		"Authorization": "Bearer " + rotated.Token,
+	}, &identities)
+	assertStatus(t, status, http.StatusOK)
 }
 
 func TestAPIKeyManagementDisablesKeys(t *testing.T) {

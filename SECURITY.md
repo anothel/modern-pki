@@ -4,7 +4,7 @@
 
 `modern-pki` is pre-1.0 and still in active development. It has security controls for local development and early operational hardening, but it is not yet a stable supported production release.
 
-Current security-relevant controls include API key authentication, scoped API keys, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, ACME HTTP-01 unsafe target blocking, CRL publication, OCSP handling, and a production startup guard.
+Current security-relevant controls include API key authentication, scoped API keys, API key expiry and rotation, audit metadata, bounded request bodies, HTTP server timeouts, ACME nonce replay protection, ACME HTTP-01 unsafe target blocking, CRL publication, OCSP handling, and a production startup guard.
 
 Production deployments must set:
 

@@ -145,6 +145,7 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("POST /api-keys", s.createAPIKey)
 	s.mux.HandleFunc("GET /api-keys", s.listAPIKeys)
+	s.mux.HandleFunc("POST /api-keys/{id}/rotate", s.rotateAPIKey)
 	s.mux.HandleFunc("POST /api-keys/{id}/disable", s.disableAPIKey)
 
 	s.mux.HandleFunc("POST /acme/accounts", s.createACMEAccount)
@@ -425,6 +426,15 @@ func (s *Server) disableAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	result, err := s.service.RotateAPIKey(r.Context(), requestActor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIKeyResponseWithToken(result.Key, result.Token))
 }
 
 func (s *Server) createACMEAccount(w http.ResponseWriter, r *http.Request) {
@@ -2221,17 +2231,18 @@ type outboxMessageResponse struct {
 }
 
 type apiKeyResponse struct {
-	ID         string               `json:"id"`
-	Name       string               `json:"name"`
-	Actor      string               `json:"actor"`
-	Status     domain.APIKeyStatus  `json:"status"`
-	Scopes     []domain.APIKeyScope `json:"scopes"`
-	ExpiresAt  time.Time            `json:"expires_at"`
-	LastUsedAt time.Time            `json:"last_used_at"`
-	Token      string               `json:"token,omitempty"`
-	TokenHash  string               `json:"token_hash,omitempty"`
-	CreatedAt  time.Time            `json:"created_at"`
-	UpdatedAt  time.Time            `json:"updated_at"`
+	ID               string               `json:"id"`
+	Name             string               `json:"name"`
+	Actor            string               `json:"actor"`
+	Status           domain.APIKeyStatus  `json:"status"`
+	Scopes           []domain.APIKeyScope `json:"scopes"`
+	ExpiresAt        time.Time            `json:"expires_at"`
+	LastUsedAt       time.Time            `json:"last_used_at"`
+	TokenFingerprint string               `json:"token_fingerprint,omitempty"`
+	Token            string               `json:"token,omitempty"`
+	TokenHash        string               `json:"token_hash,omitempty"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
 }
 
 type acmeAccountResponse struct {
@@ -2523,15 +2534,16 @@ func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageRe
 
 func toAPIKeyResponse(key domain.APIKey) apiKeyResponse {
 	return apiKeyResponse{
-		ID:         key.ID,
-		Name:       key.Name,
-		Actor:      key.Actor,
-		Status:     key.Status,
-		Scopes:     key.Scopes,
-		ExpiresAt:  key.ExpiresAt,
-		LastUsedAt: key.LastUsedAt,
-		CreatedAt:  key.CreatedAt,
-		UpdatedAt:  key.UpdatedAt,
+		ID:               key.ID,
+		Name:             key.Name,
+		Actor:            key.Actor,
+		Status:           key.Status,
+		Scopes:           key.Scopes,
+		ExpiresAt:        key.ExpiresAt,
+		LastUsedAt:       key.LastUsedAt,
+		TokenFingerprint: lifecycle.APIKeyTokenFingerprint(key.TokenHash),
+		CreatedAt:        key.CreatedAt,
+		UpdatedAt:        key.UpdatedAt,
 	}
 }
 
