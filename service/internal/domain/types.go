@@ -321,16 +321,17 @@ type AuditEvent struct {
 }
 
 type OutboxMessage struct {
-	ID           string
-	Type         string
-	PayloadJSON  string
-	Status       OutboxMessageStatus
-	AvailableAt  time.Time
-	AttemptCount int
-	MaxAttempts  int
-	LastError    string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                   string
+	Type                 string
+	PayloadJSON          string
+	Status               OutboxMessageStatus
+	AvailableAt          time.Time
+	ProcessingDeadlineAt time.Time
+	AttemptCount         int
+	MaxAttempts          int
+	LastError            string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type JobAttempt struct {

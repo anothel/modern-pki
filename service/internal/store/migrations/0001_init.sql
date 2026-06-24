@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL,
     available_at TIMESTAMPTZ NOT NULL,
+    processing_deadline_at TIMESTAMPTZ,
     attempt_count INTEGER NOT NULL,
     max_attempts INTEGER NOT NULL,
     last_error TEXT NOT NULL,
@@ -163,6 +164,9 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
 
 CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
     ON outbox_messages(status, available_at, created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_messages_processing_deadline
+    ON outbox_messages(status, processing_deadline_at, created_at, id);
 
 CREATE TABLE IF NOT EXISTS job_attempts (
     id TEXT PRIMARY KEY,

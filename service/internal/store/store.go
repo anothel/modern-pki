@@ -80,6 +80,7 @@ type OutboxRepository interface {
 	ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error)
 	ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error)
 	UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error
+	UpdateOutboxMessageIfCurrent(ctx context.Context, message domain.OutboxMessage, current domain.OutboxMessage) error
 	CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error
 	ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error)
 }

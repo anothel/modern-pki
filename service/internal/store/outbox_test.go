@@ -75,6 +75,23 @@ func TestSQLStoreOutboxRetryMetadata(t *testing.T) {
 	testOutboxRetryMetadata(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreOutboxLeaseRecovery(t *testing.T) {
+	testOutboxLeaseRecovery(t, NewMemoryStore())
+}
+
+func TestSQLStoreOutboxLeaseRecovery(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testOutboxLeaseRecovery(t, NewSQLStore(db))
+}
+
 func TestSQLStoreOCSPResponders(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -350,6 +367,46 @@ func testOutboxRetryMetadata(t *testing.T, repo Repository) {
 	}
 	if len(dead) != 1 || dead[0].ID != message.ID || dead[0].AttemptCount != 5 || dead[0].LastError != "max attempts exceeded" {
 		t.Fatalf("dead letter messages = %#v", dead)
+	}
+}
+
+func testOutboxLeaseRecovery(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	active := domain.OutboxMessage{
+		ID:                   "outbox-active",
+		Type:                 "certificate.expiration_warning",
+		PayloadJSON:          `{"certificate_id":"cert-active"}`,
+		Status:               domain.OutboxProcessing,
+		AvailableAt:          now.Add(-time.Hour),
+		ProcessingDeadlineAt: now.Add(time.Minute),
+		CreatedAt:            now.Add(-time.Hour),
+		UpdatedAt:            now.Add(-time.Minute),
+	}
+	expired := domain.OutboxMessage{
+		ID:                   "outbox-expired",
+		Type:                 "certificate.expiration_warning",
+		PayloadJSON:          `{"certificate_id":"cert-expired"}`,
+		Status:               domain.OutboxProcessing,
+		AvailableAt:          now.Add(-time.Hour),
+		ProcessingDeadlineAt: now.Add(-time.Minute),
+		CreatedAt:            now.Add(-2 * time.Hour),
+		UpdatedAt:            now.Add(-time.Hour),
+	}
+	if err := repo.CreateOutboxMessage(ctx, active); err != nil {
+		t.Fatalf("CreateOutboxMessage active returned error: %v", err)
+	}
+	if err := repo.CreateOutboxMessage(ctx, expired); err != nil {
+		t.Fatalf("CreateOutboxMessage expired returned error: %v", err)
+	}
+
+	due, err := repo.ListDueOutboxMessages(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("ListDueOutboxMessages returned error: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != expired.ID || due[0].Status != domain.OutboxProcessing {
+		t.Fatalf("due messages = %#v, want only expired processing message", due)
 	}
 }
 

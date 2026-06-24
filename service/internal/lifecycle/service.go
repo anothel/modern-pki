@@ -1426,6 +1426,7 @@ func (s *Service) RetryOutboxMessage(ctx context.Context, actor string, id strin
 	}
 	message.Status = domain.OutboxPending
 	message.AvailableAt = now
+	message.ProcessingDeadlineAt = time.Time{}
 	message.AttemptCount = 0
 	if message.MaxAttempts <= 0 {
 		message.MaxAttempts = defaultOutboxMaxAttempts

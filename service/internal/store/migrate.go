@@ -92,6 +92,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			available_at TEXT NOT NULL,
+			processing_deadline_at TEXT,
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			max_attempts INTEGER NOT NULL DEFAULT 0,
 			last_error TEXT NOT NULL DEFAULT '',
@@ -100,6 +101,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
 			ON outbox_messages(status, available_at, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_processing_deadline
+			ON outbox_messages(status, processing_deadline_at, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS job_attempts (
 			id TEXT PRIMARY KEY,
 			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
@@ -210,6 +213,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		{name: "attempt_count", definition: "attempt_count INTEGER NOT NULL DEFAULT 0"},
 		{name: "max_attempts", definition: "max_attempts INTEGER NOT NULL DEFAULT 0"},
 		{name: "last_error", definition: "last_error TEXT NOT NULL DEFAULT ''"},
+		{name: "processing_deadline_at", definition: "processing_deadline_at TEXT"},
 	}
 	for _, column := range outboxColumns {
 		exists, err := sqliteColumnExists(ctx, db, "outbox_messages", column.name)
@@ -343,6 +347,7 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			payload_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			available_at TIMESTAMPTZ NOT NULL,
+			processing_deadline_at TIMESTAMPTZ,
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			max_attempts INTEGER NOT NULL DEFAULT 0,
 			last_error TEXT NOT NULL DEFAULT '',
@@ -352,8 +357,11 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE outbox_messages ADD COLUMN IF NOT EXISTS processing_deadline_at TIMESTAMPTZ",
 		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_due
 			ON outbox_messages(status, available_at, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_processing_deadline
+			ON outbox_messages(status, processing_deadline_at, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS job_attempts (
 			id TEXT PRIMARY KEY,
 			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),

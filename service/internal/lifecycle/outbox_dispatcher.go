@@ -9,7 +9,10 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
-const defaultOutboxMaxAttempts = 5
+const (
+	defaultOutboxMaxAttempts     = 5
+	defaultOutboxProcessingLease = 10 * time.Minute
+)
 
 var outboxRetryDelays = []time.Duration{
 	time.Minute,
@@ -52,16 +55,16 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 
 	processed := 0
 	for _, message := range messages {
-		claimed, err := d.claim(ctx, message)
+		claimed, ok, err := d.claim(ctx, message)
 		if err != nil {
 			return processed, err
 		}
-		if !claimed {
+		if !ok {
 			continue
 		}
 
 		startedAt := d.clock.Now()
-		handlerErr := d.handler.HandleOutboxMessage(ctx, message)
+		handlerErr := d.handler.HandleOutboxMessage(ctx, claimed)
 		finishedAt := d.clock.Now()
 
 		attemptStatus := domain.JobAttemptSucceeded
@@ -70,22 +73,22 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 		if handlerErr != nil {
 			attemptStatus = domain.JobAttemptFailed
 			errorMessage = handlerErr.Error()
-			message.AttemptCount++
-			message.MaxAttempts = effectiveOutboxMaxAttempts(message)
-			message.LastError = errorMessage
-			if message.AttemptCount >= message.MaxAttempts {
+			claimed.AttemptCount++
+			claimed.MaxAttempts = effectiveOutboxMaxAttempts(claimed)
+			claimed.LastError = errorMessage
+			if claimed.AttemptCount >= claimed.MaxAttempts {
 				nextStatus = domain.OutboxDeadLetter
 			} else {
 				nextStatus = domain.OutboxPending
-				message.AvailableAt = finishedAt.Add(outboxRetryDelayForAttempt(message.AttemptCount))
+				claimed.AvailableAt = finishedAt.Add(outboxRetryDelayForAttempt(claimed.AttemptCount))
 			}
 		} else {
-			message.LastError = ""
+			claimed.LastError = ""
 		}
 
-		if err := d.finish(ctx, message, nextStatus, domain.JobAttempt{
+		if err := d.finish(ctx, claimed, nextStatus, domain.JobAttempt{
 			ID:              d.idgen.NewID(),
-			OutboxMessageID: message.ID,
+			OutboxMessageID: claimed.ID,
 			Status:          attemptStatus,
 			Error:           errorMessage,
 			StartedAt:       startedAt,
@@ -117,26 +120,47 @@ func outboxRetryDelayForAttempt(attemptCount int) time.Duration {
 	return outboxRetryDelays[index]
 }
 
-func (d *OutboxDispatcher) claim(ctx context.Context, message domain.OutboxMessage) (bool, error) {
+func (d *OutboxDispatcher) claim(ctx context.Context, message domain.OutboxMessage) (domain.OutboxMessage, bool, error) {
+	currentStatus := message.Status
+	if currentStatus != domain.OutboxPending && currentStatus != domain.OutboxProcessing {
+		return domain.OutboxMessage{}, false, nil
+	}
+	now := d.clock.Now()
+	if currentStatus == domain.OutboxProcessing {
+		recovered := message
+		recovered.Status = domain.OutboxPending
+		recovered.ProcessingDeadlineAt = time.Time{}
+		recovered.UpdatedAt = now
+		err := d.repo.UpdateOutboxMessageIfCurrent(ctx, recovered, message)
+		if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrOutboxMessageNotFound) {
+			return domain.OutboxMessage{}, false, nil
+		}
+		if err != nil {
+			return domain.OutboxMessage{}, false, err
+		}
+		message = recovered
+	}
 	claimed := message
 	claimed.Status = domain.OutboxProcessing
-	claimed.UpdatedAt = d.clock.Now()
-	err := d.repo.UpdateOutboxMessageStatusIfStatus(ctx, claimed, domain.OutboxPending)
+	claimed.ProcessingDeadlineAt = now.Add(defaultOutboxProcessingLease)
+	claimed.UpdatedAt = now
+	err := d.repo.UpdateOutboxMessageIfCurrent(ctx, claimed, message)
 	if errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrOutboxMessageNotFound) {
-		return false, nil
+		return domain.OutboxMessage{}, false, nil
 	}
 	if err != nil {
-		return false, err
+		return domain.OutboxMessage{}, false, err
 	}
-	return true, nil
+	return claimed, true, nil
 }
 
 func (d *OutboxDispatcher) finish(ctx context.Context, message domain.OutboxMessage, status domain.OutboxMessageStatus, attempt domain.JobAttempt) error {
 	return d.repo.WithinTx(ctx, func(repo store.Repository) error {
 		finished := message
 		finished.Status = status
+		finished.ProcessingDeadlineAt = time.Time{}
 		finished.UpdatedAt = attempt.FinishedAt
-		if err := repo.UpdateOutboxMessageStatusIfStatus(ctx, finished, domain.OutboxProcessing); err != nil {
+		if err := repo.UpdateOutboxMessageIfCurrent(ctx, finished, message); err != nil {
 			return err
 		}
 		return repo.CreateJobAttempt(ctx, attempt)

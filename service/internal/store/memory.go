@@ -476,6 +476,13 @@ func (s *MemoryStore) UpdateOutboxMessageStatusIfStatus(ctx context.Context, mes
 	return updateOutboxMessageStatusIfStatus(s.outbox, message, currentStatus)
 }
 
+func (s *MemoryStore) UpdateOutboxMessageIfCurrent(ctx context.Context, message domain.OutboxMessage, current domain.OutboxMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateOutboxMessageIfCurrent(s.outbox, message, current)
+}
+
 func (s *MemoryStore) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -785,14 +792,16 @@ func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Ti
 
 	due := make([]domain.OutboxMessage, 0)
 	for _, message := range messages {
-		if message.Status != domain.OutboxPending || message.AvailableAt.After(now) {
+		if !outboxMessageDue(message, now) {
 			continue
 		}
 		due = append(due, message)
 	}
 	sort.Slice(due, func(i, j int) bool {
-		if !due[i].AvailableAt.Equal(due[j].AvailableAt) {
-			return due[i].AvailableAt.Before(due[j].AvailableAt)
+		left := outboxMessageDueAt(due[i])
+		right := outboxMessageDueAt(due[j])
+		if !left.Equal(right) {
+			return left.Before(right)
 		}
 		if !due[i].CreatedAt.Equal(due[j].CreatedAt) {
 			return due[i].CreatedAt.Before(due[j].CreatedAt)
@@ -803,6 +812,24 @@ func listDueOutboxMessages(messages map[string]domain.OutboxMessage, now time.Ti
 		due = due[:limit]
 	}
 	return due
+}
+
+func outboxMessageDue(message domain.OutboxMessage, now time.Time) bool {
+	switch message.Status {
+	case domain.OutboxPending:
+		return !message.AvailableAt.After(now)
+	case domain.OutboxProcessing:
+		return !message.ProcessingDeadlineAt.IsZero() && !message.ProcessingDeadlineAt.After(now)
+	default:
+		return false
+	}
+}
+
+func outboxMessageDueAt(message domain.OutboxMessage) time.Time {
+	if message.Status == domain.OutboxProcessing {
+		return message.ProcessingDeadlineAt
+	}
+	return message.AvailableAt
 }
 
 func listOutboxMessages(messages map[string]domain.OutboxMessage, status domain.OutboxMessageStatus) []domain.OutboxMessage {
@@ -828,6 +855,20 @@ func updateOutboxMessageStatusIfStatus(messages map[string]domain.OutboxMessage,
 		return domain.ErrOutboxMessageNotFound
 	}
 	if current.Status != currentStatus {
+		return domain.ErrInvalidTransition
+	}
+	messages[message.ID] = message
+	return nil
+}
+
+func updateOutboxMessageIfCurrent(messages map[string]domain.OutboxMessage, message domain.OutboxMessage, current domain.OutboxMessage) error {
+	stored, ok := messages[message.ID]
+	if !ok {
+		return domain.ErrOutboxMessageNotFound
+	}
+	if stored.Status != current.Status ||
+		!stored.ProcessingDeadlineAt.Equal(current.ProcessingDeadlineAt) ||
+		!stored.UpdatedAt.Equal(current.UpdatedAt) {
 		return domain.ErrInvalidTransition
 	}
 	messages[message.ID] = message
@@ -1258,6 +1299,10 @@ func (tx *memoryTx) ListDueOutboxMessages(ctx context.Context, now time.Time, li
 
 func (tx *memoryTx) UpdateOutboxMessageStatusIfStatus(ctx context.Context, message domain.OutboxMessage, currentStatus domain.OutboxMessageStatus) error {
 	return updateOutboxMessageStatusIfStatus(tx.outbox, message, currentStatus)
+}
+
+func (tx *memoryTx) UpdateOutboxMessageIfCurrent(ctx context.Context, message domain.OutboxMessage, current domain.OutboxMessage) error {
+	return updateOutboxMessageIfCurrent(tx.outbox, message, current)
 }
 
 func (tx *memoryTx) CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error {

@@ -91,6 +91,7 @@ CREATE TABLE certificates (
 		{table: "outbox_messages", name: "attempt_count"},
 		{table: "outbox_messages", name: "max_attempts"},
 		{table: "outbox_messages", name: "last_error"},
+		{table: "outbox_messages", name: "processing_deadline_at"},
 		{table: "notification_endpoints", name: "secret"},
 	} {
 		if !testSQLiteColumnExists(t, db, tt.table, tt.name) {

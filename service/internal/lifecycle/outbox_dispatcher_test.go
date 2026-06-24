@@ -196,3 +196,81 @@ func TestOutboxDispatcherDeadLettersAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("dead letter messages = %#v", dead)
 	}
 }
+
+func TestOutboxDispatcherReclaimsExpiredProcessingMessage(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	message := domain.OutboxMessage{
+		ID:                   "outbox-1",
+		Type:                 "certificate.expiring",
+		PayloadJSON:          `{"certificate_id":"cert-1"}`,
+		Status:               domain.OutboxProcessing,
+		AvailableAt:          clock.now.Add(-time.Hour),
+		ProcessingDeadlineAt: clock.now.Add(-time.Minute),
+		CreatedAt:            clock.now.Add(-time.Hour),
+		UpdatedAt:            clock.now.Add(-time.Hour),
+	}
+	if err := repo.CreateOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+
+	handled := 0
+	dispatcher := NewOutboxDispatcher(repo, OutboxHandlerFunc(func(ctx context.Context, message domain.OutboxMessage) error {
+		handled++
+		return nil
+	}), clock, &fakeIDGenerator{})
+
+	processed, err := dispatcher.RunOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if processed != 1 || handled != 1 {
+		t.Fatalf("processed = %d handled = %d, want 1/1", processed, handled)
+	}
+	completed, err := repo.ListOutboxMessages(ctx, domain.OutboxCompleted)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages completed returned error: %v", err)
+	}
+	if len(completed) != 1 || completed[0].ID != message.ID || !completed[0].ProcessingDeadlineAt.IsZero() {
+		t.Fatalf("completed messages = %#v", completed)
+	}
+}
+
+func TestOutboxDispatcherDoesNotStealRenewedProcessingLease(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	stale := domain.OutboxMessage{
+		ID:                   "outbox-1",
+		Type:                 "certificate.expiring",
+		PayloadJSON:          `{"certificate_id":"cert-1"}`,
+		Status:               domain.OutboxProcessing,
+		AvailableAt:          clock.now.Add(-time.Hour),
+		ProcessingDeadlineAt: clock.now.Add(-time.Minute),
+		CreatedAt:            clock.now.Add(-time.Hour),
+		UpdatedAt:            clock.now.Add(-time.Hour),
+	}
+	if err := repo.CreateOutboxMessage(ctx, stale); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+	dispatcher := NewOutboxDispatcher(repo, NoopOutboxHandler{}, clock, &fakeIDGenerator{})
+	claimed, ok, err := dispatcher.claim(ctx, stale)
+	if err != nil {
+		t.Fatalf("first claim returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("first claim returned ok=false, want true")
+	}
+	if !claimed.ProcessingDeadlineAt.After(clock.now) {
+		t.Fatalf("first claim deadline = %s, want after %s", claimed.ProcessingDeadlineAt, clock.now)
+	}
+
+	_, ok, err = dispatcher.claim(ctx, stale)
+	if err != nil {
+		t.Fatalf("stale second claim returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("stale second claim returned ok=true, want false")
+	}
+}
