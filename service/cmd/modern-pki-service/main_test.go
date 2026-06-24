@@ -115,6 +115,31 @@ func TestLoadAuthConfigAPIKeyMode(t *testing.T) {
 	}
 }
 
+func TestLoadAuthConfigTrustedProxies(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1")
+
+	cfg, err := loadAuthConfig()
+	if err != nil {
+		t.Fatalf("loadAuthConfig returned error: %v", err)
+	}
+	if len(cfg.HTTP.TrustedProxies) != 2 ||
+		cfg.HTTP.TrustedProxies[0].String() != "10.0.0.0/8" ||
+		cfg.HTTP.TrustedProxies[1].String() != "127.0.0.1/32" {
+		t.Fatalf("trusted proxies = %#v", cfg.HTTP.TrustedProxies)
+	}
+}
+
+func TestLoadAuthConfigRejectsInvalidTrustedProxy(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("MODERN_PKI_TRUSTED_PROXIES", "not-a-cidr")
+
+	_, err := loadAuthConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_TRUSTED_PROXIES") {
+		t.Fatalf("loadAuthConfig error = %v, want trusted proxy error", err)
+	}
+}
+
 func TestLoadAuthConfigRejectsInvalidMode(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv("MODERN_PKI_AUTH_MODE", "mtls")

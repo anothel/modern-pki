@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -282,19 +283,57 @@ func loadAuthConfig() (authConfig, error) {
 
 	bootstrapAPIKey := os.Getenv("MODERN_PKI_BOOTSTRAP_API_KEY")
 	apiKeyPepper := os.Getenv("MODERN_PKI_API_KEY_PEPPER")
+	trustedProxies, err := parseTrustedProxiesEnv("MODERN_PKI_TRUSTED_PROXIES")
+	if err != nil {
+		return authConfig{}, err
+	}
 	if err := validateProductionAuthConfig(os.Getenv("MODERN_PKI_ENV"), mode, bootstrapAPIKey, apiKeyPepper); err != nil {
 		return authConfig{}, err
 	}
 
 	return authConfig{
 		HTTP: httpapi.AuthConfig{
-			Mode: mode,
+			Mode:           mode,
+			TrustedProxies: trustedProxies,
 		},
 		BootstrapAPIKey:      bootstrapAPIKey,
 		BootstrapAPIKeyName:  envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_NAME", defaultBootstrapAPIKeyName),
 		BootstrapAPIKeyActor: envOrDefault("MODERN_PKI_BOOTSTRAP_API_KEY_ACTOR", defaultBootstrapAPIKeyActor),
 		APIKeyPepper:         strings.TrimSpace(apiKeyPepper),
 	}, nil
+}
+
+func parseTrustedProxiesEnv(name string) ([]netip.Prefix, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	values := strings.Split(raw, ",")
+	proxies := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := parseTrustedProxy(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s contains invalid proxy %q: %w", name, value, err)
+		}
+		proxies = append(proxies, prefix)
+	}
+	return proxies, nil
+}
+
+func parseTrustedProxy(value string) (netip.Prefix, error) {
+	if strings.Contains(value, "/") {
+		return netip.ParsePrefix(value)
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	addr = addr.Unmap()
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 
 func validateProductionAuthConfig(env string, mode httpapi.AuthMode, bootstrapAPIKey string, apiKeyPepper string) error {

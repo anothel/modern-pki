@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strings"
@@ -2151,7 +2152,7 @@ func TestListAuditEvents(t *testing.T) {
 }
 
 func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
-	api := newTestAPI(t)
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeDev, TrustedProxies: mustParseTrustedProxies(t, "127.0.0.0/8", "::1/128")})
 
 	var identity apiIdentity
 	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "admin", map[string]any{
@@ -2178,8 +2179,29 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	}
 }
 
-func TestFailedRequestsCreateAuditEvents(t *testing.T) {
+func TestAuditEventsIgnoreForwardedForWithoutTrustedProxy(t *testing.T) {
 	api := newTestAPI(t)
+
+	var identity apiIdentity
+	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, map[string]string{
+		"X-Forwarded-For": "203.0.113.10",
+	}, &identity)
+	assertStatus(t, status, http.StatusCreated)
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	metadata := apiAuditMetadata(t, events[0])
+	if metadata["client_ip"] == "203.0.113.10" {
+		t.Fatalf("audit metadata trusted spoofed X-Forwarded-For: %#v", metadata)
+	}
+}
+
+func TestFailedRequestsCreateAuditEvents(t *testing.T) {
+	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeDev, TrustedProxies: mustParseTrustedProxies(t, "127.0.0.0/8", "::1/128")})
 
 	var errorBody errorResponse
 	status := api.doJSONWithHeaders(t, http.MethodPost, "/identities", "admin", map[string]any{
@@ -2560,6 +2582,20 @@ func newTestAPIWithAuthAndAPIKeyPepper(t *testing.T, auth AuthConfig, pepper str
 		acmeHTTP01: acmeHTTP01,
 		acmeSigner: newACMETestSigner(t),
 	}
+}
+
+func mustParseTrustedProxies(t *testing.T, values ...string) []netip.Prefix {
+	t.Helper()
+
+	proxies := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			t.Fatalf("ParsePrefix(%q): %v", value, err)
+		}
+		proxies = append(proxies, prefix)
+	}
+	return proxies
 }
 
 func createTestAPIKey(t *testing.T, repo store.Repository, id string, token string, actor string, status domain.APIKeyStatus) {

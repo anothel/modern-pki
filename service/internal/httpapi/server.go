@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -56,7 +57,8 @@ const (
 )
 
 type AuthConfig struct {
-	Mode AuthMode
+	Mode           AuthMode
+	TrustedProxies []netip.Prefix
 }
 
 type ACMEConfig struct {
@@ -102,7 +104,7 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := lifecycle.WithAuditRequestMetadata(r.Context(), lifecycle.AuditRequestMetadata{
 		RequestID: r.Header.Get("X-Request-ID"),
-		ClientIP:  requestClientIP(r),
+		ClientIP:  requestClientIP(r, s.auth.TrustedProxies),
 		StartedAt: time.Now(),
 	})
 	r = r.WithContext(ctx)
@@ -1806,19 +1808,43 @@ func apiKeyAllowsScope(key domain.APIKey, required requiredScope) bool {
 	return false
 }
 
-func requestClientIP(r *http.Request) string {
-	forwardedFor := r.Header.Get("X-Forwarded-For")
-	if forwardedFor != "" {
-		clientIP := strings.TrimSpace(strings.Split(forwardedFor, ",")[0])
-		if clientIP != "" {
+func requestClientIP(r *http.Request, trustedProxies []netip.Prefix) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	if len(trustedProxies) > 0 && remoteAddrTrusted(host, trustedProxies) {
+		if clientIP := forwardedClientIP(r.Header.Get("X-Forwarded-For")); clientIP != "" {
 			return clientIP
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	return host
+}
+
+func remoteAddrTrusted(host string, trustedProxies []netip.Prefix) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil {
+		return false
 	}
-	return r.RemoteAddr
+	addr = addr.Unmap()
+	for _, prefix := range trustedProxies {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func forwardedClientIP(forwardedFor string) string {
+	clientIP := strings.TrimSpace(strings.Split(forwardedFor, ",")[0])
+	if clientIP == "" {
+		return ""
+	}
+	addr, err := netip.ParseAddr(clientIP)
+	if err != nil {
+		return ""
+	}
+	return addr.Unmap().String()
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

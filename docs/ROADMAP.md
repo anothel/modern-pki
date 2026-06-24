@@ -101,6 +101,7 @@ Current status:
 - Default ACME HTTP-01 validation blocks unsafe network targets and unsafe redirect targets; local smoke override remains explicit opt-in config.
 - Malformed ACME JWS requests and badNonce retry behavior are covered by protocol tests.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
+- Audit client IP metadata trusts `X-Forwarded-For` only from configured trusted proxies.
 - `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
 - GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
 
@@ -149,7 +150,7 @@ This review was code-level static analysis. Items already done are acknowledged,
 | Webhook default client timeout and SSRF defense | Accepted P0 | Timeout-free default client and weak endpoint network policy can stall workers or reach internal targets. | Issuance Consistency And Webhook Safety |
 | ACME nonce is in-process memory | Accepted P0 | TTL/cap helps one instance only; multi-instance needs shared-store or signed stateless nonce design. | ACME Security Hardening |
 | Production auth/config guard | Partially implemented | `dev` auth, weak bootstrap key, and missing pepper are guarded; trusted proxy and webhook secret policy remain. | Operational Safety follow-up |
-| Blind `X-Forwarded-For` trust | Accepted | Client IP audit should use configured trusted proxies, not arbitrary headers. | Audit hardening follow-up |
+| Blind `X-Forwarded-For` trust | Implemented | Client IP audit now uses configured trusted proxies before accepting forwarded client IP metadata. | Completed / Operator Operations |
 | Outbox lease, endpoint delivery state, retry jitter | Accepted | Current message-level processing can get stuck after worker death and can resend successful endpoints. | Outbox Delivery Hardening |
 | DB uniqueness/index hardening | Accepted | Issuer serial, CRL number, ACME thumbprint, and cross-store parity need DB-level enforcement/tests. | Storage And Migration Hardening |
 | OCSP lookup and response policy | Accepted | List-scan lookup and fixed `NextUpdate` are not enough for large inventories. | Status Publication Hardening |
