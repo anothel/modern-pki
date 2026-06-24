@@ -116,6 +116,12 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			ON job_attempts(outbox_message_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
+			ON certificates(enrollment_id)
+			WHERE enrollment_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
+			ON certificates(issuer_id, serial_number)
+			WHERE issuer_id <> '' AND serial_number <> ''`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -375,6 +381,12 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 			ON job_attempts(outbox_message_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
+			ON certificates(enrollment_id)
+			WHERE enrollment_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
+			ON certificates(issuer_id, serial_number)
+			WHERE issuer_id <> '' AND serial_number <> ''`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,

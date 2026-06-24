@@ -116,6 +116,14 @@ CREATE TABLE IF NOT EXISTS certificates (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
+    ON certificates(enrollment_id)
+    WHERE enrollment_id <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
+    ON certificates(issuer_id, serial_number)
+    WHERE issuer_id <> '' AND serial_number <> '';
+
 CREATE TABLE IF NOT EXISTS revocations (
     id TEXT PRIMARY KEY,
     certificate_id TEXT NOT NULL REFERENCES certificates(id),

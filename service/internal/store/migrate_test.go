@@ -103,6 +103,11 @@ CREATE TABLE certificates (
 			t.Fatalf("table %s does not exist after migration", table)
 		}
 	}
+	for _, index := range []string{"idx_certificates_enrollment", "idx_certificates_issuer_serial"} {
+		if !testSQLiteIndexExists(t, db, index) {
+			t.Fatalf("index %s does not exist after migration", index)
+		}
+	}
 }
 
 func TestUnmarshalBasicConstraintsPolicyNormalizesLegacyLeafPathLen(t *testing.T) {
@@ -164,4 +169,18 @@ func testSQLiteTableExists(t *testing.T, db *sql.DB, table string) bool {
 		t.Fatalf("query sqlite_master for %s: %v", table, err)
 	}
 	return name == table
+}
+
+func testSQLiteIndexExists(t *testing.T, db *sql.DB, index string) bool {
+	t.Helper()
+
+	var name string
+	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("query sqlite_master for %s: %v", index, err)
+	}
+	return name == index
 }

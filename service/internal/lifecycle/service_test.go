@@ -210,6 +210,38 @@ func TestIssueRequiresApprovedEnrollment(t *testing.T) {
 	}
 }
 
+func TestIssueCertificateReturnsExistingCertificateForIssuedEnrollment(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	first, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate first returned error: %v", err)
+	}
+
+	second, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate second returned error: %v", err)
+	}
+	if second.ID != first.ID || second.CertificatePEM != first.CertificatePEM {
+		t.Fatalf("second certificate = %#v, want existing %#v", second, first)
+	}
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count = %d, want 1", len(issuerClient.requests))
+	}
+}
+
 func TestIssueCertificateUsesEnrollmentProfile(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()

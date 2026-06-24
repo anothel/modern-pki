@@ -320,6 +320,9 @@ func (s *MemoryStore) CreateCertificate(ctx context.Context, certificate domain.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := ensureCertificateFinalizationKeysAvailable(s.certificates, certificate); err != nil {
+		return err
+	}
 	s.certificates[certificate.ID] = copyCertificate(certificate)
 	return nil
 }
@@ -333,6 +336,13 @@ func (s *MemoryStore) GetCertificate(ctx context.Context, id string) (domain.Cer
 		return domain.Certificate{}, domain.ErrCertificateNotFound
 	}
 	return copyCertificate(certificate), nil
+}
+
+func (s *MemoryStore) GetCertificateByEnrollmentID(ctx context.Context, enrollmentID string) (domain.Certificate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return certificateByEnrollmentID(s.certificates, enrollmentID)
 }
 
 func (s *MemoryStore) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
@@ -695,6 +705,31 @@ func copyCertificate(certificate domain.Certificate) domain.Certificate {
 	certificate.DNSNames = append([]string(nil), certificate.DNSNames...)
 	certificate.IPAddresses = append([]string(nil), certificate.IPAddresses...)
 	return certificate
+}
+
+func ensureCertificateFinalizationKeysAvailable(certificates map[string]domain.Certificate, certificate domain.Certificate) error {
+	for _, existing := range certificates {
+		if existing.ID == certificate.ID {
+			continue
+		}
+		if certificate.EnrollmentID != "" && existing.EnrollmentID == certificate.EnrollmentID {
+			return domain.ErrInvalidTransition
+		}
+		if certificate.IssuerID != "" && certificate.SerialNumber != "" &&
+			existing.IssuerID == certificate.IssuerID && existing.SerialNumber == certificate.SerialNumber {
+			return domain.ErrInvalidTransition
+		}
+	}
+	return nil
+}
+
+func certificateByEnrollmentID(certificates map[string]domain.Certificate, enrollmentID string) (domain.Certificate, error) {
+	for _, certificate := range certificates {
+		if certificate.EnrollmentID == enrollmentID {
+			return copyCertificate(certificate), nil
+		}
+	}
+	return domain.Certificate{}, domain.ErrCertificateNotFound
 }
 
 func copyNotificationEndpoint(endpoint domain.NotificationEndpoint) domain.NotificationEndpoint {
@@ -1199,6 +1234,9 @@ func (tx *memoryTx) UpdateEnrollmentIfStatus(ctx context.Context, enrollment dom
 }
 
 func (tx *memoryTx) CreateCertificate(ctx context.Context, certificate domain.Certificate) error {
+	if err := ensureCertificateFinalizationKeysAvailable(tx.certificates, certificate); err != nil {
+		return err
+	}
 	tx.certificates[certificate.ID] = copyCertificate(certificate)
 	return nil
 }
@@ -1209,6 +1247,10 @@ func (tx *memoryTx) GetCertificate(ctx context.Context, id string) (domain.Certi
 		return domain.Certificate{}, domain.ErrCertificateNotFound
 	}
 	return copyCertificate(certificate), nil
+}
+
+func (tx *memoryTx) GetCertificateByEnrollmentID(ctx context.Context, enrollmentID string) (domain.Certificate, error) {
+	return certificateByEnrollmentID(tx.certificates, enrollmentID)
 }
 
 func (tx *memoryTx) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {

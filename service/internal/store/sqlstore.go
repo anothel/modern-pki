@@ -151,6 +151,10 @@ func (s *SQLStore) GetCertificate(ctx context.Context, id string) (domain.Certif
 	return s.repository().GetCertificate(ctx, id)
 }
 
+func (s *SQLStore) GetCertificateByEnrollmentID(ctx context.Context, enrollmentID string) (domain.Certificate, error) {
+	return s.repository().GetCertificateByEnrollmentID(ctx, enrollmentID)
+}
+
 func (s *SQLStore) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
 	return s.repository().ListCertificates(ctx)
 }
@@ -986,6 +990,9 @@ INSERT INTO certificates (
 		formatSQLTime(certificate.CreatedAt),
 		formatSQLTime(certificate.UpdatedAt),
 	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
 	return err
 }
 
@@ -996,6 +1003,22 @@ SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial
 	renewal_notified_at, created_at, updated_at
 FROM certificates
 WHERE id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Certificate{}, domain.ErrCertificateNotFound
+	}
+	if err != nil {
+		return domain.Certificate{}, err
+	}
+	return certificate, nil
+}
+
+func (r sqlRepository) GetCertificateByEnrollmentID(ctx context.Context, enrollmentID string) (domain.Certificate, error) {
+	certificate, err := scanCertificate(r.exec.QueryRowContext(ctx, `
+SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
+	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
+	renewal_notified_at, created_at, updated_at
+FROM certificates
+WHERE enrollment_id = $1`, enrollmentID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Certificate{}, domain.ErrCertificateNotFound
 	}

@@ -1874,6 +1874,16 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err != nil {
 		return domain.Certificate{}, err
 	}
+	if enrollment.Status == domain.EnrollmentIssued {
+		certificate, err := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
+		if err == nil {
+			return certificate, nil
+		}
+		if !errors.Is(err, domain.ErrCertificateNotFound) {
+			return domain.Certificate{}, err
+		}
+		return domain.Certificate{}, domain.ErrInvalidTransition
+	}
 	if enrollment.Status != domain.EnrollmentApproved {
 		return domain.Certificate{}, domain.ErrInvalidTransition
 	}

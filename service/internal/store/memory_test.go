@@ -216,6 +216,43 @@ func TestMemoryStoreUpdateCertificateIfStatus(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreRejectsDuplicateCertificateFinalizationKeys(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryStore()
+	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	certificate := domain.Certificate{
+		ID:             "certificate-1",
+		IdentityID:     "identity-1",
+		IssuerID:       "issuer-1",
+		EnrollmentID:   "enrollment-1",
+		SerialNumber:   "01",
+		Subject:        "CN=edge-01",
+		NotBefore:      createdAt,
+		NotAfter:       createdAt.Add(time.Hour),
+		Status:         domain.CertificateValid,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+	}
+	if err := repo.CreateCertificate(ctx, certificate); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+
+	duplicateEnrollment := certificate
+	duplicateEnrollment.ID = "certificate-2"
+	duplicateEnrollment.SerialNumber = "02"
+	if err := repo.CreateCertificate(ctx, duplicateEnrollment); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate enrollment CreateCertificate error = %v, want ErrInvalidTransition", err)
+	}
+
+	duplicateSerial := certificate
+	duplicateSerial.ID = "certificate-3"
+	duplicateSerial.EnrollmentID = "enrollment-2"
+	if err := repo.CreateCertificate(ctx, duplicateSerial); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate issuer serial CreateCertificate error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 func TestMemoryStoreOCSPResponders(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
