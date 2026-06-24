@@ -1674,6 +1674,47 @@ func TestCreateIssuerRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestCreateNotificationEndpointProductionPolicy(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	service.EnableProductionPolicy()
+
+	_, err := service.CreateNotificationEndpoint(ctx, "admin", CreateNotificationEndpointRequest{
+		Name:   "ops",
+		URL:    "http://ops.example.test/hooks/pki",
+		Secret: "webhook-secret-0123456789abcdefghi",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateNotificationEndpoint HTTP error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = service.CreateNotificationEndpoint(ctx, "admin", CreateNotificationEndpointRequest{
+		Name:   "ops",
+		URL:    "https://ops.example.test/hooks/pki",
+		Secret: "short",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateNotificationEndpoint weak secret error = %v, want ErrInvalidRequest", err)
+	}
+
+	endpoint, err := service.CreateNotificationEndpoint(ctx, "admin", CreateNotificationEndpointRequest{
+		Name:   "ops",
+		URL:    "https://ops.example.test/hooks/pki",
+		Secret: "webhook-secret-0123456789abcdefghi",
+	})
+	if err != nil {
+		t.Fatalf("CreateNotificationEndpoint strong HTTPS returned error: %v", err)
+	}
+	if endpoint.URL != "https://ops.example.test/hooks/pki" {
+		t.Fatalf("endpoint URL = %q", endpoint.URL)
+	}
+}
+
 func TestCreateIssuerRecordsTrustDistributionMetadata(t *testing.T) {
 	ctx := context.Background()
 	service := New(

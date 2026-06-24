@@ -82,7 +82,7 @@ Notification endpoints deliver lifecycle outbox events to operator webhooks:
 - `GET /notification-endpoints`
 - `POST /notification-endpoints/{id}/disable`
 
-Webhook endpoints require a shared secret when created. Deliveries receive JSON with `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
+Webhook endpoints require a shared secret when created. In production mode, webhook endpoint URLs must use HTTPS and webhook secrets must be at least 32 characters and not common defaults. Deliveries receive JSON with `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
 
 Outbox operations expose delivery state for operators:
 
@@ -107,7 +107,7 @@ Audit events include structured `metadata_json` for lifecycle resource IDs and s
 
 API authentication defaults to `dev` mode for local compatibility. In `dev` mode, the service uses `X-Actor` as the audit actor and allows requests without credentials. Set `MODERN_PKI_AUTH_MODE=api_key` to require `Authorization: Bearer <token>` for lifecycle and operator APIs. `POST /ocsp`, `GET /crls/{id}`, and `GET /issuers/{id}/crl` remain public distribution endpoints. Bootstrap an initial operator key by setting `MODERN_PKI_BOOTSTRAP_API_KEY`. Set `MODERN_PKI_API_KEY_PEPPER` to store new API key token hashes as HMAC-SHA256 values. Existing SHA-256 token hashes remain accepted so operators can enable a pepper before rotating legacy keys.
 
-Set `MODERN_PKI_ENV=production` for production startup checks. Production mode rejects `dev` auth mode, requires a strong `MODERN_PKI_API_KEY_PEPPER`, and rejects configured bootstrap API keys shorter than 32 characters or matching common defaults such as `change-me`.
+Set `MODERN_PKI_ENV=production` for production startup checks. Production mode rejects `dev` auth mode, requires a strong `MODERN_PKI_API_KEY_PEPPER`, rejects configured bootstrap API keys shorter than 32 characters or matching common defaults such as `change-me`, and enforces HTTPS plus strong secrets for new webhook notification endpoints.
 
 Operational probes are public:
 

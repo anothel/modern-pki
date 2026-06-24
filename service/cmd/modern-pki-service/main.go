@@ -145,6 +145,9 @@ func main() {
 		log.Fatalf("create ACME HTTP-01 verifier: %v", err)
 	}
 	svc := lifecycle.NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{}, acmeHTTP01Verifier, authCfg.APIKeyPepper)
+	if isProductionEnv(os.Getenv("MODERN_PKI_ENV")) {
+		svc.EnableProductionPolicy()
+	}
 	if acmeHTTP01VerifierCfg.BaseURL != "" {
 		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
 	}

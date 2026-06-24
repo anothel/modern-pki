@@ -82,6 +82,7 @@ type Service struct {
 	idgen              IDGenerator
 	acmeHTTP01Verifier ACMEHTTP01Verifier
 	apiKeyPepper       string
+	productionPolicy   bool
 }
 
 type AuditRequestMetadata struct {
@@ -288,6 +289,10 @@ func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer Cert
 		acmeHTTP01Verifier: verifier,
 		apiKeyPepper:       strings.TrimSpace(pepper),
 	}
+}
+
+func (s *Service) EnableProductionPolicy() {
+	s.productionPolicy = true
 }
 
 func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
@@ -964,7 +969,7 @@ func (s *Service) RotateOCSPResponder(ctx context.Context, actor string, req Rot
 }
 
 func (s *Service) CreateNotificationEndpoint(ctx context.Context, actor string, req CreateNotificationEndpointRequest) (domain.NotificationEndpoint, error) {
-	if err := validateCreateNotificationEndpointRequest(req); err != nil {
+	if err := validateCreateNotificationEndpointRequest(req, s.productionPolicy); err != nil {
 		return domain.NotificationEndpoint{}, err
 	}
 
@@ -2983,12 +2988,15 @@ func validateCreateIssuerRequest(req CreateIssuerRequest) error {
 	return nil
 }
 
-func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointRequest) error {
+func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointRequest, productionPolicy bool) error {
 	if isBlank(req.Name) || isBlank(req.URL) || isBlank(req.Secret) {
 		return domain.ErrInvalidRequest
 	}
 	parsed, err := url.Parse(req.URL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return domain.ErrInvalidRequest
+	}
+	if productionPolicy && (parsed.Scheme != "https" || isWeakWebhookSecret(req.Secret)) {
 		return domain.ErrInvalidRequest
 	}
 	if err := validateACMEHTTP01FetchURL(parsed); err != nil {
@@ -3000,6 +3008,36 @@ func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointReq
 		}
 	}
 	return nil
+}
+
+func isWeakWebhookSecret(secret string) bool {
+	trimmed := strings.TrimSpace(secret)
+	if len(trimmed) < 32 {
+		return true
+	}
+	if isSingleRepeatedRune(trimmed) {
+		return true
+	}
+	switch strings.ToLower(trimmed) {
+	case "change-me", "changeme", "webhook-secret", "secret", "password", "modern-pki":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSingleRepeatedRune(value string) bool {
+	var first rune
+	for index, current := range value {
+		if index == 0 {
+			first = current
+			continue
+		}
+		if current != first {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest) error {

@@ -51,6 +51,7 @@ Build a service that can operate machine identity and certificate lifecycle infr
 - Signed webhook delivery.
 - Bounded outbox retry and dead-letter handling.
 - Operator APIs for outbox listing and manual retry.
+- Production webhook endpoint policy for HTTPS URLs and strong shared secrets.
 
 ### Project Governance And Verification
 
@@ -102,6 +103,7 @@ Current status:
 - Malformed ACME JWS requests and badNonce retry behavior are covered by protocol tests.
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 - Audit client IP metadata trusts `X-Forwarded-For` only from configured trusted proxies.
+- Production mode enforces HTTPS URLs and strong shared secrets for new webhook notification endpoints.
 - `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
 - GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
 
@@ -149,7 +151,7 @@ This review was code-level static analysis. Items already done are acknowledged,
 | Issuance happens before DB commit | Accepted P0 | A signed certificate can become orphaned if DB finalization fails; need idempotency, recoverable state, and serial uniqueness. | Issuance Consistency And Webhook Safety |
 | Webhook default client timeout and SSRF defense | Accepted P0 | Timeout-free default client and weak endpoint network policy can stall workers or reach internal targets. | Issuance Consistency And Webhook Safety |
 | ACME nonce is in-process memory | Accepted P0 | TTL/cap helps one instance only; multi-instance needs shared-store or signed stateless nonce design. | ACME Security Hardening |
-| Production auth/config guard | Partially implemented | `dev` auth, weak bootstrap key, and missing pepper are guarded; trusted proxy and webhook secret policy remain. | Operational Safety follow-up |
+| Production auth/config guard | Implemented | `dev` auth, weak bootstrap key, missing pepper, trusted proxy audit metadata, and webhook HTTPS/secret policy are guarded. | Completed / Operator Operations |
 | Blind `X-Forwarded-For` trust | Implemented | Client IP audit now uses configured trusted proxies before accepting forwarded client IP metadata. | Completed / Operator Operations |
 | Outbox lease, endpoint delivery state, retry jitter | Accepted | Current message-level processing can get stuck after worker death and can resend successful endpoints. | Outbox Delivery Hardening |
 | DB uniqueness/index hardening | Accepted | Issuer serial, CRL number, ACME thumbprint, and cross-store parity need DB-level enforcement/tests. | Storage And Migration Hardening |
@@ -199,7 +201,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Add tests for retrying finalization without creating a second certificate for one enrollment.
 - Give webhook delivery a bounded default HTTP client timeout.
 - Add webhook endpoint SSRF checks aligned with ACME HTTP-01 unsafe target blocking.
-- Add production policy for HTTPS-only webhook endpoints and minimum webhook secret strength.
 
 ### 4. ACME Security Hardening
 
