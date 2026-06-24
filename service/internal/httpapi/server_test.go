@@ -1596,6 +1596,21 @@ func TestCreateNotificationEndpointRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestCreateNotificationEndpointRejectsUnsafeURL(t *testing.T) {
+	api := newTestAPI(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/notification-endpoints", "admin", map[string]any{
+		"name":   "ops-webhook",
+		"url":    "http://127.0.0.1/hooks/pki",
+		"secret": "super-secret",
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
 func TestListOutboxMessagesByStatusAndRetry(t *testing.T) {
 	api := newTestAPI(t)
 	message := domain.OutboxMessage{

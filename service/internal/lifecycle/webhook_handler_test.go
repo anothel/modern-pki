@@ -221,6 +221,45 @@ func TestWebhookOutboxHandlerReturnsErrorOnHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestWebhookOutboxHandlerDefaultClientRejectsUnsafeEndpoint(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := repo.CreateNotificationEndpoint(ctx, domain.NotificationEndpoint{
+		ID:        "endpoint-1",
+		Name:      "unsafe",
+		Type:      domain.NotificationEndpointWebhook,
+		Status:    domain.NotificationEndpointActive,
+		URL:       server.URL,
+		Secret:    "secret-1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateNotificationEndpoint returned error: %v", err)
+	}
+
+	handler := NewWebhookOutboxHandler(repo, nil)
+	err := handler.HandleOutboxMessage(ctx, domain.OutboxMessage{
+		ID:          "outbox-1",
+		Type:        "certificate.expiration_warning",
+		PayloadJSON: `{"certificate_id":"cert-1"}`,
+		CreatedAt:   now,
+	})
+	if err == nil {
+		t.Fatal("HandleOutboxMessage returned nil error, want unsafe target rejection")
+	}
+	if requests != 0 {
+		t.Fatalf("unsafe webhook requests = %d, want 0", requests)
+	}
+}
+
 func webhookSignature(secret string, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(timestamp))

@@ -168,7 +168,7 @@ func main() {
 	}
 	server := httpapi.NewWithAuthAndACME(svc, authCfg.HTTP, acmeHTTPConfig)
 	if outboxCfg.Enabled {
-		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, &http.Client{Timeout: 10 * time.Second})
+		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, nil)
 		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
 		worker := lifecycle.NewOutboxWorker(dispatcher, outboxCfg.Interval, outboxCfg.BatchSize, log.Printf)
 		go worker.Run(context.Background())

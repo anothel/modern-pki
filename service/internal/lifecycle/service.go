@@ -53,6 +53,16 @@ func (f ACMEHTTP01VerifierFunc) VerifyHTTP01(ctx context.Context, identifier str
 	return f(ctx, identifier, token, keyAuthorization)
 }
 
+var acmeHTTP01BlockedSpecialPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
 type RealClock struct{}
 
 func (RealClock) Now() time.Time {
@@ -413,7 +423,7 @@ func acmeHTTP01SafeIP(addr netip.Addr) bool {
 		return false
 	}
 	addr = addr.Unmap()
-	if acmeHTTP01BlockedMetadataIP(addr) {
+	if acmeHTTP01BlockedSpecialIP(addr) {
 		return false
 	}
 	return !addr.IsLoopback() &&
@@ -424,7 +434,12 @@ func acmeHTTP01SafeIP(addr netip.Addr) bool {
 		!addr.IsUnspecified()
 }
 
-func acmeHTTP01BlockedMetadataIP(addr netip.Addr) bool {
+func acmeHTTP01BlockedSpecialIP(addr netip.Addr) bool {
+	for _, prefix := range acmeHTTP01BlockedSpecialPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
 	return addr == netip.MustParseAddr("169.254.169.254") ||
 		addr == netip.MustParseAddr("100.100.100.200")
 }
@@ -2964,6 +2979,9 @@ func validateCreateNotificationEndpointRequest(req CreateNotificationEndpointReq
 	parsed, err := url.Parse(req.URL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return domain.ErrInvalidRequest
+	}
+	if err := validateACMEHTTP01FetchURL(parsed); err != nil {
+		return err
 	}
 	for _, eventType := range req.EventTypes {
 		if isBlank(eventType) {

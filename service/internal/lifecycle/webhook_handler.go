@@ -29,7 +29,7 @@ type WebhookOutboxHandler struct {
 
 func NewWebhookOutboxHandler(repo store.NotificationEndpointRepository, httpClient *http.Client) *WebhookOutboxHandler {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = newACMEHTTP01Client(true)
 	}
 	return &WebhookOutboxHandler{
 		repo:       repo,
