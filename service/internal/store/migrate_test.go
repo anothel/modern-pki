@@ -66,6 +66,14 @@ CREATE TABLE certificates (
 	certificate_pem TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
+);
+CREATE TABLE acme_accounts (
+	id TEXT PRIMARY KEY,
+	contacts TEXT NOT NULL,
+	status TEXT NOT NULL,
+	terms_of_service_agreed INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
 );`)
 	if err != nil {
 		t.Fatalf("create legacy schema: %v", err)
@@ -93,6 +101,8 @@ CREATE TABLE certificates (
 		{table: "outbox_messages", name: "last_error"},
 		{table: "outbox_messages", name: "processing_deadline_at"},
 		{table: "notification_endpoints", name: "secret"},
+		{table: "acme_accounts", name: "key_thumbprint"},
+		{table: "acme_accounts", name: "key_jwk_json"},
 	} {
 		if !testSQLiteColumnExists(t, db, tt.table, tt.name) {
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)
@@ -103,7 +113,12 @@ CREATE TABLE certificates (
 			t.Fatalf("table %s does not exist after migration", table)
 		}
 	}
-	for _, index := range []string{"idx_certificates_enrollment", "idx_certificates_issuer_serial"} {
+	for _, index := range []string{
+		"idx_certificates_enrollment",
+		"idx_certificates_issuer_serial",
+		"idx_crl_publications_issuer_distribution_number",
+		"idx_acme_accounts_key_thumbprint",
+	} {
 		if !testSQLiteIndexExists(t, db, index) {
 			t.Fatalf("index %s does not exist after migration", index)
 		}

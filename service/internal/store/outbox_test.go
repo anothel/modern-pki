@@ -216,6 +216,40 @@ func TestSQLStoreACMEState(t *testing.T) {
 	testACMEState(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreRejectsDuplicateACMEAccountThumbprint(t *testing.T) {
+	testRejectsDuplicateACMEAccountThumbprint(t, NewMemoryStore())
+}
+
+func TestSQLStoreRejectsDuplicateACMEAccountThumbprint(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testRejectsDuplicateACMEAccountThumbprint(t, NewSQLStore(db))
+}
+
+func TestMemoryStoreRejectsDuplicateCRLPublicationNumber(t *testing.T) {
+	testRejectsDuplicateCRLPublicationNumber(t, NewMemoryStore())
+}
+
+func TestSQLStoreRejectsDuplicateCRLPublicationNumber(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testRejectsDuplicateCRLPublicationNumber(t, NewSQLStore(db))
+}
+
 func TestMemoryStoreCertificateExpirationScan(t *testing.T) {
 	testCertificateExpirationScan(t, NewMemoryStore())
 }
@@ -757,5 +791,52 @@ func testACMEState(t *testing.T, repo Repository) {
 	}
 	if len(challenges) != 1 || challenges[0].Status != domain.ACMEChallengeValid || !challenges[0].ValidatedAt.Equal(challenge.ValidatedAt) {
 		t.Fatalf("challenges = %#v", challenges)
+	}
+}
+
+func testRejectsDuplicateACMEAccountThumbprint(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	account := domain.ACMEAccount{
+		ID:            "account-1",
+		Status:        domain.ACMEAccountValid,
+		KeyThumbprint: "thumbprint-1",
+		KeyJWKJSON:    `{"kty":"EC"}`,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := repo.CreateACMEAccount(ctx, account); err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	account.ID = "account-2"
+	if err := repo.CreateACMEAccount(ctx, account); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate CreateACMEAccount error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func testRejectsDuplicateCRLPublicationNumber(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	publication := domain.CRLPublication{
+		ID:                "crl-1",
+		IssuerID:          "issuer-1",
+		DistributionPoint: "https://pki.example.test/crl/issuer-1.pem",
+		CRLNumber:         7,
+		ThisUpdate:        now,
+		NextUpdate:        now.Add(time.Hour),
+		Status:            domain.CRLPublicationPublished,
+		CRLPEM:            "crl-pem-1",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := repo.CreateCRLPublication(ctx, publication); err != nil {
+		t.Fatalf("CreateCRLPublication returned error: %v", err)
+	}
+	publication.ID = "crl-2"
+	publication.CRLPEM = "crl-pem-2"
+	if err := repo.CreateCRLPublication(ctx, publication); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate CreateCRLPublication error = %v, want ErrInvalidTransition", err)
 	}
 }

@@ -400,6 +400,9 @@ func (s *MemoryStore) CreateCRLPublication(ctx context.Context, publication doma
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := ensureCRLPublicationNumberAvailable(s.crls, publication); err != nil {
+		return err
+	}
 	s.crls[publication.ID] = publication
 	return nil
 }
@@ -552,6 +555,9 @@ func (s *MemoryStore) CreateACMEAccount(ctx context.Context, account domain.ACME
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := ensureACMEAccountThumbprintAvailable(s.acmeAccounts, account); err != nil {
+		return err
+	}
 	s.acmeAccounts[account.ID] = copyACMEAccount(account)
 	return nil
 }
@@ -1287,6 +1293,9 @@ func (tx *memoryTx) ListRevocationsByIssuer(ctx context.Context, issuerID string
 }
 
 func (tx *memoryTx) CreateCRLPublication(ctx context.Context, publication domain.CRLPublication) error {
+	if err := ensureCRLPublicationNumberAvailable(tx.crls, publication); err != nil {
+		return err
+	}
 	tx.crls[publication.ID] = publication
 	return nil
 }
@@ -1382,6 +1391,9 @@ func (tx *memoryTx) UpdateAPIKeyIfStatus(ctx context.Context, key domain.APIKey,
 }
 
 func (tx *memoryTx) CreateACMEAccount(ctx context.Context, account domain.ACMEAccount) error {
+	if err := ensureACMEAccountThumbprintAvailable(tx.acmeAccounts, account); err != nil {
+		return err
+	}
 	tx.acmeAccounts[account.ID] = copyACMEAccount(account)
 	return nil
 }
@@ -1577,6 +1589,18 @@ func listCRLPublicationsByIssuer(publications map[string]domain.CRLPublication, 
 	return result
 }
 
+func ensureCRLPublicationNumberAvailable(publications map[string]domain.CRLPublication, candidate domain.CRLPublication) error {
+	for _, publication := range publications {
+		if publication.ID != candidate.ID &&
+			publication.IssuerID == candidate.IssuerID &&
+			publication.DistributionPoint == candidate.DistributionPoint &&
+			publication.CRLNumber == candidate.CRLNumber {
+			return domain.ErrInvalidTransition
+		}
+	}
+	return nil
+}
+
 func listOCSPRespondersByIssuer(responders map[string]domain.OCSPResponder, issuerID string) []domain.OCSPResponder {
 	result := make([]domain.OCSPResponder, 0)
 	for _, responder := range responders {
@@ -1697,6 +1721,18 @@ func cloneACMEAccounts(src map[string]domain.ACMEAccount) map[string]domain.ACME
 		dst[id] = copyACMEAccount(account)
 	}
 	return dst
+}
+
+func ensureACMEAccountThumbprintAvailable(accounts map[string]domain.ACMEAccount, candidate domain.ACMEAccount) error {
+	if candidate.KeyThumbprint == "" {
+		return nil
+	}
+	for _, account := range accounts {
+		if account.ID != candidate.ID && account.KeyThumbprint == candidate.KeyThumbprint {
+			return domain.ErrInvalidTransition
+		}
+	}
+	return nil
 }
 
 func cloneACMEOrders(src map[string]domain.ACMEOrder) map[string]domain.ACMEOrder {

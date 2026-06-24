@@ -146,6 +146,9 @@ CREATE TABLE IF NOT EXISTS crl_publications (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
+    ON crl_publications(issuer_id, distribution_point, crl_number);
+
 CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,

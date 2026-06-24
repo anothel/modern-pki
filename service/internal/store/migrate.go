@@ -122,6 +122,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
+			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -283,6 +285,11 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("add sqlite column acme_accounts.%s: %w", column.name, err)
 		}
 	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_acme_accounts_key_thumbprint
+		ON acme_accounts(key_thumbprint)
+		WHERE key_thumbprint <> ''`); err != nil {
+		return fmt.Errorf("create sqlite acme account thumbprint index: %w", err)
+	}
 	for _, tableColumn := range []struct {
 		table      string
 		name       string
@@ -387,6 +394,8 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
+			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -430,6 +439,9 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error
 		)`,
 		"ALTER TABLE acme_accounts ADD COLUMN IF NOT EXISTS key_thumbprint TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE acme_accounts ADD COLUMN IF NOT EXISTS key_jwk_json TEXT NOT NULL DEFAULT ''",
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_acme_accounts_key_thumbprint
+			ON acme_accounts(key_thumbprint)
+			WHERE key_thumbprint <> ''`,
 		`CREATE TABLE IF NOT EXISTS acme_orders (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL REFERENCES acme_accounts(id),

@@ -1235,6 +1235,9 @@ INSERT INTO crl_publications (
 		formatSQLTime(publication.CreatedAt),
 		formatSQLTime(publication.UpdatedAt),
 	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
 	return err
 }
 
@@ -1711,6 +1714,9 @@ INSERT INTO acme_accounts (
 		formatSQLTime(account.CreatedAt),
 		formatSQLTime(account.UpdatedAt),
 	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
 	return err
 }
 

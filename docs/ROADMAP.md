@@ -104,6 +104,7 @@ Current status:
 - Audit metadata includes request ID, client IP, actor, resource IDs, result codes, and error codes.
 - Audit client IP metadata trusts `X-Forwarded-For` only from configured trusted proxies.
 - Production mode enforces HTTPS URLs and strong shared secrets for new webhook notification endpoints.
+- Storage enforces issuer-scoped certificate serial, CRL publication number, and ACME account key thumbprint uniqueness across SQL and memory stores.
 - `SECURITY.md` and `CONTRIBUTING.md` exist at the repository root.
 - GitHub Actions CI workflow exists for Go tests/build and CMake/CTest. This roadmap does not claim any remote CI run result.
 
@@ -154,7 +155,7 @@ This review was code-level static analysis. Items already done are acknowledged,
 | Production auth/config guard | Implemented | `dev` auth, weak bootstrap key, missing pepper, trusted proxy audit metadata, and webhook HTTPS/secret policy are guarded. | Completed / Operator Operations |
 | Blind `X-Forwarded-For` trust | Implemented | Client IP audit now uses configured trusted proxies before accepting forwarded client IP metadata. | Completed / Operator Operations |
 | Outbox lease, endpoint delivery state, retry jitter | Accepted | Current message-level processing can get stuck after worker death and can resend successful endpoints. | Outbox Delivery Hardening |
-| DB uniqueness/index hardening | Accepted | Issuer serial, CRL number, ACME thumbprint, and cross-store parity need DB-level enforcement/tests. | Storage And Migration Hardening |
+| DB uniqueness/index hardening | Implemented | Issuer serial, CRL publication number, ACME thumbprint, and cross-store parity now have storage enforcement/tests. | Completed / Operational Safety Baseline |
 | OCSP lookup and response policy | Accepted | List-scan lookup and fixed `NextUpdate` are not enough for large inventories. | Status Publication Hardening |
 | CSR/subject/SAN canonicalization | Accepted | Exact match is good baseline; IDNA, case, trailing dot, wildcard, and IP canonical forms need explicit policy/tests. | Issuance Policy Hardening |
 | API pagination/filtering/sorting | Accepted | Large inventories need bounded list APIs and stable ordering. | Storage And Migration Hardening |
@@ -197,7 +198,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 ### 3. Issuance Consistency And Webhook Safety
 
 - Make certificate issuance recoverable/idempotent when signing succeeds but DB finalization fails.
-- Enforce issuer-scoped certificate serial uniqueness in storage.
 - Add tests for retrying finalization without creating a second certificate for one enrollment.
 - Give webhook delivery a bounded default HTTP client timeout.
 - Add webhook endpoint SSRF checks aligned with ACME HTTP-01 unsafe target blocking.
@@ -225,7 +225,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Pagination and filters for list APIs.
 - Concurrency tests for serial allocation, CRL number allocation, ACME finalize, nonce replay, OCSP rotation, outbox retry, API key disable, and enrollment approval.
 - Store contract tests for SQL and memory behavior parity.
-- DB-level uniqueness for issuer serials, CRL publication numbers, and ACME account key thumbprints.
 
 ### 7. Status Publication Hardening
 
