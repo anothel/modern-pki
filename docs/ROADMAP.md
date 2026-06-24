@@ -133,8 +133,30 @@ Nothing from the review is silently discarded. Each item is either implemented, 
 
 Next shape:
 
-- Add ACME account-key variant coverage across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
+- Close issuance consistency first: recoverable/idempotent signing, DB uniqueness, and retry-safe finalization.
+- Harden webhook delivery before adding more notification surface.
+- Move ACME nonce handling toward multi-instance safety after the single-instance behavior stays green.
 - Keep CI and local verification checks passing as changes land.
+
+External code review triage from `modern-pki-code-level-review-2026-06-24.md`:
+
+This review was code-level static analysis. Items already done are acknowledged, but roadmap slots focus on what still changes future work.
+
+| Review item | Decision | Reason | Roadmap slot |
+| --- | --- | --- | --- |
+| Full clone/build/test/CI evidence | Accepted | CI config exists, but green remote CI, race, vet/staticcheck/gosec, and C++ sanitizer/fuzz evidence are separate release-readiness proof. | Verification hardening |
+| Issuance happens before DB commit | Accepted P0 | A signed certificate can become orphaned if DB finalization fails; need idempotency, recoverable state, and serial uniqueness. | Issuance Consistency And Webhook Safety |
+| Webhook default client timeout and SSRF defense | Accepted P0 | Timeout-free default client and weak endpoint network policy can stall workers or reach internal targets. | Issuance Consistency And Webhook Safety |
+| ACME nonce is in-process memory | Accepted P0 | TTL/cap helps one instance only; multi-instance needs shared-store or signed stateless nonce design. | ACME Security Hardening |
+| Production auth/config guard | Partially implemented | `dev` auth, weak bootstrap key, and missing pepper are guarded; trusted proxy and webhook secret policy remain. | Operational Safety follow-up |
+| Blind `X-Forwarded-For` trust | Accepted | Client IP audit should use configured trusted proxies, not arbitrary headers. | Audit hardening follow-up |
+| Outbox lease, endpoint delivery state, retry jitter | Accepted | Current message-level processing can get stuck after worker death and can resend successful endpoints. | Outbox Delivery Hardening |
+| DB uniqueness/index hardening | Accepted | Issuer serial, CRL number, ACME thumbprint, and cross-store parity need DB-level enforcement/tests. | Storage And Migration Hardening |
+| OCSP lookup and response policy | Accepted | List-scan lookup and fixed `NextUpdate` are not enough for large inventories. | Status Publication Hardening |
+| CSR/subject/SAN canonicalization | Accepted | Exact match is good baseline; IDNA, case, trailing dot, wildcard, and IP canonical forms need explicit policy/tests. | Issuance Policy Hardening |
+| API pagination/filtering/sorting | Accepted | Large inventories need bounded list APIs and stable ordering. | Storage And Migration Hardening |
+| Observability and rate-limit signals | Accepted | Operators need issuance, ACME, OCSP, webhook, auth, DB, and core CLI metrics before production claims. | Observability |
+| Code splitting of large service/server/store files | Deferred | Useful after behavior stabilizes; refactor now would add churn without reducing immediate production risk. | Refactor after hardening |
 
 ### 2. ACME Client Compatibility Hardening
 
@@ -169,21 +191,63 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 ## Prioritized Backlog
 
-### 3. ACME Security Hardening
+### 3. Issuance Consistency And Webhook Safety
+
+- Make certificate issuance recoverable/idempotent when signing succeeds but DB finalization fails.
+- Enforce issuer-scoped certificate serial uniqueness in storage.
+- Add tests for retrying finalization without creating a second certificate for one enrollment.
+- Give webhook delivery a bounded default HTTP client timeout.
+- Add webhook endpoint SSRF checks aligned with ACME HTTP-01 unsafe target blocking.
+- Add production policy for HTTPS-only webhook endpoints and minimum webhook secret strength.
+
+### 4. ACME Security Hardening
 
 - ACME account key matrix across RSA, ECDSA P-256, and Ed25519 where clients expose variants.
 - Certbot Linux/elevated smoke coverage.
 - Keep lego smoke as the non-admin local regression check.
+- Decide shared-store nonce vs signed stateless nonce for multi-instance deployments.
+- Bind KID/account URL validation to the configured ACME base URL.
 
-### 4. Storage And Migration Hardening
+### 5. Outbox Delivery Hardening
+
+- Add processing lease fields and lock expiry recovery.
+- Track endpoint-level webhook delivery status.
+- Add retry jitter.
+- Keep message-level dead-letter APIs for operator recovery.
+
+### 6. Storage And Migration Hardening
 
 - Versioned migration table.
 - Migration checksum and lock.
 - PostgreSQL integration test.
 - Pagination and filters for list APIs.
 - Concurrency tests for serial allocation, CRL number allocation, ACME finalize, nonce replay, OCSP rotation, outbox retry, API key disable, and enrollment approval.
+- Store contract tests for SQL and memory behavior parity.
+- DB-level uniqueness for issuer serials, CRL publication numbers, and ACME account key thumbprints.
 
-### 5. Certificate Rotation Automation
+### 7. Status Publication Hardening
+
+- OCSP lookup by issuer and serial instead of scanning certificate lists.
+- Configurable OCSP `NextUpdate` policy.
+- OCSP response cache policy.
+- Delegated responder strict production mode.
+
+### 8. Issuance Policy Hardening
+
+- DNS lowercase normalization.
+- IDNA/punycode handling.
+- Trailing dot policy.
+- Wildcard depth and public suffix boundary checks.
+- IPv4/IPv6 canonical SAN comparison.
+- Explicit CSR signature verification tests.
+
+### 9. Observability
+
+- Issuance, revocation, renewal, CRL, OCSP, ACME, webhook, auth, DB, and core CLI metrics.
+- API auth failure and rate-limit signals.
+- Audit pagination and retention policy.
+
+### 10. Certificate Rotation Automation
 
 - Rotation schedules.
 - Pre-expiry renewal windows.
@@ -191,28 +255,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Evented rotation notifications.
 - Safe cutover state tracking.
 
-### 6. HSM And PKCS#11
+### 11. HSM And PKCS#11
 
 - Issuer key reference model for HSM-backed keys.
 - PKCS#11 signing boundary.
 - Operator configuration for slots, labels, and PIN sources.
 - Tests with a software token if available.
 
-### 7. Crypto Agility
+### 12. Crypto Agility
 
 - Profile-level key algorithm and signature algorithm policy.
 - RSA/ECDSA algorithm selection in issuance paths.
 - Ed25519 feasibility check.
 - Migration plan for algorithm deprecation.
 
-### 8. Kubernetes Workload Identity
+### 13. Kubernetes Workload Identity
 
 - Kubernetes service account identity mapping.
 - Pod/workload certificate enrollment API.
 - Optional Kubernetes CSR or projected token verification.
 - Rotation workflow for workloads.
 
-### 9. PQC And Hybrid Experiments
+### 14. PQC And Hybrid Experiments
 
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.
