@@ -73,7 +73,7 @@ Acceptance:
 
 ### Shutdown And Readiness
 
-- Implement graceful shutdown for HTTP server and workers.
+- Keep graceful shutdown covered for HTTP server and workers.
 - Expand readiness beyond DB ping where useful: migration state, core CLI reachability, and key reference access.
 - Generate request IDs when missing.
 

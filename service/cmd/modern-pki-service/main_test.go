@@ -43,6 +43,64 @@ func TestNewHTTPServerAppliesOperationalTimeouts(t *testing.T) {
 	}
 }
 
+func TestRunServerUntilShutdownStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	serveStarted := make(chan struct{})
+	serveDone := make(chan struct{})
+	shutdownCalled := make(chan struct{}, 1)
+
+	serve := func() error {
+		close(serveStarted)
+		<-serveDone
+		return http.ErrServerClosed
+	}
+	shutdown := func(ctx context.Context) error {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("shutdown context has no deadline")
+		}
+		shutdownCalled <- struct{}{}
+		close(serveDone)
+		return nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runServerUntilShutdown(ctx, serve, shutdown, time.Second, nil)
+	}()
+	<-serveStarted
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runServerUntilShutdown returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for graceful shutdown")
+	}
+	select {
+	case <-shutdownCalled:
+	default:
+		t.Fatal("shutdown was not called")
+	}
+}
+
+func TestRunServerUntilShutdownReturnsServeError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wantErr := errors.New("listen failed")
+
+	err := runServerUntilShutdown(ctx, func() error {
+		return wantErr
+	}, func(context.Context) error {
+		t.Fatal("shutdown should not run after serve failure")
+		return nil
+	}, time.Second, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runServerUntilShutdown error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestLoadOutboxConfigCustomValues(t *testing.T) {
 	t.Setenv("MODERN_PKI_OUTBOX_ENABLED", "false")
 	t.Setenv("MODERN_PKI_OUTBOX_INTERVAL", "30s")

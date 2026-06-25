@@ -9,15 +9,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"net/netip"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
@@ -55,6 +58,7 @@ const (
 	defaultServiceVersion           = "dev"
 	defaultServiceCommit            = "unknown"
 	defaultServiceBuildTime         = "unknown"
+	defaultShutdownTimeout          = 10 * time.Second
 )
 
 var (
@@ -104,6 +108,9 @@ type operationalConfig struct {
 
 func main() {
 	startedAt := time.Now().UTC()
+	rootCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	addr := envOrDefault("MODERN_PKI_ADDR", defaultAddr)
 	dbDriver := envOrDefault("MODERN_PKI_DB_DRIVER", defaultDBDriver)
 	dbDSN := envOrDefault("MODERN_PKI_DB_DSN", defaultDBDSN)
@@ -135,7 +142,7 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := store.ApplyInitialMigration(context.Background(), db, dbDriver); err != nil {
+	if err := store.ApplyInitialMigration(rootCtx, db, dbDriver); err != nil {
 		log.Fatalf("apply database migration: %v", err)
 	}
 
@@ -152,7 +159,7 @@ func main() {
 		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
 	}
 	if authCfg.BootstrapAPIKey != "" {
-		key, err := svc.EnsureAPIKey(context.Background(), "system", lifecycle.EnsureAPIKeyRequest{
+		key, err := svc.EnsureAPIKey(rootCtx, "system", lifecycle.EnsureAPIKeyRequest{
 			Name:  authCfg.BootstrapAPIKeyName,
 			Token: authCfg.BootstrapAPIKey,
 			Actor: authCfg.BootstrapAPIKeyActor,
@@ -164,7 +171,7 @@ func main() {
 	}
 	acmeHTTPConfig := httpapi.ACMEConfig{}
 	if acmeDefaultsCfg.BootstrapDefaults {
-		acmeHTTPConfig, err = bootstrapACMEDefaults(context.Background(), svc, acmeDefaultsCfg.ValidityPeriod, acmeDefaultsCfg.IssuerKeyRef)
+		acmeHTTPConfig, err = bootstrapACMEDefaults(rootCtx, svc, acmeDefaultsCfg.ValidityPeriod, acmeDefaultsCfg.IssuerKeyRef)
 		if err != nil {
 			log.Fatalf("bootstrap ACME defaults: %v", err)
 		}
@@ -175,12 +182,12 @@ func main() {
 		webhookHandler := lifecycle.NewWebhookOutboxHandler(repo, nil)
 		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
 		worker := lifecycle.NewOutboxWorker(dispatcher, outboxCfg.Interval, outboxCfg.BatchSize, log.Printf)
-		go worker.Run(context.Background())
+		go worker.Run(rootCtx)
 		log.Printf("modern-pki outbox worker enabled interval=%s batch=%d", outboxCfg.Interval, outboxCfg.BatchSize)
 	}
 	if expirationScanCfg.Enabled {
 		worker := lifecycle.NewExpirationScanWorker(svc, expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize, log.Printf)
-		go worker.Run(context.Background())
+		go worker.Run(rootCtx)
 		log.Printf("modern-pki expiration scan worker enabled interval=%s warning_window=%s batch=%d", expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize)
 	}
 	handler := newOperationalHandler(server, operationalConfig{
@@ -196,8 +203,42 @@ func main() {
 	})
 
 	log.Printf("modern-pki service listening on %s", addr)
-	if err := newHTTPServer(addr, handler).ListenAndServe(); err != nil {
+	httpServer := newHTTPServer(addr, handler)
+	if err := runServerUntilShutdown(rootCtx, httpServer.ListenAndServe, httpServer.Shutdown, defaultShutdownTimeout, log.Printf); err != nil {
 		log.Fatalf("serve HTTP: %v", err)
+	}
+}
+
+func runServerUntilShutdown(ctx context.Context, serve func() error, shutdown func(context.Context) error, timeout time.Duration, logf func(string, ...any)) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serve()
+	}()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		if logf != nil {
+			logf("modern-pki service shutting down")
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		select {
+		case err := <-errCh:
+			if errors.Is(err, http.ErrServerClosed) {
+				return nil
+			}
+			return err
+		case <-shutdownCtx.Done():
+			return shutdownCtx.Err()
+		}
 	}
 }
 
