@@ -1990,6 +1990,15 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			"profile_id", certificate.CertificateProfileID,
 		))
 	}); err != nil {
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			existing, lookupErr := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
+			if lookupErr == nil {
+				return existing, nil
+			}
+			if !errors.Is(lookupErr, domain.ErrCertificateNotFound) {
+				return domain.Certificate{}, lookupErr
+			}
+		}
 		return domain.Certificate{}, err
 	}
 	return certificate, nil

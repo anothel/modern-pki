@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,6 +240,67 @@ func TestIssueCertificateReturnsExistingCertificateForIssuedEnrollment(t *testin
 	}
 	if len(issuerClient.requests) != 1 {
 		t.Fatalf("issuer request count = %d, want 1", len(issuerClient.requests))
+	}
+}
+
+func TestIssueCertificateConcurrentFinalizeReturnsExistingCertificate(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := newBlockingIssueIssuer(2)
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&threadSafeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	const workers = 2
+	start := make(chan struct{})
+	results := make(chan issueCertificateResult, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+			results <- issueCertificateResult{certificate: certificate, err: err}
+		}()
+	}
+	close(start)
+	select {
+	case <-issuerClient.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for concurrent signing requests")
+	}
+	close(issuerClient.release)
+	wg.Wait()
+	close(results)
+
+	var certificates []domain.Certificate
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("IssueCertificate concurrent error: %v", result.err)
+		}
+		certificates = append(certificates, result.certificate)
+	}
+	if len(certificates) != workers {
+		t.Fatalf("certificate result count = %d, want %d", len(certificates), workers)
+	}
+	if certificates[0].ID != certificates[1].ID || certificates[0].CertificatePEM != certificates[1].CertificatePEM {
+		t.Fatalf("certificates = %#v, want same certificate", certificates)
+	}
+	stored, err := repo.ListCertificates(ctx)
+	if err != nil {
+		t.Fatalf("ListCertificates returned error: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("stored certificate count = %d, want 1", len(stored))
 	}
 }
 
@@ -4037,6 +4099,70 @@ type fakeIssuer struct {
 	ocspResponseDER                 []byte
 	ocspResponderValidationResult   corecli.ValidateOCSPResponderResult
 	err                             error
+}
+
+type issueCertificateResult struct {
+	certificate domain.Certificate
+	err         error
+}
+
+type blockingIssueIssuer struct {
+	*fakeIssuer
+	mu      sync.Mutex
+	waitFor int
+	count   int
+	ready   chan struct{}
+	release chan struct{}
+}
+
+func newBlockingIssueIssuer(waitFor int) *blockingIssueIssuer {
+	return &blockingIssueIssuer{
+		fakeIssuer: &fakeIssuer{},
+		waitFor:    waitFor,
+		ready:      make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (f *blockingIssueIssuer) Issue(ctx context.Context, req corecli.IssueRequest) (corecli.IssueResult, error) {
+	f.mu.Lock()
+	f.count++
+	if f.count == f.waitFor {
+		close(f.ready)
+	}
+	f.mu.Unlock()
+
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return corecli.IssueResult{}, ctx.Err()
+	}
+	f.mu.Lock()
+	f.fakeIssuer.requests = append(f.fakeIssuer.requests, req)
+	err := f.fakeIssuer.err
+	f.mu.Unlock()
+	if err != nil {
+		return corecli.IssueResult{}, err
+	}
+	return corecli.IssueResult{
+		CertificatePEM: "issued:" + req.CSRPEM,
+		SerialNumber:   "serial:" + req.Subject,
+		Subject:        req.Subject,
+		NotBefore:      req.NotBefore,
+		NotAfter:       req.NotAfter,
+	}, nil
+}
+
+type threadSafeIDGenerator struct {
+	mu   sync.Mutex
+	next int
+}
+
+func (g *threadSafeIDGenerator) NewID() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.next++
+	return fmt.Sprintf("id-%d", g.next)
 }
 
 func (f *fakeIssuer) InspectCSR(ctx context.Context, csrPEM string) (corecli.CSRInfo, error) {
