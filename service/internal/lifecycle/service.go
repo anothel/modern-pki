@@ -1396,9 +1396,11 @@ func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID s
 	order.Status = domain.ACMEOrderValid
 	order.UpdatedAt = now
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
-		if err := repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderReady); err != nil {
-			return err
-		}
+		return repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderReady)
+	}); err != nil {
+		return domain.ACMEOrder{}, err
+	}
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
 		return s.createAuditEvent(ctx, repo, actor, "acme.order.finalized", "acme_order", order.ID, now, auditFields(
 			"acme_account_id", order.AccountID,
 			"acme_order_id", order.ID,
