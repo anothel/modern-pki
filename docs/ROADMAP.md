@@ -7,16 +7,12 @@ Only future work belongs here.
 ### Issuance Consistency
 
 - Make certificate issuance recoverable when signing succeeds but DB finalization fails.
-- Make certificate finalization idempotent for retries.
-- Add concurrent approval/finalize tests.
-- Add tests proving one enrollment cannot create duplicate certificates.
+- Prevent duplicate signing work during concurrent issuance attempts for the same enrollment.
+- Add recovery or repair path for missing audit events after finalized issuance state is persisted.
 - Define recovery behavior for signed material that cannot be persisted.
 
 ### Migration Hardening
 
-- Add `schema_migrations` with version, checksum, applied timestamp, and dirty state.
-- Add migration locking for concurrent startup.
-- Add checksum mismatch startup failure.
 - Add PostgreSQL migration/integration tests.
 - Define rollback, backup, and restore rules around schema version and issuer key material.
 
