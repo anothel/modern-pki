@@ -246,7 +246,7 @@ func TestIssueCertificateReturnsExistingCertificateForIssuedEnrollment(t *testin
 func TestIssueCertificateConcurrentFinalizeReturnsExistingCertificate(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
-	issuerClient := newBlockingIssueIssuer(2)
+	issuerClient := newBlockingIssueIssuer(1)
 	service := New(
 		repo,
 		issuerClient,
@@ -276,8 +276,9 @@ func TestIssueCertificateConcurrentFinalizeReturnsExistingCertificate(t *testing
 	select {
 	case <-issuerClient.ready:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for concurrent signing requests")
+		t.Fatal("timed out waiting for first signing request")
 	}
+	time.Sleep(100 * time.Millisecond)
 	close(issuerClient.release)
 	wg.Wait()
 	close(results)
@@ -301,6 +302,9 @@ func TestIssueCertificateConcurrentFinalizeReturnsExistingCertificate(t *testing
 	}
 	if len(stored) != 1 {
 		t.Fatalf("stored certificate count = %d, want 1", len(stored))
+	}
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count = %d, want 1", len(issuerClient.requests))
 	}
 }
 

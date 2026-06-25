@@ -7,7 +7,7 @@ Only future work belongs here.
 ### Issuance Consistency
 
 - Make certificate issuance recoverable when signing succeeds but DB finalization fails.
-- Prevent duplicate signing work during concurrent issuance attempts for the same enrollment.
+- Prevent duplicate signing work across multiple service nodes for the same enrollment.
 - Add recovery or repair path for missing audit events after finalized issuance state is persisted.
 - Define recovery behavior for signed material that cannot be persisted.
 

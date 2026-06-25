@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,6 +84,7 @@ type Service struct {
 	acmeHTTP01Verifier ACMEHTTP01Verifier
 	apiKeyPepper       string
 	productionPolicy   bool
+	issueMu            sync.Mutex
 }
 
 type AuditRequestMetadata struct {
@@ -1879,6 +1881,10 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if isBlank(enrollmentID) {
 		return domain.Certificate{}, domain.ErrInvalidRequest
 	}
+
+	// ponytail: global in-process lock; use per-enrollment or DB-backed lease if issuance throughput matters.
+	s.issueMu.Lock()
+	defer s.issueMu.Unlock()
 
 	enrollment, err := s.repo.GetEnrollment(ctx, enrollmentID)
 	if err != nil {
