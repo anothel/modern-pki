@@ -162,6 +162,21 @@ This review was code-level static analysis. Items already done are acknowledged,
 | Observability and rate-limit signals | Accepted | Operators need issuance, ACME, OCSP, webhook, auth, DB, and core CLI metrics before production claims. | Observability |
 | Code splitting of large service/server/store files | Deferred | Useful after behavior stabilizes; refactor now would add churn without reducing immediate production risk. | Refactor after hardening |
 
+External improvement analysis triage from `modern-pki-improvement-analysis-2026-06-25.md`:
+
+The report is a static review, not build/test evidence. It mostly reinforces existing priorities; new or sharper items are tracked below so future work can delete, defer, or implement them deliberately.
+
+| Review item | Decision | Reason | Roadmap slot |
+| --- | --- | --- | --- |
+| Production deployment baseline | Accepted P0 | Production use needs sample config, bootstrap key lifecycle, readiness depth, and graceful shutdown before release claims. | Documentation And Release Readiness / Operator Operations |
+| Migration table/checksum/lock and PostgreSQL integration | Accepted P0 | Startup migration must become versioned and concurrency-safe before real upgrade support. | Storage And Migration Hardening |
+| Key provider and HSM/PKCS#11 boundary | Accepted P0 | File key refs are fine for local use; production CA keys need an explicit signing boundary and no key material in audit. | HSM And PKCS#11 |
+| ACME certbot, key matrix, multi-node nonce, HTTP-01 egress policy | Accepted | These are the next compatibility/security gaps after lego smoke and single-node nonce hardening. | ACME Security Hardening |
+| Audit enrichment, webhook receiver guide, event schema versioning | Accepted | Operators and webhook consumers need richer forensic fields and stable payload contracts. | Observability / Documentation And Release Readiness |
+| Core CLI contract, OpenSSL error detail, fuzzing | Accepted | The Go/C++ boundary should be testable as a contract, and DER/CSR/CRL parsing is fuzz-worthy. | Core CLI Contract And Robustness |
+| OpenAPI, compatibility matrix, changelog, release process | Accepted | External users need stable API docs and release expectations before 1.0. | Documentation And Release Readiness |
+| Large file code splitting | Deferred | The report is right about file size, but splitting before behavior stabilizes creates churn without security gain. | Refactor after hardening |
+
 ### 2. ACME Client Compatibility Hardening
 
 Goal: make the ACME adapter boring under real clients, not only internal fixtures.
@@ -209,6 +224,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Keep lego smoke as the non-admin local regression check.
 - Decide shared-store nonce vs signed stateless nonce for multi-instance deployments.
 - Bind KID/account URL validation to the configured ACME base URL.
+- Add account key rollover, ACME revocation endpoint, rate limits, and RFC8555 conformance matrix coverage.
+- Harden HTTP-01 egress policy for DNS rebinding, resolver/dial address mismatch, timeout/read behavior, redirect limits, and optional allow/deny lists.
 
 ### 5. Outbox Delivery Hardening
 
@@ -225,12 +242,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - Pagination and filters for list APIs.
 - Concurrency tests for serial allocation, CRL number allocation, ACME finalize, nonce replay, OCSP rotation, outbox retry, API key disable, and enrollment approval.
 - Store contract tests for SQL and memory behavior parity.
+- Backup/restore and disaster recovery rules tied to schema version and issuer key material.
 
 ### 7. Status Publication Hardening
 
 - OCSP lookup by issuer and serial instead of scanning certificate lists.
 - Configurable OCSP `NextUpdate` policy.
 - OCSP response cache policy.
+- CRL cache/header policy and publication runbook.
 - Delegated responder strict production mode.
 
 ### 8. Issuance Policy Hardening
@@ -246,6 +265,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 
 - Issuance, revocation, renewal, CRL, OCSP, ACME, webhook, auth, DB, and core CLI metrics.
 - API auth failure and rate-limit signals.
+- Structured logs and trace/span ID propagation.
 - Audit pagination and retention policy.
 
 ### 10. Certificate Rotation Automation
@@ -282,6 +302,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-cer
 - ML-DSA/ML-KEM research branch.
 - Hybrid certificate experiment only after classical lifecycle is stable.
 - Clear non-production labeling.
+
+### 15. Documentation And Release Readiness
+
+- LICENSE owner decision and README license status.
+- Production deployment guide with secure sample config.
+- Bootstrap API key provisioning/removal/rotation runbook.
+- State transition and API error code references.
+- OpenAPI specification for lifecycle/operator APIs.
+- Webhook receiver guide with timestamp skew, replay cache, and signature verification examples.
+- Compatibility matrix for certbot, lego, key algorithms, and OS smoke results.
+- CHANGELOG and release process.
+- Backup/restore and incident response runbooks.
+
+### 16. Core CLI Contract And Robustness
+
+- JSON contract/schema for Go-to-core CLI calls.
+- Structured OpenSSL error stack exposure where useful for operator diagnosis.
+- CSR, OCSP, and CRL parser fuzz targets.
 
 ## Not Next
 
