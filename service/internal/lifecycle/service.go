@@ -1354,6 +1354,9 @@ func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID s
 	if err != nil {
 		return domain.ACMEOrder{}, err
 	}
+	if order.Status == domain.ACMEOrderValid {
+		return order, nil
+	}
 	if order.Status != domain.ACMEOrderReady {
 		return domain.ACMEOrder{}, domain.ErrInvalidTransition
 	}

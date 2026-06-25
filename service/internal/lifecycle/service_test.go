@@ -3115,6 +3115,20 @@ func TestACMEOrderLifecycleFinalizesToCertificate(t *testing.T) {
 	if len(coreClient.requests) != 1 || coreClient.requests[0].CSRPEM != "csr-pem" {
 		t.Fatalf("issuer requests = %#v", coreClient.requests)
 	}
+
+	second, err := service.FinalizeACMEOrder(ctx, "acme-client", order.ID, FinalizeACMEOrderRequest{
+		CSRPEM:           "csr-pem",
+		RequestedSubject: "CN=edge-01",
+	})
+	if err != nil {
+		t.Fatalf("FinalizeACMEOrder retry returned error: %v", err)
+	}
+	if second.ID != finalized.ID || second.EnrollmentID != finalized.EnrollmentID || second.CertificateID != finalized.CertificateID {
+		t.Fatalf("retry order = %#v, want finalized %#v", second, finalized)
+	}
+	if len(coreClient.requests) != 1 {
+		t.Fatalf("issuer request count after retry = %d, want 1", len(coreClient.requests))
+	}
 }
 
 func TestCreateACMEOrderEnforcesIdentitySANPolicyBeforeAuthorization(t *testing.T) {
