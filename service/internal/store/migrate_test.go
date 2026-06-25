@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	_ "modernc.org/sqlite"
@@ -61,6 +64,51 @@ WHERE version = 1`).Scan(&rerunAppliedAt)
 	}
 	if rerunAppliedAt != appliedAt {
 		t.Fatalf("rerun applied_at = %q, want %q", rerunAppliedAt, appliedAt)
+	}
+}
+
+func TestApplyInitialMigrationSerializesConcurrentSQLiteStartup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "modern-pki.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(8)
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- ApplyInitialMigration(ctx, db, "sqlite")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ApplyInitialMigration concurrent error: %v", err)
+		}
+	}
+
+	var count int
+	err = db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM schema_migrations
+WHERE version = 1 AND dirty = 0`).Scan(&count)
+	if err != nil {
+		t.Fatalf("query schema_migrations count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("schema_migrations clean version count = %d, want 1", count)
 	}
 }
 

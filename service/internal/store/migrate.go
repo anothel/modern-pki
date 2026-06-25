@@ -15,6 +15,8 @@ import (
 var migrationFiles embed.FS
 
 const initialMigrationVersion = 1
+const sqliteMigrationBusyTimeoutMS = 5000
+const postgresMigrationAdvisoryLockID int64 = 5847545710944921361
 
 func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error {
 	path, err := initialMigrationPath(driver)
@@ -27,9 +29,9 @@ func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error
 		return fmt.Errorf("read initial migration: %w", err)
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := beginMigrationTx(ctx, db, driver)
 	if err != nil {
-		return fmt.Errorf("begin migration transaction: %w", err)
+		return err
 	}
 	defer tx.Rollback()
 
@@ -58,6 +60,89 @@ func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error
 		}
 	}
 	return tx.Commit()
+}
+
+type migrationTx struct {
+	sqlExecutor
+	commit   func() error
+	rollback func() error
+	done     bool
+}
+
+func beginMigrationTx(ctx context.Context, db *sql.DB, driver string) (*migrationTx, error) {
+	switch driver {
+	case "sqlite":
+		return beginSQLiteMigrationTx(ctx, db)
+	case "pgx":
+		return beginPostgresMigrationTx(ctx, db)
+	default:
+		return nil, fmt.Errorf("unsupported database driver %q", driver)
+	}
+}
+
+func beginSQLiteMigrationTx(ctx context.Context, db *sql.DB) (*migrationTx, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite migration connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteMigrationBusyTimeoutMS)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("set sqlite migration busy timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("begin sqlite migration transaction: %w", err)
+	}
+	return &migrationTx{
+		sqlExecutor: conn,
+		commit: func() error {
+			if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+				conn.Close()
+				return err
+			}
+			return conn.Close()
+		},
+		rollback: func() error {
+			_, err := conn.ExecContext(ctx, "ROLLBACK")
+			closeErr := conn.Close()
+			if err != nil {
+				return err
+			}
+			return closeErr
+		},
+	}, nil
+}
+
+func beginPostgresMigrationTx(ctx context.Context, db *sql.DB) (*migrationTx, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin postgres migration transaction: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", postgresMigrationAdvisoryLockID); err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("lock postgres migration transaction: %w", err)
+	}
+	return &migrationTx{
+		sqlExecutor: tx,
+		commit:      tx.Commit,
+		rollback:    tx.Rollback,
+	}, nil
+}
+
+func (tx *migrationTx) Commit() error {
+	if tx.done {
+		return nil
+	}
+	tx.done = true
+	return tx.commit()
+}
+
+func (tx *migrationTx) Rollback() {
+	if tx.done {
+		return
+	}
+	tx.done = true
+	_ = tx.rollback()
 }
 
 func initialMigrationPath(driver string) (string, error) {
