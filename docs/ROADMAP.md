@@ -75,7 +75,7 @@ Acceptance:
 
 - Keep graceful shutdown covered for HTTP server and workers.
 - Expand readiness beyond DB ping where useful: migration state, core CLI reachability, and key reference access.
-- Generate request IDs when missing.
+- Keep request ID propagation covered, including server-generated IDs when callers omit `X-Request-ID`.
 
 Acceptance:
 

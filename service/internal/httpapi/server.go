@@ -102,8 +102,10 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestID := requestIDForRequest(r)
+	w.Header().Set("X-Request-ID", requestID)
 	ctx := lifecycle.WithAuditRequestMetadata(r.Context(), lifecycle.AuditRequestMetadata{
-		RequestID: r.Header.Get("X-Request-ID"),
+		RequestID: requestID,
 		ClientIP:  requestClientIP(r, s.auth.TrustedProxies),
 		StartedAt: time.Now(),
 	})
@@ -124,6 +126,18 @@ func requestBodyLimit(r *http.Request) int64 {
 		return defaultOCSPBodyLimit
 	}
 	return defaultJSONBodyLimit
+}
+
+func requestIDForRequest(r *http.Request) string {
+	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if requestID != "" {
+		return requestID
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	return "req-" + base64.RawURLEncoding.EncodeToString(raw[:])
 }
 
 func (s *Server) registerRoutes() {

@@ -2179,6 +2179,29 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	}
 }
 
+func TestAuditEventsGenerateRequestIDWhenMissing(t *testing.T) {
+	api := newTestAPI(t)
+
+	var identity apiIdentity
+	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, &identity)
+	assertStatus(t, status, http.StatusCreated)
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	metadata := apiAuditMetadata(t, events[0])
+	requestID, ok := metadata["request_id"].(string)
+	if !ok || requestID == "" {
+		t.Fatalf("request_id = %#v, want generated string; metadata=%#v", metadata["request_id"], metadata)
+	}
+}
+
 func TestAuditEventsIgnoreForwardedForWithoutTrustedProxy(t *testing.T) {
 	api := newTestAPI(t)
 
