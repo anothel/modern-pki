@@ -2,13 +2,19 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 )
 
 //go:embed migrations/0001_init.sql migrations/0001_init_sqlite.sql
 var migrationFiles embed.FS
+
+const initialMigrationVersion = 1
 
 func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error {
 	path, err := initialMigrationPath(driver)
@@ -21,13 +27,37 @@ func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error
 		return fmt.Errorf("read initial migration: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, string(sqlBytes)); err != nil {
-		return fmt.Errorf("execute initial migration: %w", err)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration transaction: %w", err)
 	}
-	if err := applyCompatibilityMigrations(ctx, db, driver); err != nil {
+	defer tx.Rollback()
+
+	if err := createSchemaMigrationsTable(ctx, tx, driver); err != nil {
 		return err
 	}
-	return nil
+	checksum := migrationChecksum(sqlBytes)
+	applied, err := checkSchemaMigration(ctx, tx, initialMigrationVersion, checksum)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		if err := insertSchemaMigration(ctx, tx, driver, initialMigrationVersion, checksum, true); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, string(sqlBytes)); err != nil {
+			return fmt.Errorf("execute initial migration: %w", err)
+		}
+	}
+	if err := applyCompatibilityMigrations(ctx, tx, driver); err != nil {
+		return err
+	}
+	if !applied {
+		if err := markSchemaMigrationClean(ctx, tx, driver, initialMigrationVersion, checksum); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func initialMigrationPath(driver string) (string, error) {
@@ -41,7 +71,96 @@ func initialMigrationPath(driver string) (string, error) {
 	}
 }
 
-func applyCompatibilityMigrations(ctx context.Context, db *sql.DB, driver string) error {
+func migrationChecksum(sqlBytes []byte) string {
+	sum := sha256.Sum256(sqlBytes)
+	return hex.EncodeToString(sum[:])
+}
+
+func createSchemaMigrationsTable(ctx context.Context, exec sqlExecutor, driver string) error {
+	appliedAtType := "TEXT"
+	dirtyType := "INTEGER"
+	if driver == "pgx" {
+		appliedAtType = "TIMESTAMPTZ"
+		dirtyType = "BOOLEAN"
+	}
+
+	_, err := exec.ExecContext(ctx, fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	checksum TEXT NOT NULL,
+	applied_at %s NOT NULL,
+	dirty %s NOT NULL
+)`, appliedAtType, dirtyType))
+	if err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	return nil
+}
+
+func checkSchemaMigration(ctx context.Context, exec sqlExecutor, version int, checksum string) (bool, error) {
+	var storedChecksum string
+	var dirty int
+	err := exec.QueryRowContext(ctx, `
+SELECT checksum, CASE WHEN dirty THEN 1 ELSE 0 END
+FROM schema_migrations
+WHERE version = $1`, version).Scan(&storedChecksum, &dirty)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read schema_migrations version %d: %w", version, err)
+	}
+	if dirty != 0 {
+		return false, fmt.Errorf("schema migration version %d is dirty", version)
+	}
+	if storedChecksum != checksum {
+		return false, fmt.Errorf("schema migration version %d checksum mismatch", version)
+	}
+	return true, nil
+}
+
+func insertSchemaMigration(ctx context.Context, exec sqlExecutor, driver string, version int, checksum string, dirty bool) error {
+	_, err := exec.ExecContext(ctx, `
+INSERT INTO schema_migrations (version, checksum, applied_at, dirty)
+VALUES ($1, $2, $3, $4)`,
+		version,
+		checksum,
+		formatSQLTime(time.Now()),
+		migrationDirtyValue(driver, dirty),
+	)
+	if err != nil {
+		return fmt.Errorf("insert schema_migrations version %d: %w", version, err)
+	}
+	return nil
+}
+
+func markSchemaMigrationClean(ctx context.Context, exec sqlExecutor, driver string, version int, checksum string) error {
+	_, err := exec.ExecContext(ctx, `
+UPDATE schema_migrations
+SET checksum = $1, applied_at = $2, dirty = $3
+WHERE version = $4`,
+		checksum,
+		formatSQLTime(time.Now()),
+		migrationDirtyValue(driver, false),
+		version,
+	)
+	if err != nil {
+		return fmt.Errorf("mark schema_migrations version %d clean: %w", version, err)
+	}
+	return nil
+}
+
+func migrationDirtyValue(driver string, dirty bool) any {
+	if driver == "sqlite" {
+		if dirty {
+			return 1
+		}
+		return 0
+	}
+	return dirty
+}
+
+func applyCompatibilityMigrations(ctx context.Context, db sqlExecutor, driver string) error {
 	switch driver {
 	case "sqlite":
 		return applySQLiteCompatibilityMigrations(ctx, db)
@@ -52,7 +171,7 @@ func applyCompatibilityMigrations(ctx context.Context, db *sql.DB, driver string
 	}
 }
 
-func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
+func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) error {
 	columns := []struct {
 		table      string
 		name       string
@@ -312,7 +431,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func sqliteColumnExists(ctx context.Context, db *sql.DB, table string, name string) (bool, error) {
+func sqliteColumnExists(ctx context.Context, db sqlExecutor, table string, name string) (bool, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
 		return false, fmt.Errorf("inspect sqlite table %s: %w", table, err)
@@ -339,7 +458,7 @@ func sqliteColumnExists(ctx context.Context, db *sql.DB, table string, name stri
 	return false, nil
 }
 
-func applyPostgresCompatibilityMigrations(ctx context.Context, db *sql.DB) error {
+func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) error {
 	statements := []string{
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS metadata_json TEXT NOT NULL DEFAULT ''",

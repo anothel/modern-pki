@@ -4,11 +4,107 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	_ "modernc.org/sqlite"
 )
+
+func TestApplyInitialMigrationRecordsSchemaMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	sqlBytes, err := migrationFiles.ReadFile("migrations/0001_init_sqlite.sql")
+	if err != nil {
+		t.Fatalf("read sqlite migration: %v", err)
+	}
+
+	var checksum string
+	var dirty int
+	var appliedAt string
+	err = db.QueryRowContext(ctx, `
+SELECT checksum, dirty, applied_at
+FROM schema_migrations
+WHERE version = 1`).Scan(&checksum, &dirty, &appliedAt)
+	if err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if checksum != migrationChecksum(sqlBytes) {
+		t.Fatalf("checksum = %q, want %q", checksum, migrationChecksum(sqlBytes))
+	}
+	if dirty != 0 {
+		t.Fatalf("dirty = %d, want 0", dirty)
+	}
+	if appliedAt == "" {
+		t.Fatalf("applied_at is empty")
+	}
+
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration rerun returned error: %v", err)
+	}
+	var rerunAppliedAt string
+	err = db.QueryRowContext(ctx, `
+SELECT applied_at
+FROM schema_migrations
+WHERE version = 1`).Scan(&rerunAppliedAt)
+	if err != nil {
+		t.Fatalf("query schema_migrations after rerun: %v", err)
+	}
+	if rerunAppliedAt != appliedAt {
+		t.Fatalf("rerun applied_at = %q, want %q", rerunAppliedAt, appliedAt)
+	}
+}
+
+func TestApplyInitialMigrationRejectsChecksumMismatch(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET checksum = 'bad' WHERE version = 1"); err != nil {
+		t.Fatalf("corrupt schema_migrations checksum: %v", err)
+	}
+
+	err = ApplyInitialMigration(ctx, db, "sqlite")
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("ApplyInitialMigration error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestApplyInitialMigrationRejectsDirtyMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET dirty = 1 WHERE version = 1"); err != nil {
+		t.Fatalf("dirty schema_migrations row: %v", err)
+	}
+
+	err = ApplyInitialMigration(ctx, db, "sqlite")
+	if err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("ApplyInitialMigration error = %v, want dirty migration", err)
+	}
+}
 
 func TestApplyInitialMigrationUpgradesLegacySQLiteColumns(t *testing.T) {
 	ctx := context.Background()
