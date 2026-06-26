@@ -18,7 +18,6 @@ Only future work belongs here.
 
 ### Webhook And Outbox Safety
 
-- Decide and implement endpoint-level webhook delivery tracking if message-level status is not enough.
 - Add webhook receiver runbook with timestamp skew, replay cache, and signature verification examples.
 - Define webhook payload schema versioning.
 

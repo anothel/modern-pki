@@ -84,6 +84,8 @@ type OutboxRepository interface {
 	UpdateOutboxMessageIfCurrent(ctx context.Context, message domain.OutboxMessage, current domain.OutboxMessage) error
 	CreateJobAttempt(ctx context.Context, attempt domain.JobAttempt) error
 	ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error)
+	GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error)
+	UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error
 }
 
 type APIKeyRepository interface {

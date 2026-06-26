@@ -235,6 +235,14 @@ func (s *SQLStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMes
 	return s.repository().ListJobAttemptsByOutboxMessage(ctx, outboxMessageID)
 }
 
+func (s *SQLStore) GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error) {
+	return s.repository().GetWebhookDelivery(ctx, outboxMessageID, endpointID)
+}
+
+func (s *SQLStore) UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error {
+	return s.repository().UpsertWebhookDelivery(ctx, delivery)
+}
+
 func (s *SQLStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
 	return s.repository().CreateAPIKey(ctx, key)
 }
@@ -1581,6 +1589,45 @@ ORDER BY created_at, id`, outboxMessageID)
 	return attempts, nil
 }
 
+func (r sqlRepository) GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error) {
+	delivery, err := scanWebhookDelivery(r.exec.QueryRowContext(ctx, `
+SELECT outbox_message_id, endpoint_id, status, attempt_count, last_error, last_attempted_at, created_at, updated_at
+FROM webhook_deliveries
+WHERE outbox_message_id = $1 AND endpoint_id = $2`, outboxMessageID, endpointID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.WebhookDelivery{}, domain.ErrWebhookDeliveryNotFound
+	}
+	if err != nil {
+		return domain.WebhookDelivery{}, err
+	}
+	return delivery, nil
+}
+
+func (r sqlRepository) UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO webhook_deliveries (
+	outbox_message_id, endpoint_id, status, attempt_count, last_error, last_attempted_at, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7, $8
+)
+ON CONFLICT (outbox_message_id, endpoint_id) DO UPDATE SET
+	status = excluded.status,
+	attempt_count = excluded.attempt_count,
+	last_error = excluded.last_error,
+	last_attempted_at = excluded.last_attempted_at,
+	updated_at = excluded.updated_at`,
+		delivery.OutboxMessageID,
+		delivery.EndpointID,
+		string(delivery.Status),
+		delivery.AttemptCount,
+		delivery.LastError,
+		formatSQLTime(delivery.LastAttemptedAt),
+		formatSQLTime(delivery.CreatedAt),
+		formatSQLTime(delivery.UpdatedAt),
+	)
+	return err
+}
+
 func (r sqlRepository) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
 	scopes, err := marshalAPIKeyScopes(key.Scopes)
 	if err != nil {
@@ -2829,6 +2876,46 @@ func scanJobAttempt(scanner sqlScanner) (domain.JobAttempt, error) {
 	attempt.FinishedAt = parsedFinishedAt
 	attempt.CreatedAt = parsedCreatedAt
 	return attempt, nil
+}
+
+func scanWebhookDelivery(scanner sqlScanner) (domain.WebhookDelivery, error) {
+	var delivery domain.WebhookDelivery
+	var status string
+	var lastAttemptedAt any
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&delivery.OutboxMessageID,
+		&delivery.EndpointID,
+		&status,
+		&delivery.AttemptCount,
+		&delivery.LastError,
+		&lastAttemptedAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.WebhookDelivery{}, err
+	}
+
+	parsedLastAttemptedAt, err := parseSQLTime(lastAttemptedAt)
+	if err != nil {
+		return domain.WebhookDelivery{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.WebhookDelivery{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.WebhookDelivery{}, err
+	}
+
+	delivery.Status = domain.JobAttemptStatus(status)
+	delivery.LastAttemptedAt = parsedLastAttemptedAt
+	delivery.CreatedAt = parsedCreatedAt
+	delivery.UpdatedAt = parsedUpdatedAt
+	return delivery, nil
 }
 
 func scanRevokedCertificateEntry(scanner sqlScanner) (domain.RevokedCertificateEntry, error) {

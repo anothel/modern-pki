@@ -344,6 +344,17 @@ type JobAttempt struct {
 	CreatedAt       time.Time
 }
 
+type WebhookDelivery struct {
+	OutboxMessageID string
+	EndpointID      string
+	Status          JobAttemptStatus
+	AttemptCount    int
+	LastError       string
+	LastAttemptedAt time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type APIKey struct {
 	ID         string
 	Name       string

@@ -337,16 +337,6 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
 			ON job_attempts(outbox_message_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
-			ON certificates(status, not_after, renewal_notified_at, id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
-			ON certificates(enrollment_id)
-			WHERE enrollment_id <> ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
-			ON certificates(issuer_id, serial_number)
-			WHERE issuer_id <> '' AND serial_number <> ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
-			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -360,6 +350,29 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
 			ON notification_endpoints(status, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
+			endpoint_id TEXT NOT NULL REFERENCES notification_endpoints(id),
+			status TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			last_attempted_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (outbox_message_id, endpoint_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint
+			ON webhook_deliveries(endpoint_id, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
+			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
+			ON certificates(enrollment_id)
+			WHERE enrollment_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
+			ON certificates(issuer_id, serial_number)
+			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
+			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -609,16 +622,6 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_job_attempts_outbox_message
 			ON job_attempts(outbox_message_id, created_at, id)`,
-		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
-			ON certificates(status, not_after, renewal_notified_at, id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
-			ON certificates(enrollment_id)
-			WHERE enrollment_id <> ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
-			ON certificates(issuer_id, serial_number)
-			WHERE issuer_id <> '' AND serial_number <> ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
-			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS notification_endpoints (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -633,6 +636,29 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		"ALTER TABLE notification_endpoints ADD COLUMN IF NOT EXISTS secret TEXT NOT NULL DEFAULT ''",
 		`CREATE INDEX IF NOT EXISTS idx_notification_endpoints_status
 			ON notification_endpoints(status, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			outbox_message_id TEXT NOT NULL REFERENCES outbox_messages(id),
+			endpoint_id TEXT NOT NULL REFERENCES notification_endpoints(id),
+			status TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			last_attempted_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (outbox_message_id, endpoint_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint
+			ON webhook_deliveries(endpoint_id, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
+			ON certificates(status, not_after, renewal_notified_at, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
+			ON certificates(enrollment_id)
+			WHERE enrollment_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
+			ON certificates(issuer_id, serial_number)
+			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
+			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,

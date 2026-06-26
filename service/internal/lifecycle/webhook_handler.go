@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -23,11 +24,17 @@ type webhookDeliveryRequest struct {
 }
 
 type WebhookOutboxHandler struct {
-	repo       store.NotificationEndpointRepository
+	repo       webhookRepository
 	httpClient *http.Client
 }
 
-func NewWebhookOutboxHandler(repo store.NotificationEndpointRepository, httpClient *http.Client) *WebhookOutboxHandler {
+type webhookRepository interface {
+	store.NotificationEndpointRepository
+	GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error)
+	UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error
+}
+
+func NewWebhookOutboxHandler(repo webhookRepository, httpClient *http.Client) *WebhookOutboxHandler {
 	if httpClient == nil {
 		httpClient = newACMEHTTP01Client(true)
 	}
@@ -62,11 +69,42 @@ func (h *WebhookOutboxHandler) HandleOutboxMessage(ctx context.Context, message 
 		if !webhookEndpointMatches(endpoint, message.Type) {
 			continue
 		}
+		delivery, err := h.repo.GetWebhookDelivery(ctx, message.ID, endpoint.ID)
+		if err != nil && !errors.Is(err, domain.ErrWebhookDeliveryNotFound) {
+			return err
+		}
+		if delivery.Status == domain.JobAttemptSucceeded {
+			continue
+		}
 		if err := h.postWebhook(ctx, endpoint, message, data); err != nil {
+			if updateErr := h.recordWebhookDelivery(ctx, message, endpoint, delivery, domain.JobAttemptFailed, err.Error()); updateErr != nil {
+				return updateErr
+			}
+			return err
+		}
+		if err := h.recordWebhookDelivery(ctx, message, endpoint, delivery, domain.JobAttemptSucceeded, ""); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (h *WebhookOutboxHandler) recordWebhookDelivery(ctx context.Context, message domain.OutboxMessage, endpoint domain.NotificationEndpoint, current domain.WebhookDelivery, status domain.JobAttemptStatus, lastError string) error {
+	now := time.Now().UTC()
+	createdAt := current.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	return h.repo.UpsertWebhookDelivery(ctx, domain.WebhookDelivery{
+		OutboxMessageID: message.ID,
+		EndpointID:      endpoint.ID,
+		Status:          status,
+		AttemptCount:    current.AttemptCount + 1,
+		LastError:       lastError,
+		LastAttemptedAt: now,
+		CreatedAt:       createdAt,
+		UpdatedAt:       now,
+	})
 }
 
 func (h *WebhookOutboxHandler) postWebhook(ctx context.Context, endpoint domain.NotificationEndpoint, message domain.OutboxMessage, data []byte) error {

@@ -221,6 +221,73 @@ func TestWebhookOutboxHandlerReturnsErrorOnHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestWebhookOutboxHandlerSkipsEndpointAlreadyDeliveredForMessage(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	okRequests := 0
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okRequests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer okServer.Close()
+	flakyRequests := 0
+	flakyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flakyRequests++
+		if flakyRequests == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer flakyServer.Close()
+
+	for _, endpoint := range []domain.NotificationEndpoint{
+		{
+			ID:        "endpoint-ok",
+			Name:      "ok",
+			Type:      domain.NotificationEndpointWebhook,
+			Status:    domain.NotificationEndpointActive,
+			URL:       okServer.URL,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "endpoint-flaky",
+			Name:      "flaky",
+			Type:      domain.NotificationEndpointWebhook,
+			Status:    domain.NotificationEndpointActive,
+			URL:       flakyServer.URL,
+			CreatedAt: now.Add(time.Second),
+			UpdatedAt: now.Add(time.Second),
+		},
+	} {
+		if err := repo.CreateNotificationEndpoint(ctx, endpoint); err != nil {
+			t.Fatalf("CreateNotificationEndpoint(%s) returned error: %v", endpoint.ID, err)
+		}
+	}
+
+	handler := NewWebhookOutboxHandler(repo, okServer.Client())
+	message := domain.OutboxMessage{
+		ID:          "outbox-1",
+		Type:        "certificate.expiration_warning",
+		PayloadJSON: `{"certificate_id":"cert-1"}`,
+		CreatedAt:   now,
+	}
+	if err := handler.HandleOutboxMessage(ctx, message); err == nil {
+		t.Fatal("first HandleOutboxMessage returned nil error, want flaky endpoint failure")
+	}
+	if err := handler.HandleOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("second HandleOutboxMessage returned error: %v", err)
+	}
+	if okRequests != 1 {
+		t.Fatalf("ok endpoint requests = %d, want 1", okRequests)
+	}
+	if flakyRequests != 2 {
+		t.Fatalf("flaky endpoint requests = %d, want 2", flakyRequests)
+	}
+}
+
 func TestWebhookOutboxHandlerDefaultClientRejectsUnsafeEndpoint(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)

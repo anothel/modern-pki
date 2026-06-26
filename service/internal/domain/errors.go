@@ -16,6 +16,7 @@ var (
 	ErrCertificateNotFound           = errors.New("certificate not found")
 	ErrCRLPublicationNotFound        = errors.New("crl publication not found")
 	ErrOutboxMessageNotFound         = errors.New("outbox message not found")
+	ErrWebhookDeliveryNotFound       = errors.New("webhook delivery not found")
 	ErrAPIKeyNotFound                = errors.New("api key not found")
 	ErrACMEAccountNotFound           = errors.New("acme account not found")
 	ErrACMEAccountDeactivated        = errors.New("acme account deactivated")

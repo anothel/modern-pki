@@ -12,44 +12,46 @@ import (
 type MemoryStore struct {
 	mu sync.RWMutex
 
-	identities     map[string]domain.Identity
-	issuers        map[string]domain.Issuer
-	ocspResponders map[string]domain.OCSPResponder
-	notifications  map[string]domain.NotificationEndpoint
-	profiles       map[string]domain.CertificateProfile
-	enrollments    map[string]domain.Enrollment
-	certificates   map[string]domain.Certificate
-	revocations    map[string]domain.Revocation
-	crls           map[string]domain.CRLPublication
-	auditEvents    []domain.AuditEvent
-	outbox         map[string]domain.OutboxMessage
-	jobAttempts    map[string]domain.JobAttempt
-	apiKeys        map[string]domain.APIKey
-	acmeAccounts   map[string]domain.ACMEAccount
-	acmeOrders     map[string]domain.ACMEOrder
-	acmeAuthzs     map[string]domain.ACMEAuthorization
-	acmeChallenges map[string]domain.ACMEChallenge
+	identities        map[string]domain.Identity
+	issuers           map[string]domain.Issuer
+	ocspResponders    map[string]domain.OCSPResponder
+	notifications     map[string]domain.NotificationEndpoint
+	profiles          map[string]domain.CertificateProfile
+	enrollments       map[string]domain.Enrollment
+	certificates      map[string]domain.Certificate
+	revocations       map[string]domain.Revocation
+	crls              map[string]domain.CRLPublication
+	auditEvents       []domain.AuditEvent
+	outbox            map[string]domain.OutboxMessage
+	jobAttempts       map[string]domain.JobAttempt
+	webhookDeliveries map[string]domain.WebhookDelivery
+	apiKeys           map[string]domain.APIKey
+	acmeAccounts      map[string]domain.ACMEAccount
+	acmeOrders        map[string]domain.ACMEOrder
+	acmeAuthzs        map[string]domain.ACMEAuthorization
+	acmeChallenges    map[string]domain.ACMEChallenge
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		identities:     make(map[string]domain.Identity),
-		issuers:        make(map[string]domain.Issuer),
-		ocspResponders: make(map[string]domain.OCSPResponder),
-		notifications:  make(map[string]domain.NotificationEndpoint),
-		profiles:       make(map[string]domain.CertificateProfile),
-		enrollments:    make(map[string]domain.Enrollment),
-		certificates:   make(map[string]domain.Certificate),
-		revocations:    make(map[string]domain.Revocation),
-		crls:           make(map[string]domain.CRLPublication),
-		auditEvents:    make([]domain.AuditEvent, 0),
-		outbox:         make(map[string]domain.OutboxMessage),
-		jobAttempts:    make(map[string]domain.JobAttempt),
-		apiKeys:        make(map[string]domain.APIKey),
-		acmeAccounts:   make(map[string]domain.ACMEAccount),
-		acmeOrders:     make(map[string]domain.ACMEOrder),
-		acmeAuthzs:     make(map[string]domain.ACMEAuthorization),
-		acmeChallenges: make(map[string]domain.ACMEChallenge),
+		identities:        make(map[string]domain.Identity),
+		issuers:           make(map[string]domain.Issuer),
+		ocspResponders:    make(map[string]domain.OCSPResponder),
+		notifications:     make(map[string]domain.NotificationEndpoint),
+		profiles:          make(map[string]domain.CertificateProfile),
+		enrollments:       make(map[string]domain.Enrollment),
+		certificates:      make(map[string]domain.Certificate),
+		revocations:       make(map[string]domain.Revocation),
+		crls:              make(map[string]domain.CRLPublication),
+		auditEvents:       make([]domain.AuditEvent, 0),
+		outbox:            make(map[string]domain.OutboxMessage),
+		jobAttempts:       make(map[string]domain.JobAttempt),
+		webhookDeliveries: make(map[string]domain.WebhookDelivery),
+		apiKeys:           make(map[string]domain.APIKey),
+		acmeAccounts:      make(map[string]domain.ACMEAccount),
+		acmeOrders:        make(map[string]domain.ACMEOrder),
+		acmeAuthzs:        make(map[string]domain.ACMEAuthorization),
+		acmeChallenges:    make(map[string]domain.ACMEChallenge),
 	}
 }
 
@@ -58,23 +60,24 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	defer s.mu.Unlock()
 
 	tx := &memoryTx{
-		identities:     cloneIdentities(s.identities),
-		issuers:        cloneIssuers(s.issuers),
-		ocspResponders: cloneOCSPResponders(s.ocspResponders),
-		notifications:  cloneNotificationEndpoints(s.notifications),
-		profiles:       cloneCertificateProfiles(s.profiles),
-		enrollments:    cloneEnrollments(s.enrollments),
-		certificates:   cloneCertificates(s.certificates),
-		revocations:    cloneRevocations(s.revocations),
-		crls:           cloneCRLPublications(s.crls),
-		auditEvents:    cloneAuditEvents(s.auditEvents),
-		outbox:         cloneOutboxMessages(s.outbox),
-		jobAttempts:    cloneJobAttempts(s.jobAttempts),
-		apiKeys:        cloneAPIKeys(s.apiKeys),
-		acmeAccounts:   cloneACMEAccounts(s.acmeAccounts),
-		acmeOrders:     cloneACMEOrders(s.acmeOrders),
-		acmeAuthzs:     cloneACMEAuthorizations(s.acmeAuthzs),
-		acmeChallenges: cloneACMEChallenges(s.acmeChallenges),
+		identities:        cloneIdentities(s.identities),
+		issuers:           cloneIssuers(s.issuers),
+		ocspResponders:    cloneOCSPResponders(s.ocspResponders),
+		notifications:     cloneNotificationEndpoints(s.notifications),
+		profiles:          cloneCertificateProfiles(s.profiles),
+		enrollments:       cloneEnrollments(s.enrollments),
+		certificates:      cloneCertificates(s.certificates),
+		revocations:       cloneRevocations(s.revocations),
+		crls:              cloneCRLPublications(s.crls),
+		auditEvents:       cloneAuditEvents(s.auditEvents),
+		outbox:            cloneOutboxMessages(s.outbox),
+		jobAttempts:       cloneJobAttempts(s.jobAttempts),
+		webhookDeliveries: cloneWebhookDeliveries(s.webhookDeliveries),
+		apiKeys:           cloneAPIKeys(s.apiKeys),
+		acmeAccounts:      cloneACMEAccounts(s.acmeAccounts),
+		acmeOrders:        cloneACMEOrders(s.acmeOrders),
+		acmeAuthzs:        cloneACMEAuthorizations(s.acmeAuthzs),
+		acmeChallenges:    cloneACMEChallenges(s.acmeChallenges),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -92,6 +95,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.auditEvents = tx.auditEvents
 	s.outbox = tx.outbox
 	s.jobAttempts = tx.jobAttempts
+	s.webhookDeliveries = tx.webhookDeliveries
 	s.apiKeys = tx.apiKeys
 	s.acmeAccounts = tx.acmeAccounts
 	s.acmeOrders = tx.acmeOrders
@@ -509,6 +513,21 @@ func (s *MemoryStore) ListJobAttemptsByOutboxMessage(ctx context.Context, outbox
 	defer s.mu.RUnlock()
 
 	return listJobAttemptsByOutboxMessage(s.jobAttempts, outboxMessageID), nil
+}
+
+func (s *MemoryStore) GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return getWebhookDelivery(s.webhookDeliveries, outboxMessageID, endpointID)
+}
+
+func (s *MemoryStore) UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.webhookDeliveries[webhookDeliveryKey(delivery.OutboxMessageID, delivery.EndpointID)] = delivery
+	return nil
 }
 
 func (s *MemoryStore) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
@@ -1069,23 +1088,24 @@ func listACMEChallengesByAuthorization(challenges map[string]domain.ACMEChalleng
 }
 
 type memoryTx struct {
-	identities     map[string]domain.Identity
-	issuers        map[string]domain.Issuer
-	ocspResponders map[string]domain.OCSPResponder
-	notifications  map[string]domain.NotificationEndpoint
-	profiles       map[string]domain.CertificateProfile
-	enrollments    map[string]domain.Enrollment
-	certificates   map[string]domain.Certificate
-	revocations    map[string]domain.Revocation
-	crls           map[string]domain.CRLPublication
-	auditEvents    []domain.AuditEvent
-	outbox         map[string]domain.OutboxMessage
-	jobAttempts    map[string]domain.JobAttempt
-	apiKeys        map[string]domain.APIKey
-	acmeAccounts   map[string]domain.ACMEAccount
-	acmeOrders     map[string]domain.ACMEOrder
-	acmeAuthzs     map[string]domain.ACMEAuthorization
-	acmeChallenges map[string]domain.ACMEChallenge
+	identities        map[string]domain.Identity
+	issuers           map[string]domain.Issuer
+	ocspResponders    map[string]domain.OCSPResponder
+	notifications     map[string]domain.NotificationEndpoint
+	profiles          map[string]domain.CertificateProfile
+	enrollments       map[string]domain.Enrollment
+	certificates      map[string]domain.Certificate
+	revocations       map[string]domain.Revocation
+	crls              map[string]domain.CRLPublication
+	auditEvents       []domain.AuditEvent
+	outbox            map[string]domain.OutboxMessage
+	jobAttempts       map[string]domain.JobAttempt
+	webhookDeliveries map[string]domain.WebhookDelivery
+	apiKeys           map[string]domain.APIKey
+	acmeAccounts      map[string]domain.ACMEAccount
+	acmeOrders        map[string]domain.ACMEOrder
+	acmeAuthzs        map[string]domain.ACMEAuthorization
+	acmeChallenges    map[string]domain.ACMEChallenge
 }
 
 func (tx *memoryTx) WithinTx(ctx context.Context, fn func(Repository) error) error {
@@ -1363,6 +1383,15 @@ func (tx *memoryTx) CreateJobAttempt(ctx context.Context, attempt domain.JobAtte
 
 func (tx *memoryTx) ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error) {
 	return listJobAttemptsByOutboxMessage(tx.jobAttempts, outboxMessageID), nil
+}
+
+func (tx *memoryTx) GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error) {
+	return getWebhookDelivery(tx.webhookDeliveries, outboxMessageID, endpointID)
+}
+
+func (tx *memoryTx) UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error {
+	tx.webhookDeliveries[webhookDeliveryKey(delivery.OutboxMessageID, delivery.EndpointID)] = delivery
+	return nil
 }
 
 func (tx *memoryTx) CreateAPIKey(ctx context.Context, key domain.APIKey) error {
@@ -1703,6 +1732,26 @@ func cloneJobAttempts(src map[string]domain.JobAttempt) map[string]domain.JobAtt
 	dst := make(map[string]domain.JobAttempt, len(src))
 	for id, attempt := range src {
 		dst[id] = attempt
+	}
+	return dst
+}
+
+func getWebhookDelivery(deliveries map[string]domain.WebhookDelivery, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error) {
+	delivery, ok := deliveries[webhookDeliveryKey(outboxMessageID, endpointID)]
+	if !ok {
+		return domain.WebhookDelivery{}, domain.ErrWebhookDeliveryNotFound
+	}
+	return delivery, nil
+}
+
+func webhookDeliveryKey(outboxMessageID string, endpointID string) string {
+	return outboxMessageID + "\x00" + endpointID
+}
+
+func cloneWebhookDeliveries(src map[string]domain.WebhookDelivery) map[string]domain.WebhookDelivery {
+	dst := make(map[string]domain.WebhookDelivery, len(src))
+	for id, delivery := range src {
+		dst[id] = delivery
 	}
 	return dst
 }

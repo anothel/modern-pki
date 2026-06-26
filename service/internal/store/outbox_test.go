@@ -92,6 +92,23 @@ func TestSQLStoreOutboxLeaseRecovery(t *testing.T) {
 	testOutboxLeaseRecovery(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreWebhookDeliveryTracking(t *testing.T) {
+	testWebhookDeliveryTracking(t, NewMemoryStore())
+}
+
+func TestSQLStoreWebhookDeliveryTracking(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testWebhookDeliveryTracking(t, NewSQLStore(db))
+}
+
 func TestSQLStoreOCSPResponders(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -401,6 +418,50 @@ func testOutboxRetryMetadata(t *testing.T, repo Repository) {
 	}
 	if len(dead) != 1 || dead[0].ID != message.ID || dead[0].AttemptCount != 5 || dead[0].LastError != "max attempts exceeded" {
 		t.Fatalf("dead letter messages = %#v", dead)
+	}
+}
+
+func testWebhookDeliveryTracking(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	delivery := domain.WebhookDelivery{
+		OutboxMessageID: "outbox-1",
+		EndpointID:      "endpoint-1",
+		Status:          domain.JobAttemptFailed,
+		AttemptCount:    1,
+		LastError:       "500",
+		LastAttemptedAt: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if _, err := repo.GetWebhookDelivery(ctx, delivery.OutboxMessageID, delivery.EndpointID); !errors.Is(err, domain.ErrWebhookDeliveryNotFound) {
+		t.Fatalf("missing GetWebhookDelivery error = %v, want ErrWebhookDeliveryNotFound", err)
+	}
+	if err := repo.UpsertWebhookDelivery(ctx, delivery); err != nil {
+		t.Fatalf("UpsertWebhookDelivery insert returned error: %v", err)
+	}
+	stored, err := repo.GetWebhookDelivery(ctx, delivery.OutboxMessageID, delivery.EndpointID)
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery returned error: %v", err)
+	}
+	if stored.Status != domain.JobAttemptFailed || stored.AttemptCount != 1 || stored.LastError != "500" {
+		t.Fatalf("stored delivery = %#v", stored)
+	}
+	delivery.Status = domain.JobAttemptSucceeded
+	delivery.AttemptCount = 2
+	delivery.LastError = ""
+	delivery.LastAttemptedAt = now.Add(time.Minute)
+	delivery.UpdatedAt = now.Add(time.Minute)
+	if err := repo.UpsertWebhookDelivery(ctx, delivery); err != nil {
+		t.Fatalf("UpsertWebhookDelivery update returned error: %v", err)
+	}
+	updated, err := repo.GetWebhookDelivery(ctx, delivery.OutboxMessageID, delivery.EndpointID)
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery after update returned error: %v", err)
+	}
+	if updated.Status != domain.JobAttemptSucceeded || updated.AttemptCount != 2 || updated.LastError != "" || !updated.CreatedAt.Equal(now) {
+		t.Fatalf("updated delivery = %#v", updated)
 	}
 }
 
