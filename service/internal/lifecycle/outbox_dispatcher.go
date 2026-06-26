@@ -2,7 +2,9 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
@@ -80,7 +82,7 @@ func (d *OutboxDispatcher) RunOnce(ctx context.Context, limit int) (int, error) 
 				nextStatus = domain.OutboxDeadLetter
 			} else {
 				nextStatus = domain.OutboxPending
-				claimed.AvailableAt = finishedAt.Add(outboxRetryDelayForAttempt(claimed.AttemptCount))
+				claimed.AvailableAt = finishedAt.Add(outboxRetryDelayForMessage(claimed))
 			}
 		} else {
 			claimed.LastError = ""
@@ -118,6 +120,20 @@ func outboxRetryDelayForAttempt(attemptCount int) time.Duration {
 		index = len(outboxRetryDelays) - 1
 	}
 	return outboxRetryDelays[index]
+}
+
+func outboxRetryDelayForMessage(message domain.OutboxMessage) time.Duration {
+	base := outboxRetryDelayForAttempt(message.AttemptCount)
+	jitterMax := base / 10
+	if jitterMax <= 0 {
+		return base
+	}
+	hash := fnv.New64a()
+	var attempt [8]byte
+	binary.LittleEndian.PutUint64(attempt[:], uint64(message.AttemptCount))
+	_, _ = hash.Write([]byte(message.ID))
+	_, _ = hash.Write(attempt[:])
+	return base + time.Duration(hash.Sum64()%uint64(jitterMax+1))
 }
 
 func (d *OutboxDispatcher) claim(ctx context.Context, message domain.OutboxMessage) (domain.OutboxMessage, bool, error) {

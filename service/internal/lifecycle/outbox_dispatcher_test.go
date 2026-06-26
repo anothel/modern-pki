@@ -101,7 +101,9 @@ func TestOutboxDispatcherRecordsFailure(t *testing.T) {
 	if len(attempts) != 1 || attempts[0].Status != domain.JobAttemptFailed || attempts[0].Error != "notify failed" {
 		t.Fatalf("attempts = %#v, want one failed attempt", attempts)
 	}
-	retryDelay := outboxRetryDelayForAttempt(1)
+	failed := message
+	failed.AttemptCount = 1
+	retryDelay := outboxRetryDelayForMessage(failed)
 	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(retryDelay), 10)
 	if err != nil {
 		t.Fatalf("ListDueOutboxMessages retry returned error: %v", err)
@@ -146,7 +148,9 @@ func TestOutboxDispatcherUsesCappedBackoff(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
-	retryDelay := outboxRetryDelayForAttempt(3)
+	failed := message
+	failed.AttemptCount = 3
+	retryDelay := outboxRetryDelayForMessage(failed)
 	retryDue, err := repo.ListDueOutboxMessages(ctx, clock.now.Add(retryDelay), 10)
 	if err != nil {
 		t.Fatalf("ListDueOutboxMessages retry returned error: %v", err)
@@ -156,6 +160,53 @@ func TestOutboxDispatcherUsesCappedBackoff(t *testing.T) {
 	}
 	if !retryDue[0].AvailableAt.Equal(clock.now.Add(retryDelay)) {
 		t.Fatalf("retry available_at = %s, want %s", retryDue[0].AvailableAt, clock.now.Add(retryDelay))
+	}
+}
+
+func TestOutboxDispatcherJittersRetryBackoff(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	for _, id := range []string{"outbox-a", "outbox-b"} {
+		if err := repo.CreateOutboxMessage(ctx, domain.OutboxMessage{
+			ID:          id,
+			Type:        "certificate.expiring",
+			PayloadJSON: `{"certificate_id":"cert-1"}`,
+			Status:      domain.OutboxPending,
+			AvailableAt: clock.now.Add(-time.Minute),
+			CreatedAt:   clock.now.Add(-time.Minute),
+			UpdatedAt:   clock.now.Add(-time.Minute),
+		}); err != nil {
+			t.Fatalf("CreateOutboxMessage(%s) returned error: %v", id, err)
+		}
+	}
+	dispatcher := NewOutboxDispatcher(repo, OutboxHandlerFunc(func(ctx context.Context, message domain.OutboxMessage) error {
+		return errors.New("notify failed")
+	}), clock, &fakeIDGenerator{})
+
+	processed, err := dispatcher.RunOnce(ctx, 10)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if processed != 2 {
+		t.Fatalf("processed = %d, want 2", processed)
+	}
+	messages, err := repo.ListOutboxMessages(ctx, domain.OutboxPending)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages returned error: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("pending messages = %#v, want 2", messages)
+	}
+	base := clock.now.Add(outboxRetryDelayForAttempt(1))
+	max := base.Add(outboxRetryDelayForAttempt(1) / 10)
+	if messages[0].AvailableAt.Equal(messages[1].AvailableAt) {
+		t.Fatalf("retry available_at values were not jittered: %s", messages[0].AvailableAt)
+	}
+	for _, message := range messages {
+		if message.AvailableAt.Before(base) || message.AvailableAt.After(max) {
+			t.Fatalf("message %s available_at = %s, want within [%s, %s]", message.ID, message.AvailableAt, base, max)
+		}
 	}
 }
 

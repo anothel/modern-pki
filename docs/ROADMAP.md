@@ -18,16 +18,12 @@ Only future work belongs here.
 
 ### Webhook And Outbox Safety
 
-- Add processing leases and lock expiry recovery.
 - Decide and implement endpoint-level webhook delivery tracking if message-level status is not enough.
-- Add retry jitter.
 - Add webhook receiver runbook with timestamp skew, replay cache, and signature verification examples.
 - Define webhook payload schema versioning.
 
 ### Readiness And Operations
 
-- Expand `/readyz` beyond DB ping where useful: core CLI reachability and key reference access.
-- Add readiness tests that do not expose secret values in failure bodies.
 - Add request ID format/length policy if external request IDs become operator-visible search keys.
 
 ## P1: ACME Security And Compatibility

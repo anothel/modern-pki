@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
+	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/httpapi"
 	"github.com/modern-pki/modern-pki/service/internal/lifecycle"
 	"github.com/modern-pki/modern-pki/service/internal/store"
@@ -195,13 +197,25 @@ func main() {
 		Commit:    serviceCommit,
 		BuildTime: serviceBuildTime,
 		StartedAt: startedAt,
-		Ready:     newDatabaseReadinessCheck(db, dbDriver),
+		Ready:     newServiceReadinessCheck(db, dbDriver, repo, coreBin),
 	})
 
 	log.Printf("modern-pki service listening on %s", addr)
 	httpServer := newHTTPServer(addr, handler)
 	if err := runServerUntilShutdown(rootCtx, httpServer.ListenAndServe, httpServer.Shutdown, defaultShutdownTimeout, log.Printf); err != nil {
 		log.Fatalf("serve HTTP: %v", err)
+	}
+}
+
+func newServiceReadinessCheck(db *sql.DB, driver string, repo store.Repository, coreBin string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := newDatabaseReadinessCheck(db, driver)(ctx); err != nil {
+			return err
+		}
+		if err := checkCoreCLI(coreBin); err != nil {
+			return err
+		}
+		return checkActiveKeyRefs(ctx, repo)
 	}
 }
 
@@ -214,6 +228,61 @@ func newDatabaseReadinessCheck(db *sql.DB, driver string) func(context.Context) 
 		}
 		return store.CheckInitialMigration(readyCtx, db, driver)
 	}
+}
+
+func checkCoreCLI(bin string) error {
+	if strings.TrimSpace(bin) == "" {
+		bin = defaultCoreBin
+	}
+	if strings.ContainsAny(bin, `/\`) || filepath.IsAbs(bin) {
+		if _, err := os.Stat(bin); err != nil {
+			return fmt.Errorf("core CLI unavailable: %w", err)
+		}
+		return nil
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Errorf("core CLI unavailable: %w", err)
+	}
+	return nil
+}
+
+func checkActiveKeyRefs(ctx context.Context, repo store.Repository) error {
+	issuers, err := repo.ListIssuers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, issuer := range issuers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if issuer.Status != domain.IssuerActive {
+			continue
+		}
+		if err := checkReadableKeyRef(issuer.KeyRef); err != nil {
+			return fmt.Errorf("issuer key ref unavailable: %w", err)
+		}
+		responders, err := repo.ListOCSPRespondersByIssuer(ctx, issuer.ID)
+		if err != nil {
+			return err
+		}
+		for _, responder := range responders {
+			if responder.Status != domain.OCSPResponderActive {
+				continue
+			}
+			if err := checkReadableKeyRef(responder.KeyRef); err != nil {
+				return fmt.Errorf("ocsp responder key ref unavailable: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func checkReadableKeyRef(keyRef string) error {
+	file, err := os.Open(keyRef)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func runServerUntilShutdown(ctx context.Context, serve func() error, shutdown func(context.Context) error, timeout time.Duration, logf func(string, ...any)) error {

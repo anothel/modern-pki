@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/httpapi"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
@@ -393,7 +394,7 @@ func TestOperationalHandlerExposesHealthReadyAndVersion(t *testing.T) {
 func TestOperationalHandlerReadinessFailureReturnsServiceUnavailable(t *testing.T) {
 	handler := newOperationalHandler(http.NotFoundHandler(), operationalConfig{
 		Version:   "test-version",
-		Ready:     func(context.Context) error { return errors.New("db unavailable") },
+		Ready:     func(context.Context) error { return errors.New("db unavailable: secret-key-ref") },
 		StartedAt: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
 	})
 
@@ -403,8 +404,81 @@ func TestOperationalHandlerReadinessFailureReturnsServiceUnavailable(t *testing.
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("/readyz status = %d, want 503 body=%s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "db unavailable") {
+	if strings.Contains(rec.Body.String(), "db unavailable") || strings.Contains(rec.Body.String(), "secret-key-ref") {
 		t.Fatalf("/readyz leaked readiness error detail: %s", rec.Body.String())
+	}
+}
+
+func TestServiceReadinessCheckRejectsMissingCoreCLI(t *testing.T) {
+	ctx := context.Background()
+	db, repo := newMigratedTestStore(t)
+
+	err := newServiceReadinessCheck(db, "sqlite", repo, filepath.Join(t.TempDir(), "missing-core"))(ctx)
+	if err == nil || !strings.Contains(err.Error(), "core CLI") {
+		t.Fatalf("readiness error = %v, want core CLI error", err)
+	}
+}
+
+func TestServiceReadinessCheckRejectsMissingActiveKeyRef(t *testing.T) {
+	ctx := context.Background()
+	db, repo := newMigratedTestStore(t)
+	coreBin := writeFakeCoreBinary(t)
+	missingKeyRef := filepath.Join(t.TempDir(), "missing-issuer.key")
+
+	if err := repo.CreateIssuer(ctx, domain.Issuer{
+		ID:             "issuer-1",
+		Name:           "issuer",
+		Kind:           domain.IssuerRootCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         missingKeyRef,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	err := newServiceReadinessCheck(db, "sqlite", repo, coreBin)(ctx)
+	if err == nil || !strings.Contains(err.Error(), "issuer key ref") {
+		t.Fatalf("readiness error = %v, want issuer key ref error", err)
+	}
+}
+
+func TestServiceReadinessCheckAcceptsActiveIssuerAndResponderKeyRefs(t *testing.T) {
+	ctx := context.Background()
+	db, repo := newMigratedTestStore(t)
+	coreBin := writeFakeCoreBinary(t)
+	now := time.Now()
+	issuerKeyRef := writeReadableKeyRef(t, "issuer.key")
+	responderKeyRef := writeReadableKeyRef(t, "responder.key")
+
+	if err := repo.CreateIssuer(ctx, domain.Issuer{
+		ID:             "issuer-1",
+		Name:           "issuer",
+		Kind:           domain.IssuerRootCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         issuerKeyRef,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateOCSPResponder(ctx, domain.OCSPResponder{
+		ID:             "responder-1",
+		IssuerID:       "issuer-1",
+		Name:           "responder",
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: "responder-cert-pem",
+		KeyRef:         responderKeyRef,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+
+	if err := newServiceReadinessCheck(db, "sqlite", repo, coreBin)(ctx); err != nil {
+		t.Fatalf("readiness returned error: %v", err)
 	}
 }
 
@@ -427,6 +501,40 @@ func TestDatabaseReadinessCheckRejectsDirtyMigration(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Fatalf("readiness error = %v, want dirty migration", err)
 	}
+}
+
+func newMigratedTestStore(t *testing.T) (*sql.DB, store.Repository) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.ApplyInitialMigration(context.Background(), db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	return db, store.NewSQLStore(db)
+}
+
+func writeFakeCoreBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "modern-pki-core")
+	if err := os.WriteFile(path, []byte(""), 0600); err != nil {
+		t.Fatalf("write fake core binary: %v", err)
+	}
+	return path
+}
+
+func writeReadableKeyRef(t *testing.T, name string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("key"), 0600); err != nil {
+		t.Fatalf("write key ref: %v", err)
+	}
+	return path
 }
 
 func httptestResponseBody(t *testing.T, handler http.Handler, path string) string {
