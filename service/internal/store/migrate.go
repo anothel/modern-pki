@@ -62,6 +62,25 @@ func ApplyInitialMigration(ctx context.Context, db *sql.DB, driver string) error
 	return tx.Commit()
 }
 
+func CheckInitialMigration(ctx context.Context, db *sql.DB, driver string) error {
+	path, err := initialMigrationPath(driver)
+	if err != nil {
+		return err
+	}
+	sqlBytes, err := migrationFiles.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read initial migration: %w", err)
+	}
+	applied, err := checkSchemaMigration(ctx, db, initialMigrationVersion, migrationChecksum(sqlBytes))
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("schema migration version %d is not applied", initialMigrationVersion)
+	}
+	return nil
+}
+
 type migrationTx struct {
 	sqlExecutor
 	commit   func() error

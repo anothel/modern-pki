@@ -50,6 +50,9 @@ WHERE version = 1`).Scan(&checksum, &dirty, &appliedAt)
 	if appliedAt == "" {
 		t.Fatalf("applied_at is empty")
 	}
+	if err := CheckInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("CheckInitialMigration returned error: %v", err)
+	}
 
 	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
 		t.Fatalf("ApplyInitialMigration rerun returned error: %v", err)
@@ -151,6 +154,27 @@ func TestApplyInitialMigrationRejectsDirtyMigration(t *testing.T) {
 	err = ApplyInitialMigration(ctx, db, "sqlite")
 	if err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Fatalf("ApplyInitialMigration error = %v, want dirty migration", err)
+	}
+}
+
+func TestCheckInitialMigrationRejectsDirtyMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET dirty = 1 WHERE version = 1"); err != nil {
+		t.Fatalf("dirty schema_migrations row: %v", err)
+	}
+
+	err = CheckInitialMigration(ctx, db, "sqlite")
+	if err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("CheckInitialMigration error = %v, want dirty migration", err)
 	}
 }
 

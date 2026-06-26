@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/httpapi"
+	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
 func TestLoadOutboxConfigDefaults(t *testing.T) {
@@ -323,6 +325,27 @@ func TestOperationalHandlerReadinessFailureReturnsServiceUnavailable(t *testing.
 	}
 	if strings.Contains(rec.Body.String(), "db unavailable") {
 		t.Fatalf("/readyz leaked readiness error detail: %s", rec.Body.String())
+	}
+}
+
+func TestDatabaseReadinessCheckRejectsDirtyMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE schema_migrations SET dirty = 1 WHERE version = 1"); err != nil {
+		t.Fatalf("dirty schema_migrations row: %v", err)
+	}
+
+	err = newDatabaseReadinessCheck(db, "sqlite")(ctx)
+	if err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("readiness error = %v, want dirty migration", err)
 	}
 }
 

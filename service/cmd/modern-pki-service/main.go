@@ -195,17 +195,24 @@ func main() {
 		Commit:    serviceCommit,
 		BuildTime: serviceBuildTime,
 		StartedAt: startedAt,
-		Ready: func(ctx context.Context) error {
-			readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			defer cancel()
-			return db.PingContext(readyCtx)
-		},
+		Ready:     newDatabaseReadinessCheck(db, dbDriver),
 	})
 
 	log.Printf("modern-pki service listening on %s", addr)
 	httpServer := newHTTPServer(addr, handler)
 	if err := runServerUntilShutdown(rootCtx, httpServer.ListenAndServe, httpServer.Shutdown, defaultShutdownTimeout, log.Printf); err != nil {
 		log.Fatalf("serve HTTP: %v", err)
+	}
+}
+
+func newDatabaseReadinessCheck(db *sql.DB, driver string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(readyCtx); err != nil {
+			return err
+		}
+		return store.CheckInitialMigration(readyCtx, db, driver)
 	}
 }
 
