@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,6 +102,84 @@ func TestRunServerUntilShutdownReturnsServeError(t *testing.T) {
 	}, time.Second, nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runServerUntilShutdown error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestHTTPServerShutdownWaitsForInFlightRequest(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+
+	server := newHTTPServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(listener)
+	}()
+
+	responseDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + listener.Addr().String())
+		if err != nil {
+			responseDone <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			responseDone <- fmt.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+			return
+		}
+		responseDone <- nil
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for in-flight request")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- server.Shutdown(shutdownCtx)
+	}()
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before in-flight request completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseRequest)
+	select {
+	case err := <-responseDone:
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	select {
+	case err := <-serveDone:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("Serve returned %v, want http.ErrServerClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Serve")
 	}
 }
 

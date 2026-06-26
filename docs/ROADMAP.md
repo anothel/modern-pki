@@ -28,7 +28,6 @@ Only future work belongs here.
 
 - Expand `/readyz` beyond DB ping where useful: core CLI reachability and key reference access.
 - Add readiness tests that do not expose secret values in failure bodies.
-- Add shutdown coverage for in-flight HTTP requests and worker cleanup.
 - Add request ID format/length policy if external request IDs become operator-visible search keys.
 
 ## P1: ACME Security And Compatibility
