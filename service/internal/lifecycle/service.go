@@ -85,6 +85,7 @@ type Service struct {
 	apiKeyPepper       string
 	productionPolicy   bool
 	issueMu            sync.Mutex
+	pendingIssues      map[string]corecli.IssueResult
 }
 
 type AuditRequestMetadata struct {
@@ -290,6 +291,7 @@ func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer Cert
 		idgen:              idgen,
 		acmeHTTP01Verifier: verifier,
 		apiKeyPepper:       strings.TrimSpace(pepper),
+		pendingIssues:      make(map[string]corecli.IssueResult),
 	}
 }
 
@@ -1893,14 +1895,17 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if enrollment.Status == domain.EnrollmentIssued {
 		certificate, err := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
 		if err == nil {
+			delete(s.pendingIssues, enrollmentID)
 			return certificate, nil
 		}
 		if !errors.Is(err, domain.ErrCertificateNotFound) {
 			return domain.Certificate{}, err
 		}
+		delete(s.pendingIssues, enrollmentID)
 		return domain.Certificate{}, domain.ErrInvalidTransition
 	}
 	if enrollment.Status != domain.EnrollmentApproved {
+		delete(s.pendingIssues, enrollmentID)
 		return domain.Certificate{}, domain.ErrInvalidTransition
 	}
 
@@ -1927,30 +1932,34 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err := validateEnrollmentIdentityPolicy(enrollmentProfilePolicyRequest(enrollment), identity); err != nil {
 		return domain.Certificate{}, err
 	}
-	// MVP limit: signing precedes DB commit; conditional finalization below prevents stale issuers from persisting duplicates.
-	result, err := s.issuer.Issue(ctx, corecli.IssueRequest{
-		CSRPEM:                     enrollment.CSRPEM,
-		IssuerCertificatePEM:       issuer.CertificatePEM,
-		IssuerKeyRef:               issuer.KeyRef,
-		Subject:                    enrollment.RequestedSubject,
-		DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
-		IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
-		NotBefore:                  now,
-		NotAfter:                   enrollment.RequestedNotAfter,
-		SignatureAlgorithm:         "ecdsa_with_sha256",
-		ProfileID:                  profile.ID,
-		BasicConstraintsCritical:   profile.BasicConstraints.Critical,
-		BasicConstraintsCA:         profile.BasicConstraints.CA,
-		BasicConstraintsMaxPathLen: profile.BasicConstraints.MaxPathLen,
-		KeyUsageCritical:           profile.KeyUsage.Critical,
-		KeyUsage:                   append([]string(nil), profile.KeyUsage.Values...),
-		ExtendedKeyUsageCritical:   profile.ExtendedKeyUsage.Critical,
-		ExtendedKeyUsage:           append([]string(nil), profile.ExtendedKeyUsage.Values...),
-		SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
-		AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
-	})
-	if err != nil {
-		return domain.Certificate{}, mapIssueError(err)
+	// ponytail: in-memory signed material cache; persist signed material if process-crash recovery becomes required.
+	result, hasPendingIssue := s.pendingIssues[enrollmentID]
+	if !hasPendingIssue {
+		result, err = s.issuer.Issue(ctx, corecli.IssueRequest{
+			CSRPEM:                     enrollment.CSRPEM,
+			IssuerCertificatePEM:       issuer.CertificatePEM,
+			IssuerKeyRef:               issuer.KeyRef,
+			Subject:                    enrollment.RequestedSubject,
+			DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
+			IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
+			NotBefore:                  now,
+			NotAfter:                   enrollment.RequestedNotAfter,
+			SignatureAlgorithm:         "ecdsa_with_sha256",
+			ProfileID:                  profile.ID,
+			BasicConstraintsCritical:   profile.BasicConstraints.Critical,
+			BasicConstraintsCA:         profile.BasicConstraints.CA,
+			BasicConstraintsMaxPathLen: profile.BasicConstraints.MaxPathLen,
+			KeyUsageCritical:           profile.KeyUsage.Critical,
+			KeyUsage:                   append([]string(nil), profile.KeyUsage.Values...),
+			ExtendedKeyUsageCritical:   profile.ExtendedKeyUsage.Critical,
+			ExtendedKeyUsage:           append([]string(nil), profile.ExtendedKeyUsage.Values...),
+			SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
+			AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
+		})
+		if err != nil {
+			return domain.Certificate{}, mapIssueError(err)
+		}
+		s.pendingIssues[enrollmentID] = result
 	}
 
 	var certificate domain.Certificate
@@ -1992,6 +2001,22 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			return err
 		}
 
+		return nil
+	}); err != nil {
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			existing, lookupErr := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
+			if lookupErr == nil {
+				delete(s.pendingIssues, enrollmentID)
+				return existing, nil
+			}
+			if !errors.Is(lookupErr, domain.ErrCertificateNotFound) {
+				return domain.Certificate{}, lookupErr
+			}
+		}
+		return domain.Certificate{}, err
+	}
+	delete(s.pendingIssues, enrollmentID)
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
 		return s.createAuditEvent(ctx, repo, actor, "certificate.issued", "certificate", certificate.ID, now, auditFields(
 			"identity_id", certificate.IdentityID,
 			"issuer_id", certificate.IssuerID,
@@ -2001,15 +2026,6 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			"profile_id", certificate.CertificateProfileID,
 		))
 	}); err != nil {
-		if errors.Is(err, domain.ErrInvalidTransition) {
-			existing, lookupErr := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
-			if lookupErr == nil {
-				return existing, nil
-			}
-			if !errors.Is(lookupErr, domain.ErrCertificateNotFound) {
-				return domain.Certificate{}, lookupErr
-			}
-		}
 		return domain.Certificate{}, err
 	}
 	return certificate, nil

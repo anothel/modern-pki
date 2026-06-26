@@ -3632,13 +3632,15 @@ func expirationLifecycleCertificate(id string, status domain.CertificateStatus, 
 	}
 }
 
-func TestIssueCertificateRollsBackWhenAuditFails(t *testing.T) {
+func TestIssueCertificateKeepsIssuedStateWhenAuditFails(t *testing.T) {
 	ctx := context.Background()
-	repo := store.NewMemoryStore()
+	baseRepo := store.NewMemoryStore()
 	errAudit := errors.New("audit failed")
+	repo := &failAuditRepository{Repository: baseRepo, action: "certificate.issued", err: errAudit}
+	issuerClient := &fakeIssuer{}
 	service := New(
-		&failAuditRepository{Repository: repo, action: "certificate.issued", err: errAudit},
-		&fakeIssuer{},
+		repo,
+		issuerClient,
 		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
 		&fakeIDGenerator{},
 	)
@@ -3653,19 +3655,69 @@ func TestIssueCertificateRollsBackWhenAuditFails(t *testing.T) {
 		t.Fatalf("IssueCertificate error = %v, want audit error", err)
 	}
 
-	certificates, err := repo.ListCertificates(ctx)
+	certificates, err := baseRepo.ListCertificates(ctx)
 	if err != nil {
 		t.Fatalf("ListCertificates returned error: %v", err)
 	}
-	if len(certificates) != 0 {
-		t.Fatalf("certificate count = %d, want 0", len(certificates))
+	if len(certificates) != 1 {
+		t.Fatalf("certificate count = %d, want 1", len(certificates))
 	}
-	storedEnrollment, err := repo.GetEnrollment(ctx, enrollment.ID)
+	storedEnrollment, err := baseRepo.GetEnrollment(ctx, enrollment.ID)
 	if err != nil {
 		t.Fatalf("GetEnrollment returned error: %v", err)
 	}
-	if storedEnrollment.Status != domain.EnrollmentApproved {
-		t.Fatalf("enrollment status = %q, want %q", storedEnrollment.Status, domain.EnrollmentApproved)
+	if storedEnrollment.Status != domain.EnrollmentIssued {
+		t.Fatalf("enrollment status = %q, want %q", storedEnrollment.Status, domain.EnrollmentIssued)
+	}
+
+	repo.err = nil
+	retry, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate retry returned error: %v", err)
+	}
+	if retry.ID != certificates[0].ID {
+		t.Fatalf("retry certificate ID = %q, want %q", retry.ID, certificates[0].ID)
+	}
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count after retry = %d, want 1", len(issuerClient.requests))
+	}
+}
+
+func TestIssueCertificateReusesSignedResultAfterFinalizationFailure(t *testing.T) {
+	ctx := context.Background()
+	baseRepo := store.NewMemoryStore()
+	errFinalize := errors.New("finalization failed")
+	repo := &failCreateCertificateOnceRepository{Repository: baseRepo, err: errFinalize}
+	issuerClient := &fakeIssuer{}
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, service)
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	_, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if !errors.Is(err, errFinalize) {
+		t.Fatalf("IssueCertificate error = %v, want finalization error", err)
+	}
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count after failed finalization = %d, want 1", len(issuerClient.requests))
+	}
+
+	certificate, err := service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate retry returned error: %v", err)
+	}
+	if certificate.CertificatePEM != "issued:csr-pem" {
+		t.Fatalf("CertificatePEM = %q, want %q", certificate.CertificatePEM, "issued:csr-pem")
+	}
+	if len(issuerClient.requests) != 1 {
+		t.Fatalf("issuer request count after retry = %d, want 1", len(issuerClient.requests))
 	}
 }
 
@@ -4407,6 +4459,34 @@ func (r *failAuditRepository) CreateAuditEvent(ctx context.Context, event domain
 		return r.err
 	}
 	return r.Repository.CreateAuditEvent(ctx, event)
+}
+
+type failCreateCertificateOnceRepository struct {
+	store.Repository
+	err    error
+	failed bool
+}
+
+func (r *failCreateCertificateOnceRepository) WithinTx(ctx context.Context, fn func(store.Repository) error) error {
+	return r.Repository.WithinTx(ctx, func(tx store.Repository) error {
+		return fn(&failCreateCertificateOnceTx{
+			Repository: tx,
+			parent:     r,
+		})
+	})
+}
+
+type failCreateCertificateOnceTx struct {
+	store.Repository
+	parent *failCreateCertificateOnceRepository
+}
+
+func (tx *failCreateCertificateOnceTx) CreateCertificate(ctx context.Context, certificate domain.Certificate) error {
+	if !tx.parent.failed {
+		tx.parent.failed = true
+		return tx.parent.err
+	}
+	return tx.Repository.CreateCertificate(ctx, certificate)
 }
 
 type staleTransitionRepository struct {
