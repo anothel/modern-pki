@@ -19,6 +19,7 @@ type MemoryStore struct {
 	profiles          map[string]domain.CertificateProfile
 	enrollments       map[string]domain.Enrollment
 	certificates      map[string]domain.Certificate
+	issuanceAttempts  map[string]domain.IssuanceAttempt
 	revocations       map[string]domain.Revocation
 	crls              map[string]domain.CRLPublication
 	auditEvents       []domain.AuditEvent
@@ -41,6 +42,7 @@ func NewMemoryStore() *MemoryStore {
 		profiles:          make(map[string]domain.CertificateProfile),
 		enrollments:       make(map[string]domain.Enrollment),
 		certificates:      make(map[string]domain.Certificate),
+		issuanceAttempts:  make(map[string]domain.IssuanceAttempt),
 		revocations:       make(map[string]domain.Revocation),
 		crls:              make(map[string]domain.CRLPublication),
 		auditEvents:       make([]domain.AuditEvent, 0),
@@ -67,6 +69,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 		profiles:          cloneCertificateProfiles(s.profiles),
 		enrollments:       cloneEnrollments(s.enrollments),
 		certificates:      cloneCertificates(s.certificates),
+		issuanceAttempts:  cloneIssuanceAttempts(s.issuanceAttempts),
 		revocations:       cloneRevocations(s.revocations),
 		crls:              cloneCRLPublications(s.crls),
 		auditEvents:       cloneAuditEvents(s.auditEvents),
@@ -90,6 +93,7 @@ func (s *MemoryStore) WithinTx(ctx context.Context, fn func(Repository) error) e
 	s.profiles = tx.profiles
 	s.enrollments = tx.enrollments
 	s.certificates = tx.certificates
+	s.issuanceAttempts = tx.issuanceAttempts
 	s.revocations = tx.revocations
 	s.crls = tx.crls
 	s.auditEvents = tx.auditEvents
@@ -383,6 +387,27 @@ func (s *MemoryStore) UpdateCertificateIfStatus(ctx context.Context, certificate
 	defer s.mu.Unlock()
 
 	return updateCertificateIfStatus(s.certificates, certificate, currentStatus)
+}
+
+func (s *MemoryStore) CreateIssuanceAttempt(ctx context.Context, attempt domain.IssuanceAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return createIssuanceAttempt(s.issuanceAttempts, attempt)
+}
+
+func (s *MemoryStore) GetIssuanceAttempt(ctx context.Context, enrollmentID string) (domain.IssuanceAttempt, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return getIssuanceAttempt(s.issuanceAttempts, enrollmentID)
+}
+
+func (s *MemoryStore) UpdateIssuanceAttemptIfCurrent(ctx context.Context, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return updateIssuanceAttemptIfCurrent(s.issuanceAttempts, attempt, current)
 }
 
 func (s *MemoryStore) CreateRevocation(ctx context.Context, revocation domain.Revocation) error {
@@ -732,6 +757,10 @@ func copyCertificate(certificate domain.Certificate) domain.Certificate {
 	return certificate
 }
 
+func copyIssuanceAttempt(attempt domain.IssuanceAttempt) domain.IssuanceAttempt {
+	return attempt
+}
+
 func ensureCertificateFinalizationKeysAvailable(certificates map[string]domain.Certificate, certificate domain.Certificate) error {
 	for _, existing := range certificates {
 		if existing.ID == certificate.ID {
@@ -755,6 +784,22 @@ func certificateByEnrollmentID(certificates map[string]domain.Certificate, enrol
 		}
 	}
 	return domain.Certificate{}, domain.ErrCertificateNotFound
+}
+
+func createIssuanceAttempt(attempts map[string]domain.IssuanceAttempt, attempt domain.IssuanceAttempt) error {
+	if _, ok := attempts[attempt.EnrollmentID]; ok {
+		return domain.ErrInvalidTransition
+	}
+	attempts[attempt.EnrollmentID] = copyIssuanceAttempt(attempt)
+	return nil
+}
+
+func getIssuanceAttempt(attempts map[string]domain.IssuanceAttempt, enrollmentID string) (domain.IssuanceAttempt, error) {
+	attempt, ok := attempts[enrollmentID]
+	if !ok {
+		return domain.IssuanceAttempt{}, domain.ErrIssuanceAttemptNotFound
+	}
+	return copyIssuanceAttempt(attempt), nil
 }
 
 func copyNotificationEndpoint(endpoint domain.NotificationEndpoint) domain.NotificationEndpoint {
@@ -799,6 +844,20 @@ func updateCertificateIfStatus(certificates map[string]domain.Certificate, certi
 		return domain.ErrInvalidTransition
 	}
 	certificates[certificate.ID] = copyCertificate(certificate)
+	return nil
+}
+
+func updateIssuanceAttemptIfCurrent(attempts map[string]domain.IssuanceAttempt, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error {
+	stored, ok := attempts[attempt.EnrollmentID]
+	if !ok {
+		return domain.ErrIssuanceAttemptNotFound
+	}
+	if stored.Status != current.Status ||
+		!stored.LeaseExpiresAt.Equal(current.LeaseExpiresAt) ||
+		!stored.UpdatedAt.Equal(current.UpdatedAt) {
+		return domain.ErrInvalidTransition
+	}
+	attempts[attempt.EnrollmentID] = copyIssuanceAttempt(attempt)
 	return nil
 }
 
@@ -1095,6 +1154,7 @@ type memoryTx struct {
 	profiles          map[string]domain.CertificateProfile
 	enrollments       map[string]domain.Enrollment
 	certificates      map[string]domain.Certificate
+	issuanceAttempts  map[string]domain.IssuanceAttempt
 	revocations       map[string]domain.Revocation
 	crls              map[string]domain.CRLPublication
 	auditEvents       []domain.AuditEvent
@@ -1301,6 +1361,18 @@ func (tx *memoryTx) UpdateCertificate(ctx context.Context, certificate domain.Ce
 
 func (tx *memoryTx) UpdateCertificateIfStatus(ctx context.Context, certificate domain.Certificate, currentStatus domain.CertificateStatus) error {
 	return updateCertificateIfStatus(tx.certificates, certificate, currentStatus)
+}
+
+func (tx *memoryTx) CreateIssuanceAttempt(ctx context.Context, attempt domain.IssuanceAttempt) error {
+	return createIssuanceAttempt(tx.issuanceAttempts, attempt)
+}
+
+func (tx *memoryTx) GetIssuanceAttempt(ctx context.Context, enrollmentID string) (domain.IssuanceAttempt, error) {
+	return getIssuanceAttempt(tx.issuanceAttempts, enrollmentID)
+}
+
+func (tx *memoryTx) UpdateIssuanceAttemptIfCurrent(ctx context.Context, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error {
+	return updateIssuanceAttemptIfCurrent(tx.issuanceAttempts, attempt, current)
 }
 
 func (tx *memoryTx) CreateRevocation(ctx context.Context, revocation domain.Revocation) error {
@@ -1571,6 +1643,14 @@ func cloneCertificates(src map[string]domain.Certificate) map[string]domain.Cert
 	dst := make(map[string]domain.Certificate, len(src))
 	for id, certificate := range src {
 		dst[id] = copyCertificate(certificate)
+	}
+	return dst
+}
+
+func cloneIssuanceAttempts(src map[string]domain.IssuanceAttempt) map[string]domain.IssuanceAttempt {
+	dst := make(map[string]domain.IssuanceAttempt, len(src))
+	for enrollmentID, attempt := range src {
+		dst[enrollmentID] = copyIssuanceAttempt(attempt)
 	}
 	return dst
 }

@@ -3681,6 +3681,13 @@ func TestIssueCertificateKeepsIssuedStateWhenAuditFails(t *testing.T) {
 	if len(issuerClient.requests) != 1 {
 		t.Fatalf("issuer request count after retry = %d, want 1", len(issuerClient.requests))
 	}
+	events, err := baseRepo.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	if findAuditEvent(t, events, "certificate.issued").ID == "" {
+		t.Fatal("certificate.issued audit event was not repaired on retry")
+	}
 }
 
 func TestIssueCertificateReusesSignedResultAfterFinalizationFailure(t *testing.T) {
@@ -3721,6 +3728,97 @@ func TestIssueCertificateReusesSignedResultAfterFinalizationFailure(t *testing.T
 	}
 }
 
+func TestIssueCertificateReusesDurableSignedResultAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	baseRepo := store.NewMemoryStore()
+	errFinalize := errors.New("finalization failed")
+	firstRepo := &failCreateCertificateOnceRepository{Repository: baseRepo, err: errFinalize}
+	firstIssuer := &fakeIssuer{}
+	firstService := New(
+		firstRepo,
+		firstIssuer,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, firstService)
+	if _, err := firstService.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	if _, err := firstService.IssueCertificate(ctx, "issuer", enrollment.ID); !errors.Is(err, errFinalize) {
+		t.Fatalf("IssueCertificate error = %v, want finalization error", err)
+	}
+	if len(firstIssuer.requests) != 1 {
+		t.Fatalf("first issuer request count = %d, want 1", len(firstIssuer.requests))
+	}
+
+	secondIssuer := &fakeIssuer{}
+	secondService := New(
+		baseRepo,
+		secondIssuer,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 6, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	certificate, err := secondService.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate after restart returned error: %v", err)
+	}
+	if certificate.CertificatePEM != "issued:csr-pem" {
+		t.Fatalf("CertificatePEM = %q, want %q", certificate.CertificatePEM, "issued:csr-pem")
+	}
+	if len(secondIssuer.requests) != 0 {
+		t.Fatalf("second issuer request count = %d, want 0", len(secondIssuer.requests))
+	}
+}
+
+func TestIssueCertificateActiveClaimPreventsSecondServiceSigning(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	firstIssuer := newBlockingIssueIssuer(1)
+	firstService := New(
+		repo,
+		firstIssuer,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&threadSafeIDGenerator{},
+	)
+	secondIssuer := &fakeIssuer{}
+	secondService := New(
+		repo,
+		secondIssuer,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 6, 0, time.UTC)},
+		&threadSafeIDGenerator{},
+	)
+
+	enrollment := createPendingEnrollment(t, ctx, firstService)
+	if _, err := firstService.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	result := make(chan issueCertificateResult, 1)
+	go func() {
+		certificate, err := firstService.IssueCertificate(ctx, "issuer", enrollment.ID)
+		result <- issueCertificateResult{certificate: certificate, err: err}
+	}()
+	select {
+	case <-firstIssuer.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first signing request")
+	}
+
+	if _, err := secondService.IssueCertificate(ctx, "issuer", enrollment.ID); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("second IssueCertificate error = %v, want ErrInvalidTransition", err)
+	}
+	if len(secondIssuer.requests) != 0 {
+		t.Fatalf("second issuer request count = %d, want 0", len(secondIssuer.requests))
+	}
+
+	close(firstIssuer.release)
+	first := <-result
+	if first.err != nil {
+		t.Fatalf("first IssueCertificate returned error: %v", first.err)
+	}
+}
+
 func TestRevokeCertificateRollsBackWhenAuditFails(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -3752,6 +3850,53 @@ func TestRevokeCertificateRollsBackWhenAuditFails(t *testing.T) {
 	}
 	if storedCertificate.Status != domain.CertificateValid {
 		t.Fatalf("certificate status = %q, want %q", storedCertificate.Status, domain.CertificateValid)
+	}
+}
+
+func TestRepairMissingIssuanceAuditEvents(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	service := New(repo, &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	certificate := domain.Certificate{
+		ID:                   "certificate-1",
+		IdentityID:           "identity-1",
+		IssuerID:             "issuer-1",
+		EnrollmentID:         "enrollment-1",
+		CertificateProfileID: "profile-1",
+		SerialNumber:         "serial-1",
+		Subject:              "CN=edge-01",
+		Status:               domain.CertificateValid,
+		CertificatePEM:       "cert-pem",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := repo.CreateCertificate(ctx, certificate); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+
+	repaired, err := service.RepairMissingIssuanceAuditEvents(ctx, "operator")
+	if err != nil {
+		t.Fatalf("RepairMissingIssuanceAuditEvents returned error: %v", err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired count = %d, want 1", repaired)
+	}
+	events, err := repo.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	event := findAuditEvent(t, events, "certificate.issued")
+	if event.Actor != "operator" || event.ResourceID != certificate.ID {
+		t.Fatalf("repair audit event = %#v", event)
+	}
+
+	repaired, err = service.RepairMissingIssuanceAuditEvents(ctx, "operator")
+	if err != nil {
+		t.Fatalf("RepairMissingIssuanceAuditEvents second returned error: %v", err)
+	}
+	if repaired != 0 {
+		t.Fatalf("second repaired count = %d, want 0", repaired)
 	}
 }
 
@@ -4455,7 +4600,7 @@ func (r *failAuditRepository) WithinTx(ctx context.Context, fn func(store.Reposi
 }
 
 func (r *failAuditRepository) CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error {
-	if event.Action == r.action {
+	if event.Action == r.action && r.err != nil {
 		return r.err
 	}
 	return r.Repository.CreateAuditEvent(ctx, event)

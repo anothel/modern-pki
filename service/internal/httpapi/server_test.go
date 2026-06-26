@@ -2151,6 +2151,41 @@ func TestListAuditEvents(t *testing.T) {
 	}
 }
 
+func TestRepairMissingIssuanceAuditEvents(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := domain.Certificate{
+		ID:             "certificate-1",
+		IdentityID:     "identity-1",
+		IssuerID:       "issuer-1",
+		EnrollmentID:   "enrollment-1",
+		SerialNumber:   "serial-1",
+		Subject:        "CN=edge-01",
+		Status:         domain.CertificateValid,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      testNow,
+		UpdatedAt:      testNow,
+	}
+	if err := api.repo.CreateCertificate(api.ctx, certificate); err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+
+	var repaired struct {
+		RepairedCount int `json:"repaired_count"`
+	}
+	status := api.doJSON(t, http.MethodPost, "/audit-events/repair/issuance", "operator", nil, &repaired)
+	assertStatus(t, status, http.StatusOK)
+	if repaired.RepairedCount != 1 {
+		t.Fatalf("repaired count = %d, want 1", repaired.RepairedCount)
+	}
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 || events[0].Action != "certificate.issued" || events[0].ResourceID != certificate.ID {
+		t.Fatalf("audit events = %#v, want repaired certificate.issued", events)
+	}
+}
+
 func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeDev, TrustedProxies: mustParseTrustedProxies(t, "127.0.0.0/8", "::1/128")})
 

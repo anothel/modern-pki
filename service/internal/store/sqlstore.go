@@ -171,6 +171,18 @@ func (s *SQLStore) UpdateCertificateIfStatus(ctx context.Context, certificate do
 	return s.repository().UpdateCertificateIfStatus(ctx, certificate, currentStatus)
 }
 
+func (s *SQLStore) CreateIssuanceAttempt(ctx context.Context, attempt domain.IssuanceAttempt) error {
+	return s.repository().CreateIssuanceAttempt(ctx, attempt)
+}
+
+func (s *SQLStore) GetIssuanceAttempt(ctx context.Context, enrollmentID string) (domain.IssuanceAttempt, error) {
+	return s.repository().GetIssuanceAttempt(ctx, enrollmentID)
+}
+
+func (s *SQLStore) UpdateIssuanceAttemptIfCurrent(ctx context.Context, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error {
+	return s.repository().UpdateIssuanceAttemptIfCurrent(ctx, attempt, current)
+}
+
 func (s *SQLStore) CreateRevocation(ctx context.Context, revocation domain.Revocation) error {
 	return s.repository().CreateRevocation(ctx, revocation)
 }
@@ -1180,6 +1192,110 @@ AND status = $17`
 		args = append(args, string(currentStatus))
 	}
 	return r.exec.ExecContext(ctx, query, args...)
+}
+
+func (r sqlRepository) CreateIssuanceAttempt(ctx context.Context, attempt domain.IssuanceAttempt) error {
+	_, err := r.exec.ExecContext(ctx, `
+INSERT INTO certificate_issuance_attempts (
+	enrollment_id, status, lease_expires_at, certificate_id, certificate_pem, serial_number, subject,
+	not_before, not_after, signing_started_at, signed_at, finalized_at, last_error, created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+)`,
+		attempt.EnrollmentID,
+		string(attempt.Status),
+		formatNullableSQLTime(attempt.LeaseExpiresAt),
+		attempt.CertificateID,
+		attempt.CertificatePEM,
+		attempt.SerialNumber,
+		attempt.Subject,
+		formatNullableSQLTime(attempt.NotBefore),
+		formatNullableSQLTime(attempt.NotAfter),
+		formatNullableSQLTime(attempt.SigningStartedAt),
+		formatNullableSQLTime(attempt.SignedAt),
+		formatNullableSQLTime(attempt.FinalizedAt),
+		attempt.LastError,
+		formatSQLTime(attempt.CreatedAt),
+		formatSQLTime(attempt.UpdatedAt),
+	)
+	if isUniqueConstraintError(err) {
+		return domain.ErrInvalidTransition
+	}
+	return err
+}
+
+func (r sqlRepository) GetIssuanceAttempt(ctx context.Context, enrollmentID string) (domain.IssuanceAttempt, error) {
+	attempt, err := scanIssuanceAttempt(r.exec.QueryRowContext(ctx, `
+SELECT enrollment_id, status, lease_expires_at, certificate_id, certificate_pem, serial_number, subject,
+	not_before, not_after, signing_started_at, signed_at, finalized_at, last_error, created_at, updated_at
+FROM certificate_issuance_attempts
+WHERE enrollment_id = $1`, enrollmentID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.IssuanceAttempt{}, domain.ErrIssuanceAttemptNotFound
+	}
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	return attempt, nil
+}
+
+func (r sqlRepository) UpdateIssuanceAttemptIfCurrent(ctx context.Context, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error {
+	currentLeaseExpiresAt := formatNullableSQLTime(current.LeaseExpiresAt)
+	result, err := r.exec.ExecContext(ctx, `
+UPDATE certificate_issuance_attempts
+SET status = $1,
+	lease_expires_at = $2,
+	certificate_id = $3,
+	certificate_pem = $4,
+	serial_number = $5,
+	subject = $6,
+	not_before = $7,
+	not_after = $8,
+	signing_started_at = $9,
+	signed_at = $10,
+	finalized_at = $11,
+	last_error = $12,
+	created_at = $13,
+	updated_at = $14
+WHERE enrollment_id = $15
+	AND status = $16
+	AND updated_at = $17
+	AND ((lease_expires_at IS NULL AND $18 IS NULL) OR lease_expires_at = $18)`,
+		string(attempt.Status),
+		formatNullableSQLTime(attempt.LeaseExpiresAt),
+		attempt.CertificateID,
+		attempt.CertificatePEM,
+		attempt.SerialNumber,
+		attempt.Subject,
+		formatNullableSQLTime(attempt.NotBefore),
+		formatNullableSQLTime(attempt.NotAfter),
+		formatNullableSQLTime(attempt.SigningStartedAt),
+		formatNullableSQLTime(attempt.SignedAt),
+		formatNullableSQLTime(attempt.FinalizedAt),
+		attempt.LastError,
+		formatSQLTime(attempt.CreatedAt),
+		formatSQLTime(attempt.UpdatedAt),
+		attempt.EnrollmentID,
+		string(current.Status),
+		formatSQLTime(current.UpdatedAt),
+		currentLeaseExpiresAt,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := affectedRows(result)
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 0 {
+		return nil
+	}
+	if _, err := r.GetIssuanceAttempt(ctx, attempt.EnrollmentID); errors.Is(err, domain.ErrIssuanceAttemptNotFound) {
+		return err
+	} else if err != nil {
+		return err
+	}
+	return domain.ErrInvalidTransition
 }
 
 func (r sqlRepository) CreateRevocation(ctx context.Context, revocation domain.Revocation) error {
@@ -2763,6 +2879,82 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 	certificate.CreatedAt = parsedCreatedAt
 	certificate.UpdatedAt = parsedUpdatedAt
 	return certificate, nil
+}
+
+func scanIssuanceAttempt(scanner sqlScanner) (domain.IssuanceAttempt, error) {
+	var attempt domain.IssuanceAttempt
+	var status string
+	var leaseExpiresAt any
+	var notBefore any
+	var notAfter any
+	var signingStartedAt any
+	var signedAt any
+	var finalizedAt any
+	var createdAt any
+	var updatedAt any
+
+	if err := scanner.Scan(
+		&attempt.EnrollmentID,
+		&status,
+		&leaseExpiresAt,
+		&attempt.CertificateID,
+		&attempt.CertificatePEM,
+		&attempt.SerialNumber,
+		&attempt.Subject,
+		&notBefore,
+		&notAfter,
+		&signingStartedAt,
+		&signedAt,
+		&finalizedAt,
+		&attempt.LastError,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedLeaseExpiresAt, err := parseSQLTime(leaseExpiresAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedNotBefore, err := parseSQLTime(notBefore)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedNotAfter, err := parseSQLTime(notAfter)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedSigningStartedAt, err := parseSQLTime(signingStartedAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedSignedAt, err := parseSQLTime(signedAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedFinalizedAt, err := parseSQLTime(finalizedAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedCreatedAt, err := parseSQLTime(createdAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	parsedUpdatedAt, err := parseSQLTime(updatedAt)
+	if err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+
+	attempt.Status = domain.IssuanceAttemptStatus(status)
+	attempt.LeaseExpiresAt = parsedLeaseExpiresAt
+	attempt.NotBefore = parsedNotBefore
+	attempt.NotAfter = parsedNotAfter
+	attempt.SigningStartedAt = parsedSigningStartedAt
+	attempt.SignedAt = parsedSignedAt
+	attempt.FinalizedAt = parsedFinalizedAt
+	attempt.CreatedAt = parsedCreatedAt
+	attempt.UpdatedAt = parsedUpdatedAt
+	return attempt, nil
 }
 
 func scanAuditEvent(scanner sqlScanner) (domain.AuditEvent, error) {

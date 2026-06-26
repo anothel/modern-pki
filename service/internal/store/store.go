@@ -58,6 +58,12 @@ type CertificateRepository interface {
 	UpdateCertificateIfStatus(ctx context.Context, certificate domain.Certificate, currentStatus domain.CertificateStatus) error
 }
 
+type IssuanceAttemptRepository interface {
+	CreateIssuanceAttempt(ctx context.Context, attempt domain.IssuanceAttempt) error
+	GetIssuanceAttempt(ctx context.Context, enrollmentID string) (domain.IssuanceAttempt, error)
+	UpdateIssuanceAttemptIfCurrent(ctx context.Context, attempt domain.IssuanceAttempt, current domain.IssuanceAttempt) error
+}
+
 type RevocationRepository interface {
 	CreateRevocation(ctx context.Context, revocation domain.Revocation) error
 	ListRevocationsByIssuer(ctx context.Context, issuerID string) ([]domain.RevokedCertificateEntry, error)
@@ -123,6 +129,7 @@ type Repository interface {
 	CertificateProfileRepository
 	EnrollmentRepository
 	CertificateRepository
+	IssuanceAttemptRepository
 	RevocationRepository
 	CRLPublicationRepository
 	AuditRepository

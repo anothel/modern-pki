@@ -94,6 +94,7 @@ go run ./cmd/modern-pki-service
 - [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
 - [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
+- [Issuance consistency reference](docs/reference/issuance-consistency.md): signing claim, retry, and audit repair behavior.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 

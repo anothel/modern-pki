@@ -276,7 +276,7 @@ CREATE TABLE acme_accounts (
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)
 		}
 	}
-	for _, table := range []string{"ocsp_responders", "outbox_messages", "job_attempts", "notification_endpoints", "acme_accounts", "acme_orders", "acme_authorizations", "acme_challenges"} {
+	for _, table := range []string{"ocsp_responders", "outbox_messages", "job_attempts", "notification_endpoints", "certificate_issuance_attempts", "acme_accounts", "acme_orders", "acme_authorizations", "acme_challenges"} {
 		if !testSQLiteTableExists(t, db, table) {
 			t.Fatalf("table %s does not exist after migration", table)
 		}
@@ -284,6 +284,7 @@ CREATE TABLE acme_accounts (
 	for _, index := range []string{
 		"idx_certificates_enrollment",
 		"idx_certificates_issuer_serial",
+		"idx_certificate_issuance_attempts_status_lease",
 		"idx_crl_publications_issuer_distribution_number",
 		"idx_acme_accounts_key_thumbprint",
 	} {

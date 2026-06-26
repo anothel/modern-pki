@@ -371,6 +371,25 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE TABLE IF NOT EXISTS certificate_issuance_attempts (
+			enrollment_id TEXT PRIMARY KEY REFERENCES enrollments(id),
+			status TEXT NOT NULL,
+			lease_expires_at TEXT,
+			certificate_id TEXT NOT NULL,
+			certificate_pem TEXT NOT NULL,
+			serial_number TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			not_before TEXT,
+			not_after TEXT,
+			signing_started_at TEXT,
+			signed_at TEXT,
+			finalized_at TEXT,
+			last_error TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificate_issuance_attempts_status_lease
+			ON certificate_issuance_attempts(status, lease_expires_at, updated_at, enrollment_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
 			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -657,6 +676,25 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE TABLE IF NOT EXISTS certificate_issuance_attempts (
+			enrollment_id TEXT PRIMARY KEY REFERENCES enrollments(id),
+			status TEXT NOT NULL,
+			lease_expires_at TIMESTAMPTZ,
+			certificate_id TEXT NOT NULL,
+			certificate_pem TEXT NOT NULL,
+			serial_number TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			not_before TIMESTAMPTZ,
+			not_after TIMESTAMPTZ,
+			signing_started_at TIMESTAMPTZ,
+			signed_at TIMESTAMPTZ,
+			finalized_at TIMESTAMPTZ,
+			last_error TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificate_issuance_attempts_status_lease
+			ON certificate_issuance_attempts(status, lease_expires_at, updated_at, enrollment_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_crl_publications_issuer_distribution_number
 			ON crl_publications(issuer_id, distribution_point, crl_number)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (

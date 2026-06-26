@@ -56,6 +56,15 @@ const (
 	EnrollmentCanceled EnrollmentStatus = "canceled"
 )
 
+type IssuanceAttemptStatus string
+
+const (
+	IssuanceAttemptSigning   IssuanceAttemptStatus = "signing"
+	IssuanceAttemptSigned    IssuanceAttemptStatus = "signed"
+	IssuanceAttemptFinalized IssuanceAttemptStatus = "finalized"
+	IssuanceAttemptFailed    IssuanceAttemptStatus = "failed"
+)
+
 type CertificateStatus string
 
 const (
@@ -279,6 +288,24 @@ type Certificate struct {
 	RenewalNotifiedAt    time.Time
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type IssuanceAttempt struct {
+	EnrollmentID     string
+	Status           IssuanceAttemptStatus
+	LeaseExpiresAt   time.Time
+	CertificateID    string
+	CertificatePEM   string
+	SerialNumber     string
+	Subject          string
+	NotBefore        time.Time
+	NotAfter         time.Time
+	SigningStartedAt time.Time
+	SignedAt         time.Time
+	FinalizedAt      time.Time
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Revocation struct {

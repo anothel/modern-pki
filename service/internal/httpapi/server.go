@@ -215,6 +215,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /ocsp", s.respondOCSP)
 
 	s.mux.HandleFunc("GET /audit-events", s.listAuditEvents)
+	s.mux.HandleFunc("POST /audit-events/repair/issuance", s.repairIssuanceAuditEvents)
 	s.mux.HandleFunc("GET /trust/anchors", s.listTrustAnchors)
 }
 
@@ -1264,6 +1265,15 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAuditEventResponses(events))
 }
 
+func (s *Server) repairIssuanceAuditEvents(w http.ResponseWriter, r *http.Request) {
+	repaired, err := s.service.RepairMissingIssuanceAuditEvents(r.Context(), requestActor(r))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repairIssuanceAuditEventsResponse{RepairedCount: repaired})
+}
+
 func (s *Server) listTrustAnchors(w http.ResponseWriter, r *http.Request) {
 	anchors, err := s.service.ListTrustAnchors(r.Context())
 	if err != nil {
@@ -1795,7 +1805,7 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 }
 
 func requiredScopeForRequest(method string, path string) requiredScope {
-	if strings.HasPrefix(path, "/api-keys") || strings.HasPrefix(path, "/outbox/") || path == "/audit-events" {
+	if strings.HasPrefix(path, "/api-keys") || strings.HasPrefix(path, "/outbox/") || strings.HasPrefix(path, "/audit-events") {
 		return requiredScopeOperator
 	}
 	if method == http.MethodPost && path == "/certificates/expiration-scan" {
@@ -2456,6 +2466,10 @@ type auditEventResponse struct {
 	ResourceID   string    `json:"resource_id"`
 	MetadataJSON string    `json:"metadata_json"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+type repairIssuanceAuditEventsResponse struct {
+	RepairedCount int `json:"repaired_count"`
 }
 
 func toIdentityResponse(identity domain.Identity) identityResponse {

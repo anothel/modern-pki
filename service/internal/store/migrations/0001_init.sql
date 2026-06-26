@@ -124,6 +124,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
     ON certificates(issuer_id, serial_number)
     WHERE issuer_id <> '' AND serial_number <> '';
 
+CREATE TABLE IF NOT EXISTS certificate_issuance_attempts (
+    enrollment_id TEXT PRIMARY KEY REFERENCES enrollments(id),
+    status TEXT NOT NULL,
+    lease_expires_at TIMESTAMPTZ,
+    certificate_id TEXT NOT NULL,
+    certificate_pem TEXT NOT NULL,
+    serial_number TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    not_before TIMESTAMPTZ,
+    not_after TIMESTAMPTZ,
+    signing_started_at TIMESTAMPTZ,
+    signed_at TIMESTAMPTZ,
+    finalized_at TIMESTAMPTZ,
+    last_error TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_certificate_issuance_attempts_status_lease
+    ON certificate_issuance_attempts(status, lease_expires_at, updated_at, enrollment_id);
+
 CREATE TABLE IF NOT EXISTS revocations (
     id TEXT PRIMARY KEY,
     certificate_id TEXT NOT NULL REFERENCES certificates(id),

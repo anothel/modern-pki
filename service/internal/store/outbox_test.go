@@ -92,6 +92,23 @@ func TestSQLStoreOutboxLeaseRecovery(t *testing.T) {
 	testOutboxLeaseRecovery(t, NewSQLStore(db))
 }
 
+func TestMemoryStoreIssuanceAttempts(t *testing.T) {
+	testIssuanceAttempts(t, NewMemoryStore())
+}
+
+func TestSQLStoreIssuanceAttempts(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testIssuanceAttempts(t, NewSQLStore(db))
+}
+
 func TestMemoryStoreWebhookDeliveryTracking(t *testing.T) {
 	testWebhookDeliveryTracking(t, NewMemoryStore())
 }
@@ -502,6 +519,63 @@ func testOutboxLeaseRecovery(t *testing.T, repo Repository) {
 	}
 	if len(due) != 1 || due[0].ID != expired.ID || due[0].Status != domain.OutboxProcessing {
 		t.Fatalf("due messages = %#v, want only expired processing message", due)
+	}
+}
+
+func testIssuanceAttempts(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	attempt := domain.IssuanceAttempt{
+		EnrollmentID:     "enrollment-1",
+		Status:           domain.IssuanceAttemptSigning,
+		LeaseExpiresAt:   now.Add(5 * time.Minute),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		SigningStartedAt: now,
+	}
+	if _, err := repo.GetIssuanceAttempt(ctx, attempt.EnrollmentID); !errors.Is(err, domain.ErrIssuanceAttemptNotFound) {
+		t.Fatalf("missing GetIssuanceAttempt error = %v, want ErrIssuanceAttemptNotFound", err)
+	}
+	if err := repo.CreateIssuanceAttempt(ctx, attempt); err != nil {
+		t.Fatalf("CreateIssuanceAttempt returned error: %v", err)
+	}
+	if err := repo.CreateIssuanceAttempt(ctx, attempt); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate CreateIssuanceAttempt error = %v, want ErrInvalidTransition", err)
+	}
+	stored, err := repo.GetIssuanceAttempt(ctx, attempt.EnrollmentID)
+	if err != nil {
+		t.Fatalf("GetIssuanceAttempt returned error: %v", err)
+	}
+	if stored.Status != domain.IssuanceAttemptSigning || !stored.LeaseExpiresAt.Equal(attempt.LeaseExpiresAt) {
+		t.Fatalf("stored attempt = %#v, want signing lease", stored)
+	}
+
+	signed := stored
+	signed.Status = domain.IssuanceAttemptSigned
+	signed.CertificateID = "certificate-1"
+	signed.SerialNumber = "serial-1"
+	signed.Subject = "CN=edge-01"
+	signed.CertificatePEM = "cert-pem"
+	signed.NotBefore = now
+	signed.NotAfter = now.Add(time.Hour)
+	signed.SignedAt = now.Add(time.Second)
+	signed.UpdatedAt = signed.SignedAt
+	if err := repo.UpdateIssuanceAttemptIfCurrent(ctx, signed, stored); err != nil {
+		t.Fatalf("UpdateIssuanceAttemptIfCurrent returned error: %v", err)
+	}
+	if err := repo.UpdateIssuanceAttemptIfCurrent(ctx, stored, stored); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("stale UpdateIssuanceAttemptIfCurrent error = %v, want ErrInvalidTransition", err)
+	}
+	got, err := repo.GetIssuanceAttempt(ctx, attempt.EnrollmentID)
+	if err != nil {
+		t.Fatalf("GetIssuanceAttempt signed returned error: %v", err)
+	}
+	if got.Status != domain.IssuanceAttemptSigned ||
+		got.CertificateID != signed.CertificateID ||
+		got.CertificatePEM != signed.CertificatePEM ||
+		!got.SignedAt.Equal(signed.SignedAt) {
+		t.Fatalf("signed attempt = %#v, want %#v", got, signed)
 	}
 }
 

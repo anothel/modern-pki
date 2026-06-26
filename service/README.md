@@ -70,6 +70,10 @@ Certificate lifecycle operations include revocation, suspension, and resumption:
 - `POST /certificates/{id}/reissue`
 - `POST /certificates/expiration-scan`
 
+Issuance uses a DB-backed enrollment claim to prevent duplicate signing across service nodes. If signing succeeds but DB finalization fails, retry finalizes from stored signed material without calling the signer again. If `certificate.issued` audit repair is needed after finalized state is stored, operators can call:
+
+- `POST /audit-events/repair/issuance`
+
 Normal revocation accepts only `valid` certificates. Forced revocation accepts `valid` and `suspended` certificates by posting `{"force": true}` with the revocation reason.
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.

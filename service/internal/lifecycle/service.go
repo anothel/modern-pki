@@ -85,7 +85,6 @@ type Service struct {
 	apiKeyPepper       string
 	productionPolicy   bool
 	issueMu            sync.Mutex
-	pendingIssues      map[string]corecli.IssueResult
 }
 
 type AuditRequestMetadata struct {
@@ -211,7 +210,10 @@ type FinalizeACMEOrderRequest struct {
 	RequestedSubject string
 }
 
-const defaultACMEAuthorizationLifetime = 24 * time.Hour
+const (
+	defaultACMEAuthorizationLifetime = 24 * time.Hour
+	defaultIssuanceSigningLease      = 5 * time.Minute
+)
 
 type RenewCertificateRequest struct {
 	CSRPEM            string
@@ -291,7 +293,6 @@ func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer Cert
 		idgen:              idgen,
 		acmeHTTP01Verifier: verifier,
 		apiKeyPepper:       strings.TrimSpace(pepper),
-		pendingIssues:      make(map[string]corecli.IssueResult),
 	}
 }
 
@@ -1884,7 +1885,7 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		return domain.Certificate{}, domain.ErrInvalidRequest
 	}
 
-	// ponytail: global in-process lock; use per-enrollment or DB-backed lease if issuance throughput matters.
+	// ponytail: keeps existing same-process retry behavior; DB issuance attempts handle cross-node signing claims.
 	s.issueMu.Lock()
 	defer s.issueMu.Unlock()
 
@@ -1895,17 +1896,17 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if enrollment.Status == domain.EnrollmentIssued {
 		certificate, err := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
 		if err == nil {
-			delete(s.pendingIssues, enrollmentID)
+			if err := s.ensureCertificateIssuedAuditEvent(ctx, actor, certificate, s.clock.Now()); err != nil {
+				return domain.Certificate{}, err
+			}
 			return certificate, nil
 		}
 		if !errors.Is(err, domain.ErrCertificateNotFound) {
 			return domain.Certificate{}, err
 		}
-		delete(s.pendingIssues, enrollmentID)
 		return domain.Certificate{}, domain.ErrInvalidTransition
 	}
 	if enrollment.Status != domain.EnrollmentApproved {
-		delete(s.pendingIssues, enrollmentID)
 		return domain.Certificate{}, domain.ErrInvalidTransition
 	}
 
@@ -1932,10 +1933,13 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err := validateEnrollmentIdentityPolicy(enrollmentProfilePolicyRequest(enrollment), identity); err != nil {
 		return domain.Certificate{}, err
 	}
-	// ponytail: in-memory signed material cache; persist signed material if process-crash recovery becomes required.
-	result, hasPendingIssue := s.pendingIssues[enrollmentID]
-	if !hasPendingIssue {
-		result, err = s.issuer.Issue(ctx, corecli.IssueRequest{
+
+	attempt, shouldSign, err := s.claimIssuanceAttempt(ctx, enrollmentID, now)
+	if err != nil {
+		return domain.Certificate{}, err
+	}
+	if shouldSign {
+		result, err := s.issuer.Issue(ctx, corecli.IssueRequest{
 			CSRPEM:                     enrollment.CSRPEM,
 			IssuerCertificatePEM:       issuer.CertificatePEM,
 			IssuerKeyRef:               issuer.KeyRef,
@@ -1959,7 +1963,103 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		if err != nil {
 			return domain.Certificate{}, mapIssueError(err)
 		}
-		s.pendingIssues[enrollmentID] = result
+		attempt, err = s.persistSignedIssuanceAttempt(ctx, attempt, result, now)
+		if err != nil {
+			return domain.Certificate{}, err
+		}
+	}
+
+	certificate, err := s.finalizeSignedIssuanceAttempt(ctx, enrollmentID, attempt, now)
+	if err != nil {
+		return domain.Certificate{}, err
+	}
+	if err := s.ensureCertificateIssuedAuditEvent(ctx, actor, certificate, now); err != nil {
+		return domain.Certificate{}, err
+	}
+	return certificate, nil
+}
+
+func (s *Service) claimIssuanceAttempt(ctx context.Context, enrollmentID string, now time.Time) (domain.IssuanceAttempt, bool, error) {
+	var attempt domain.IssuanceAttempt
+	shouldSign := false
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		current, err := repo.GetIssuanceAttempt(ctx, enrollmentID)
+		if errors.Is(err, domain.ErrIssuanceAttemptNotFound) {
+			attempt = domain.IssuanceAttempt{
+				EnrollmentID:     enrollmentID,
+				Status:           domain.IssuanceAttemptSigning,
+				LeaseExpiresAt:   now.Add(defaultIssuanceSigningLease),
+				SigningStartedAt: now,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+			}
+			if err := repo.CreateIssuanceAttempt(ctx, attempt); err != nil {
+				return err
+			}
+			shouldSign = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch current.Status {
+		case domain.IssuanceAttemptSigned, domain.IssuanceAttemptFinalized:
+			attempt = current
+			return nil
+		case domain.IssuanceAttemptSigning:
+			if current.LeaseExpiresAt.After(now) {
+				return domain.ErrInvalidTransition
+			}
+		case domain.IssuanceAttemptFailed:
+		default:
+			return domain.ErrInvalidTransition
+		}
+
+		next := current
+		next.Status = domain.IssuanceAttemptSigning
+		next.LeaseExpiresAt = now.Add(defaultIssuanceSigningLease)
+		next.SigningStartedAt = now
+		next.LastError = ""
+		next.UpdatedAt = now
+		if err := repo.UpdateIssuanceAttemptIfCurrent(ctx, next, current); err != nil {
+			return err
+		}
+		attempt = next
+		shouldSign = true
+		return nil
+	}); err != nil {
+		return domain.IssuanceAttempt{}, false, err
+	}
+	return attempt, shouldSign, nil
+}
+
+func (s *Service) persistSignedIssuanceAttempt(ctx context.Context, current domain.IssuanceAttempt, result corecli.IssueResult, now time.Time) (domain.IssuanceAttempt, error) {
+	signed := current
+	signed.Status = domain.IssuanceAttemptSigned
+	signed.LeaseExpiresAt = time.Time{}
+	signed.CertificateID = s.idgen.NewID()
+	signed.CertificatePEM = result.CertificatePEM
+	signed.SerialNumber = result.SerialNumber
+	signed.Subject = result.Subject
+	signed.NotBefore = result.NotBefore
+	signed.NotAfter = result.NotAfter
+	signed.SignedAt = now
+	signed.LastError = ""
+	signed.UpdatedAt = now
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		return repo.UpdateIssuanceAttemptIfCurrent(ctx, signed, current)
+	}); err != nil {
+		return domain.IssuanceAttempt{}, err
+	}
+	return signed, nil
+}
+
+func (s *Service) finalizeSignedIssuanceAttempt(ctx context.Context, enrollmentID string, attempt domain.IssuanceAttempt, now time.Time) (domain.Certificate, error) {
+	if attempt.Status == domain.IssuanceAttemptFinalized {
+		return s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
+	}
+	if attempt.Status != domain.IssuanceAttemptSigned {
+		return domain.Certificate{}, domain.ErrInvalidTransition
 	}
 
 	var certificate domain.Certificate
@@ -1968,7 +2068,20 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		if err != nil {
 			return err
 		}
+		if currentEnrollment.Status == domain.EnrollmentIssued {
+			certificate, err = repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
+			return err
+		}
 		if currentEnrollment.Status != domain.EnrollmentApproved {
+			return domain.ErrInvalidTransition
+		}
+		currentAttempt, err := repo.GetIssuanceAttempt(ctx, enrollmentID)
+		if err != nil {
+			return err
+		}
+		if currentAttempt.Status != domain.IssuanceAttemptSigned ||
+			currentAttempt.CertificateID != attempt.CertificateID ||
+			currentAttempt.SerialNumber != attempt.SerialNumber {
 			return domain.ErrInvalidTransition
 		}
 
@@ -1980,19 +2093,19 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		}
 
 		certificate = domain.Certificate{
-			ID:                   s.idgen.NewID(),
+			ID:                   currentAttempt.CertificateID,
 			IdentityID:           currentEnrollment.IdentityID,
 			IssuerID:             currentEnrollment.IssuerID,
 			EnrollmentID:         currentEnrollment.ID,
 			CertificateProfileID: currentEnrollment.CertificateProfileID,
-			SerialNumber:         result.SerialNumber,
-			Subject:              result.Subject,
+			SerialNumber:         currentAttempt.SerialNumber,
+			Subject:              currentAttempt.Subject,
 			DNSNames:             append([]string(nil), currentEnrollment.RequestedDNSNames...),
 			IPAddresses:          append([]string(nil), currentEnrollment.RequestedIPAddresses...),
-			NotBefore:            result.NotBefore,
-			NotAfter:             result.NotAfter,
+			NotBefore:            currentAttempt.NotBefore,
+			NotAfter:             currentAttempt.NotAfter,
 			Status:               domain.CertificateValid,
-			CertificatePEM:       result.CertificatePEM,
+			CertificatePEM:       currentAttempt.CertificatePEM,
 			CreatedAt:            now,
 			UpdatedAt:            now,
 		}
@@ -2001,12 +2114,15 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			return err
 		}
 
-		return nil
+		finalized := currentAttempt
+		finalized.Status = domain.IssuanceAttemptFinalized
+		finalized.FinalizedAt = now
+		finalized.UpdatedAt = now
+		return repo.UpdateIssuanceAttemptIfCurrent(ctx, finalized, currentAttempt)
 	}); err != nil {
 		if errors.Is(err, domain.ErrInvalidTransition) {
 			existing, lookupErr := s.repo.GetCertificateByEnrollmentID(ctx, enrollmentID)
 			if lookupErr == nil {
-				delete(s.pendingIssues, enrollmentID)
 				return existing, nil
 			}
 			if !errors.Is(lookupErr, domain.ErrCertificateNotFound) {
@@ -2015,7 +2131,19 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		}
 		return domain.Certificate{}, err
 	}
-	delete(s.pendingIssues, enrollmentID)
+	return certificate, nil
+}
+
+func (s *Service) ensureCertificateIssuedAuditEvent(ctx context.Context, actor string, certificate domain.Certificate, now time.Time) error {
+	events, err := s.repo.ListAuditEvents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Action == "certificate.issued" && event.ResourceType == "certificate" && event.ResourceID == certificate.ID {
+			return nil
+		}
+	}
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
 		return s.createAuditEvent(ctx, repo, actor, "certificate.issued", "certificate", certificate.ID, now, auditFields(
 			"identity_id", certificate.IdentityID,
@@ -2026,9 +2154,39 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 			"profile_id", certificate.CertificateProfileID,
 		))
 	}); err != nil {
-		return domain.Certificate{}, err
+		return err
 	}
-	return certificate, nil
+	return nil
+}
+
+func (s *Service) RepairMissingIssuanceAuditEvents(ctx context.Context, actor string) (int, error) {
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return 0, err
+	}
+	events, err := s.repo.ListAuditEvents(ctx)
+	if err != nil {
+		return 0, err
+	}
+	issuedAuditByCertificate := make(map[string]struct{}, len(events))
+	for _, event := range events {
+		if event.Action == "certificate.issued" && event.ResourceType == "certificate" {
+			issuedAuditByCertificate[event.ResourceID] = struct{}{}
+		}
+	}
+	repaired := 0
+	now := s.clock.Now()
+	for _, certificate := range certificates {
+		if _, ok := issuedAuditByCertificate[certificate.ID]; ok {
+			continue
+		}
+		if err := s.ensureCertificateIssuedAuditEvent(ctx, actor, certificate, now); err != nil {
+			return repaired, err
+		}
+		issuedAuditByCertificate[certificate.ID] = struct{}{}
+		repaired++
+	}
+	return repaired, nil
 }
 
 func (s *Service) RevokeCertificate(ctx context.Context, actor string, certificateID string, reason domain.RevocationReason) (domain.Certificate, error) {
