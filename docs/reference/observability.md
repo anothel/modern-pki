@@ -129,5 +129,4 @@ and `elapsed_ms` when request context is available.
   histograms.
 - Distributed trace/span propagation is limited to preserving inbound
   `traceparent` in audit metadata.
-- Audit retention policy, tamper-evident storage, and SIEM export examples are
-  separate roadmap items.
+- Tamper-evident storage and SIEM export examples are separate roadmap items.

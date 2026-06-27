@@ -2501,6 +2501,69 @@ func TestListAuditEvents(t *testing.T) {
 	}
 }
 
+func TestListAuditEventsFiltersSortsAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	base := testNow.Add(-time.Hour)
+	for _, event := range []domain.AuditEvent{
+		testHTTPAuditEvent("audit-1", "alice", "identity.created", "identity", "identity-1", base),
+		testHTTPAuditEvent("audit-2", "bob", "enrollment.created", "enrollment", "enrollment-1", base.Add(time.Minute)),
+		testHTTPAuditEvent("audit-3", "alice", "enrollment.rejected", "enrollment", "enrollment-1", base.Add(2*time.Minute)),
+		testHTTPAuditEvent("audit-4", "alice", "certificate.revoked", "certificate", "certificate-1", base.Add(3*time.Minute)),
+	} {
+		if err := api.repo.CreateAuditEvent(api.ctx, event); err != nil {
+			t.Fatalf("CreateAuditEvent(%s) returned error: %v", event.ID, err)
+		}
+	}
+
+	var events []apiAuditEvent
+	status := api.doJSON(t, http.MethodGet, "/audit-events?actor=alice&resource_type=enrollment&sort=desc&limit=1", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiAuditEventIDs(events); !reflect.DeepEqual(got, []string{"audit-3"}) {
+		t.Fatalf("filtered audit IDs = %#v", got)
+	}
+
+	status = api.doJSON(t, http.MethodGet, "/audit-events?limit=1&offset=1&sort=asc", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiAuditEventIDs(events); !reflect.DeepEqual(got, []string{"audit-2"}) {
+		t.Fatalf("paged audit IDs = %#v", got)
+	}
+}
+
+func TestPruneAuditEventsByRetentionCutoff(t *testing.T) {
+	api := newTestAPI(t)
+	base := testNow.Add(-72 * time.Hour)
+	for _, event := range []domain.AuditEvent{
+		testHTTPAuditEvent("audit-old-1", "alice", "identity.created", "identity", "identity-1", base),
+		testHTTPAuditEvent("audit-old-2", "bob", "enrollment.created", "enrollment", "enrollment-1", base.Add(time.Hour)),
+		testHTTPAuditEvent("audit-new", "alice", "certificate.revoked", "certificate", "certificate-1", testNow),
+	} {
+		if err := api.repo.CreateAuditEvent(api.ctx, event); err != nil {
+			t.Fatalf("CreateAuditEvent(%s) returned error: %v", event.ID, err)
+		}
+	}
+
+	var pruned pruneAuditEventsResponse
+	status := api.doJSON(t, http.MethodPost, "/audit-events/retention/prune", "operator", map[string]any{
+		"before": testNow.Add(-24 * time.Hour).Format(time.RFC3339),
+	}, &pruned)
+	assertStatus(t, status, http.StatusOK)
+	if pruned.DeletedCount != 2 {
+		t.Fatalf("deleted count = %d, want 2", pruned.DeletedCount)
+	}
+
+	var events []apiAuditEvent
+	status = api.doJSON(t, http.MethodGet, "/audit-events?action=certificate.revoked", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiAuditEventIDs(events); !reflect.DeepEqual(got, []string{"audit-new"}) {
+		t.Fatalf("remaining audit IDs = %#v", got)
+	}
+	status = api.doJSON(t, http.MethodGet, "/audit-events?action=audit.retention_pruned", "", nil, &events)
+	assertStatus(t, status, http.StatusOK)
+	if len(events) != 1 || events[0].Actor != "operator" {
+		t.Fatalf("retention audit events = %#v", events)
+	}
+}
+
 func TestRepairMissingIssuanceAuditEvents(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := domain.Certificate{
@@ -4204,4 +4267,24 @@ func apiAuditMetadata(t *testing.T, event apiAuditEvent) map[string]any {
 		t.Fatalf("unmarshal audit metadata for %s: %v", event.Action, err)
 	}
 	return metadata
+}
+
+func testHTTPAuditEvent(id string, actor string, action string, resourceType string, resourceID string, createdAt time.Time) domain.AuditEvent {
+	return domain.AuditEvent{
+		ID:           id,
+		Actor:        actor,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		MetadataJSON: "{}",
+		CreatedAt:    createdAt,
+	}
+}
+
+func apiAuditEventIDs(events []apiAuditEvent) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.ID)
+	}
+	return ids
 }

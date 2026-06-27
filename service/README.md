@@ -91,6 +91,8 @@ Certificate inventory and expiry views are available for operators:
 Issuance uses a DB-backed enrollment claim to prevent duplicate signing across service nodes. If signing succeeds but DB finalization fails, retry finalizes from stored signed material without calling the signer again. If `certificate.issued` audit repair is needed after finalized state is stored, operators can call:
 
 - `POST /audit-events/repair/issuance`
+- `GET /audit-events?actor=operator&resource_type=certificate&sort=desc&limit=50&offset=0`
+- `POST /audit-events/retention/prune`
 
 Normal revocation accepts only `valid` certificates. Forced revocation accepts `valid` and `suspended` certificates by posting `{"force": true}` with the revocation reason.
 Renewal creates a new pending enrollment from a valid certificate, copying identity, issuer, profile, subject, and SANs while accepting a new CSR and requested expiration.
@@ -127,7 +129,7 @@ When a matched issuer has an active responder, `POST /ocsp` signs with that resp
 
 Responder certificates are validated by the core CLI before storage and must be issued by the issuer, be non-CA certificates, and carry the OCSP Signing EKU.
 
-Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations.
+Audit events include structured `metadata_json` for lifecycle resource IDs and successful result codes. HTTP requests can attach `X-Request-ID`; the service records it with the client IP for mutating operations. `GET /audit-events` supports exact filters for actor, action, resource type, resource ID, RFC3339 created time range, ascending/descending sort, and limit/offset pagination. Retention pruning deletes audit events before a supplied RFC3339 `before` cutoff and records an `audit.retention_pruned` audit event.
 `X-Forwarded-For` is trusted only when the direct peer IP matches `MODERN_PKI_TRUSTED_PROXIES`; otherwise audit metadata uses the direct peer address.
 
 API authentication defaults to `dev` mode for local compatibility. In `dev` mode, the service uses `X-Actor` as the audit actor and allows requests without credentials. Set `MODERN_PKI_AUTH_MODE=api_key` to require `Authorization: Bearer <token>` for lifecycle and operator APIs. `POST /ocsp`, `GET /crls/{id}`, and `GET /issuers/{id}/crl` remain public distribution endpoints. Bootstrap an initial operator key by setting `MODERN_PKI_BOOTSTRAP_API_KEY`. Set `MODERN_PKI_API_KEY_PEPPER` to store new API key token hashes as HMAC-SHA256 values. Existing SHA-256 token hashes remain accepted so operators can enable a pepper before rotating legacy keys.

@@ -371,7 +371,26 @@
       "get": {
         "tags": ["audit"],
         "operationId": "listAuditEvents",
+        "parameters": [
+          {"$ref": "#/components/parameters/auditActor"},
+          {"$ref": "#/components/parameters/auditAction"},
+          {"$ref": "#/components/parameters/auditResourceType"},
+          {"$ref": "#/components/parameters/auditResourceID"},
+          {"$ref": "#/components/parameters/auditFrom"},
+          {"$ref": "#/components/parameters/auditTo"},
+          {"$ref": "#/components/parameters/auditSort"},
+          {"$ref": "#/components/parameters/limit"},
+          {"$ref": "#/components/parameters/offset"}
+        ],
         "responses": {"200": {"$ref": "#/components/responses/AuditEventList"}, "default": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/audit-events/retention/prune": {
+      "post": {
+        "tags": ["audit"],
+        "operationId": "pruneAuditEvents",
+        "requestBody": {"$ref": "#/components/requestBodies/AuditRetentionPrune"},
+        "responses": {"200": {"$ref": "#/components/responses/AuditRetentionPrune"}, "default": {"$ref": "#/components/responses/Error"}}
       }
     },
     "/audit-events/repair/issuance": {
@@ -471,6 +490,13 @@
       "issuer": {"name": "issuer", "in": "query", "schema": {"type": "string"}},
       "profile": {"name": "profile", "in": "query", "schema": {"type": "string"}},
       "revocationState": {"name": "revocation_state", "in": "query", "schema": {"type": "string"}},
+      "auditActor": {"name": "actor", "in": "query", "schema": {"type": "string"}},
+      "auditAction": {"name": "action", "in": "query", "schema": {"type": "string"}},
+      "auditResourceType": {"name": "resource_type", "in": "query", "schema": {"type": "string"}},
+      "auditResourceID": {"name": "resource_id", "in": "query", "schema": {"type": "string"}},
+      "auditFrom": {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+      "auditTo": {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+      "auditSort": {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}},
       "outboxStatus": {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["pending", "processing", "completed", "failed", "dead_letter"]}}
     },
     "requestBodies": {
@@ -486,6 +512,7 @@
       "CRLPublish": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["issuer_id"], "properties": {"issuer_id": {"type": "string"}}}}}},
       "NotificationEndpointCreate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NotificationEndpointCreate"}}}},
       "DeadLetterReplay": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["event_type", "created_from", "created_to", "limit"], "properties": {"event_type": {"type": "string"}, "created_from": {"type": "string", "format": "date-time"}, "created_to": {"type": "string", "format": "date-time"}, "limit": {"type": "integer", "minimum": 1}}}}}},
+      "AuditRetentionPrune": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["before"], "properties": {"before": {"type": "string", "format": "date-time"}}}}}},
       "APIKeyCreate": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name", "actor", "scopes"], "properties": {"name": {"type": "string"}, "actor": {"type": "string"}, "scopes": {"type": "array", "items": {"type": "string", "enum": ["operator", "write", "read"]}}, "expires_at": {"type": "string", "format": "date-time"}}}}}},
       "ACMEAccountCreate": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"contacts": {"type": "array", "items": {"type": "string"}}, "terms_of_service_agreed": {"type": "boolean"}, "key_thumbprint": {"type": "string"}, "key_jwk_json": {"type": "string"}}}}}},
       "ACMEOrderCreate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ACMEOrderCreate"}}}},
@@ -518,6 +545,7 @@
       "APIKeyList": {"description": "API key list", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/APIKey"}}}}},
       "APIKeyWithToken": {"description": "API key with one-time token", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/APIKey"}, {"type": "object", "properties": {"token": {"type": "string"}}}]}}}},
       "AuditEventList": {"description": "Audit event list", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/AuditEvent"}}}}},
+      "AuditRetentionPrune": {"description": "Audit retention prune result", "content": {"application/json": {"schema": {"type": "object", "properties": {"deleted_count": {"type": "integer"}}}}}},
       "AuditRepair": {"description": "Audit repair result", "content": {"application/json": {"schema": {"type": "object", "properties": {"repaired_count": {"type": "integer"}}}}}},
       "ACMEAccount": {"description": "ACME account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ACMEAccount"}}}},
       "ACMEAccountList": {"description": "ACME account list", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/ACMEAccount"}}}}},

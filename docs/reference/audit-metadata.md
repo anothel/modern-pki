@@ -73,6 +73,35 @@ password
 private_key
 ```
 
+## Query And Retention
+
+`GET /audit-events` supports exact filters:
+
+```text
+actor
+action
+resource_type
+resource_id
+from
+to
+sort
+limit
+offset
+```
+
+`from` and `to` use RFC3339 timestamps. `sort` accepts `asc` and `desc`.
+`offset` requires `limit`.
+
+Retention pruning is explicit:
+
+```text
+POST /audit-events/retention/prune
+{"before":"2026-01-01T00:00:00Z"}
+```
+
+The cutoff must be before service current time. The service writes an
+`audit.retention_pruned` event after deleting older audit rows.
+
 ## Lifecycle Identity Fields
 
 Use stable snake_case IDs:

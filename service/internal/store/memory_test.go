@@ -2,12 +2,14 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
+	_ "modernc.org/sqlite"
 )
 
 func TestMemoryStoreWithinTxRollsBackOnError(t *testing.T) {
@@ -67,9 +69,67 @@ func TestMemoryStoreNestedWithinTxUsesSameTransaction(t *testing.T) {
 	}
 }
 
+func TestAuditEventQueryAndRetention(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		repo Repository
+	}{
+		{name: "memory", repo: NewMemoryStore()},
+		{name: "sqlite", repo: newTestSQLiteRepository(t)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			testAuditEventQueryAndRetention(t, tt.repo)
+		})
+	}
+}
+
 func TestMemoryStoreIdentityPolicyFieldsRoundTrip(t *testing.T) {
 	repo := NewMemoryStore()
 	testIdentityPolicyFieldsRoundTrip(t, repo)
+}
+
+func testAuditEventQueryAndRetention(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, event := range []domain.AuditEvent{
+		testAuditEvent("audit-1", "alice", "identity.created", "identity", "identity-1", base),
+		testAuditEvent("audit-2", "bob", "enrollment.created", "enrollment", "enrollment-1", base.Add(time.Minute)),
+		testAuditEvent("audit-3", "alice", "enrollment.rejected", "enrollment", "enrollment-1", base.Add(2*time.Minute)),
+		testAuditEvent("audit-4", "alice", "certificate.revoked", "certificate", "certificate-1", base.Add(3*time.Minute)),
+	} {
+		if err := repo.CreateAuditEvent(ctx, event); err != nil {
+			t.Fatalf("CreateAuditEvent(%s) returned error: %v", event.ID, err)
+		}
+	}
+
+	filtered, err := repo.ListAuditEventsQuery(ctx, AuditEventQuery{
+		Actor:        "alice",
+		ResourceType: "enrollment",
+		Sort:         "desc",
+		Limit:        1,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditEventsQuery returned error: %v", err)
+	}
+	if got := auditEventIDs(filtered); !reflect.DeepEqual(got, []string{"audit-3"}) {
+		t.Fatalf("filtered audit IDs = %#v", got)
+	}
+
+	deleted, err := repo.DeleteAuditEventsBefore(ctx, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("DeleteAuditEventsBefore returned error: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted audit events = %d, want 2", deleted)
+	}
+	remaining, err := repo.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents returned error: %v", err)
+	}
+	if got := auditEventIDs(remaining); !reflect.DeepEqual(got, []string{"audit-3", "audit-4"}) {
+		t.Fatalf("remaining audit IDs = %#v", got)
+	}
 }
 
 func testIdentityPolicyFieldsRoundTrip(t *testing.T, repo Repository) {
@@ -389,6 +449,41 @@ func storeCertificateIDs(certificates []domain.Certificate) []string {
 	ids := make([]string, 0, len(certificates))
 	for _, certificate := range certificates {
 		ids = append(ids, certificate.ID)
+	}
+	return ids
+}
+
+func newTestSQLiteRepository(t *testing.T) Repository {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := ApplyInitialMigration(context.Background(), db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	return NewSQLStore(db)
+}
+
+func testAuditEvent(id string, actor string, action string, resourceType string, resourceID string, createdAt time.Time) domain.AuditEvent {
+	return domain.AuditEvent{
+		ID:           id,
+		Actor:        actor,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		MetadataJSON: "{}",
+		CreatedAt:    createdAt,
+	}
+}
+
+func auditEventIDs(events []domain.AuditEvent) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.ID)
 	}
 	return ids
 }

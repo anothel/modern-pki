@@ -59,7 +59,6 @@ before 100-day and 47-day public certificate operations become normal.
 - Add audit fields for approval reason, policy decision reason, validation
   evidence ref, old/new serial on renewal, and deployment target where source
   data exists.
-- Add audit pagination and retention policy.
 - Add append-only or tamper-evident audit storage plan.
 - Add SIEM export format and detection examples for issuance, revocation, policy
   change, key-provider use, and CA operations.
@@ -69,7 +68,6 @@ before 100-day and 47-day public certificate operations become normal.
 - Add pagination/filter/sort for identities.
 - Add pagination/filter/sort for certificates.
 - Add pagination/filter/sort for enrollments.
-- Add pagination/filter/sort for audit events.
 - Add pagination/filter/sort for outbox messages.
 - Add filters for owner, service, environment, issuer, profile, SAN, expiration
   window, revocation state, and renewal state.

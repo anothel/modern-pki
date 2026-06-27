@@ -492,6 +492,30 @@ func (s *MemoryStore) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent,
 	return events, nil
 }
 
+func (s *MemoryStore) ListAuditEventsQuery(ctx context.Context, query AuditEventQuery) ([]domain.AuditEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listAuditEventsQuery(s.auditEvents, query), nil
+}
+
+func (s *MemoryStore) DeleteAuditEventsBefore(ctx context.Context, before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := s.auditEvents[:0]
+	deleted := 0
+	for _, event := range s.auditEvents {
+		if event.CreatedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	s.auditEvents = kept
+	return deleted, nil
+}
+
 func (s *MemoryStore) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1444,6 +1468,24 @@ func (tx *memoryTx) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, e
 	return events, nil
 }
 
+func (tx *memoryTx) ListAuditEventsQuery(ctx context.Context, query AuditEventQuery) ([]domain.AuditEvent, error) {
+	return listAuditEventsQuery(tx.auditEvents, query), nil
+}
+
+func (tx *memoryTx) DeleteAuditEventsBefore(ctx context.Context, before time.Time) (int, error) {
+	kept := tx.auditEvents[:0]
+	deleted := 0
+	for _, event := range tx.auditEvents {
+		if event.CreatedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, event)
+	}
+	tx.auditEvents = kept
+	return deleted, nil
+}
+
 func (tx *memoryTx) CreateOutboxMessage(ctx context.Context, message domain.OutboxMessage) error {
 	tx.outbox[message.ID] = message
 	return nil
@@ -1900,6 +1942,53 @@ func cloneAuditEvents(src []domain.AuditEvent) []domain.AuditEvent {
 	dst := make([]domain.AuditEvent, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func listAuditEventsQuery(events []domain.AuditEvent, query AuditEventQuery) []domain.AuditEvent {
+	result := make([]domain.AuditEvent, 0, len(events))
+	for _, event := range events {
+		if query.Actor != "" && event.Actor != query.Actor {
+			continue
+		}
+		if query.Action != "" && event.Action != query.Action {
+			continue
+		}
+		if query.ResourceType != "" && event.ResourceType != query.ResourceType {
+			continue
+		}
+		if query.ResourceID != "" && event.ResourceID != query.ResourceID {
+			continue
+		}
+		if !query.CreatedFrom.IsZero() && event.CreatedAt.Before(query.CreatedFrom) {
+			continue
+		}
+		if !query.CreatedTo.IsZero() && event.CreatedAt.After(query.CreatedTo) {
+			continue
+		}
+		result = append(result, event)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			if query.Sort == "desc" {
+				return result[i].ID > result[j].ID
+			}
+			return result[i].ID < result[j].ID
+		}
+		if query.Sort == "desc" {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	if query.Offset > 0 {
+		if query.Offset >= len(result) {
+			return []domain.AuditEvent{}
+		}
+		result = result[query.Offset:]
+	}
+	if query.Limit > 0 && query.Limit < len(result) {
+		result = result[:query.Limit]
+	}
+	return result
 }
 
 func cloneOutboxMessages(src map[string]domain.OutboxMessage) map[string]domain.OutboxMessage {

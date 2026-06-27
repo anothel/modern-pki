@@ -99,6 +99,20 @@ type CRLPublicationRepository interface {
 type AuditRepository interface {
 	CreateAuditEvent(ctx context.Context, event domain.AuditEvent) error
 	ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error)
+	ListAuditEventsQuery(ctx context.Context, query AuditEventQuery) ([]domain.AuditEvent, error)
+	DeleteAuditEventsBefore(ctx context.Context, before time.Time) (int, error)
+}
+
+type AuditEventQuery struct {
+	Actor        string
+	Action       string
+	ResourceType string
+	ResourceID   string
+	CreatedFrom  time.Time
+	CreatedTo    time.Time
+	Sort         string
+	Limit        int
+	Offset       int
 }
 
 type OutboxRepository interface {

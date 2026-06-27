@@ -146,6 +146,8 @@ type APIFailureAuditRequest struct {
 	Err        error
 }
 
+type AuditEventQuery = store.AuditEventQuery
+
 type auditRequestMetadataContextKey struct{}
 type apiKeyAuditMetadataContextKey struct{}
 
@@ -2900,6 +2902,43 @@ func (s *Service) GetLatestCRLPublicationForDistributionPoint(ctx context.Contex
 
 func (s *Service) ListAuditEvents(ctx context.Context) ([]domain.AuditEvent, error) {
 	return s.repo.ListAuditEvents(ctx)
+}
+
+func (s *Service) ListAuditEventsQuery(ctx context.Context, query AuditEventQuery) ([]domain.AuditEvent, error) {
+	if query.Sort != "" && query.Sort != "asc" && query.Sort != "desc" {
+		return nil, domain.ErrInvalidRequest
+	}
+	if query.Limit < 0 || query.Offset < 0 || (query.Offset > 0 && query.Limit == 0) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if !query.CreatedFrom.IsZero() && !query.CreatedTo.IsZero() && query.CreatedTo.Before(query.CreatedFrom) {
+		return nil, domain.ErrInvalidRequest
+	}
+	return s.repo.ListAuditEventsQuery(ctx, query)
+}
+
+func (s *Service) PruneAuditEventsBefore(ctx context.Context, actor string, before time.Time) (int, error) {
+	if before.IsZero() || !before.Before(s.clock.Now()) {
+		return 0, domain.ErrInvalidRequest
+	}
+	if isBlank(actor) {
+		actor = "anonymous"
+	}
+	now := s.clock.Now()
+	deleted := 0
+	err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		var err error
+		deleted, err = repo.DeleteAuditEventsBefore(ctx, before)
+		if err != nil {
+			return err
+		}
+		fields := map[string]any{
+			"retention_cutoff": before.Format(time.RFC3339),
+			"deleted_count":    deleted,
+		}
+		return s.createAuditEvent(ctx, repo, actor, "audit.retention_pruned", "audit", s.idgen.NewID(), now, fields)
+	})
+	return deleted, err
 }
 
 func (s *Service) RecordAPIFailure(ctx context.Context, actor string, req APIFailureAuditRequest) error {

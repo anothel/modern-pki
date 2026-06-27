@@ -278,6 +278,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /ocsp", s.respondOCSP)
 
 	s.mux.HandleFunc("GET /audit-events", s.listAuditEvents)
+	s.mux.HandleFunc("POST /audit-events/retention/prune", s.pruneAuditEvents)
 	s.mux.HandleFunc("POST /audit-events/repair/issuance", s.repairIssuanceAuditEvents)
 	s.mux.HandleFunc("GET /trust/anchors", s.listTrustAnchors)
 }
@@ -1500,12 +1501,67 @@ func (s *Server) respondOCSP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.service.ListAuditEvents(r.Context())
+	query, err := auditEventQueryFromRequest(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	events, err := s.service.ListAuditEventsQuery(r.Context(), query)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAuditEventResponses(events))
+}
+
+func auditEventQueryFromRequest(r *http.Request) (lifecycle.AuditEventQuery, error) {
+	values := r.URL.Query()
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.AuditEventQuery{}, err
+	}
+	query := lifecycle.AuditEventQuery{
+		Actor:        values.Get("actor"),
+		Action:       values.Get("action"),
+		ResourceType: values.Get("resource_type"),
+		ResourceID:   values.Get("resource_id"),
+		Sort:         values.Get("sort"),
+		Limit:        limit,
+		Offset:       offset,
+	}
+	if query.Sort == "" {
+		query.Sort = "asc"
+	}
+	if query.Sort != "asc" && query.Sort != "desc" {
+		return lifecycle.AuditEventQuery{}, domain.ErrInvalidRequest
+	}
+	if raw := values.Get("from"); raw != "" {
+		query.CreatedFrom, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return lifecycle.AuditEventQuery{}, domain.ErrInvalidRequest
+		}
+	}
+	if raw := values.Get("to"); raw != "" {
+		query.CreatedTo, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return lifecycle.AuditEventQuery{}, domain.ErrInvalidRequest
+		}
+	}
+	return query, nil
+}
+
+func (s *Server) pruneAuditEvents(w http.ResponseWriter, r *http.Request) {
+	var req pruneAuditEventsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	deleted, err := s.service.PruneAuditEventsBefore(r.Context(), requestActor(r), req.Before)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pruneAuditEventsResponse{DeletedCount: deleted})
 }
 
 func (s *Server) repairIssuanceAuditEvents(w http.ResponseWriter, r *http.Request) {
@@ -2473,6 +2529,10 @@ type replayDeadLetterOutboxRequest struct {
 	Limit       int       `json:"limit"`
 }
 
+type pruneAuditEventsRequest struct {
+	Before time.Time `json:"before"`
+}
+
 type createCertificateProfileRequest struct {
 	Name                   string                           `json:"name"`
 	Description            string                           `json:"description"`
@@ -2920,6 +2980,10 @@ type auditEventResponse struct {
 
 type repairIssuanceAuditEventsResponse struct {
 	RepairedCount int `json:"repaired_count"`
+}
+
+type pruneAuditEventsResponse struct {
+	DeletedCount int `json:"deleted_count"`
 }
 
 func toIdentityResponse(identity domain.Identity) identityResponse {
