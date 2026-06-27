@@ -159,6 +159,10 @@ func (s *SQLStore) ListCertificates(ctx context.Context) ([]domain.Certificate, 
 	return s.repository().ListCertificates(ctx)
 }
 
+func (s *SQLStore) ListCertificateInventory(ctx context.Context, filter CertificateInventoryFilter) ([]CertificateInventoryRecord, error) {
+	return s.repository().ListCertificateInventory(ctx, filter)
+}
+
 func (s *SQLStore) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
 	return s.repository().ListCertificatesExpiringWithin(ctx, now, cutoff, limit, offset)
 }
@@ -744,9 +748,9 @@ func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile dom
 INSERT INTO certificate_profiles (
 	id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )`,
 		profile.ID,
 		profile.Name,
@@ -761,6 +765,7 @@ INSERT INTO certificate_profiles (
 		basicConstraints,
 		profile.SubjectKeyIdentifier,
 		profile.AuthorityKeyIdentifier,
+		profile.PublicTLS,
 		formatSQLTime(profile.CreatedAt),
 		formatSQLTime(profile.UpdatedAt),
 	)
@@ -771,7 +776,7 @@ func (r sqlRepository) GetCertificateProfile(ctx context.Context, id string) (do
 	profile, err := scanCertificateProfile(r.exec.QueryRowContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 FROM certificate_profiles
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -787,7 +792,7 @@ func (r sqlRepository) ListCertificateProfiles(ctx context.Context) ([]domain.Ce
 	rows, err := r.exec.QueryContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
 	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, created_at, updated_at
+	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 FROM certificate_profiles
 ORDER BY created_at, id`)
 	if err != nil {
@@ -1084,6 +1089,77 @@ ORDER BY created_at, id`)
 		return nil, err
 	}
 	return certificates, nil
+}
+
+func (r sqlRepository) ListCertificateInventory(ctx context.Context, filter CertificateInventoryFilter) ([]CertificateInventoryRecord, error) {
+	query := `
+SELECT
+	c.id, c.identity_id, c.issuer_id, c.enrollment_id, c.certificate_profile_id, c.serial_number, c.subject,
+	c.dns_names, c.ip_addresses, c.not_before, c.not_after, c.status, c.certificate_pem,
+	c.renewal_notified_at, c.created_at, c.updated_at,
+	i.id, i.type, i.name, i.external_id, i.owner, i.team, i.service, i.environment, i.deployment_target, i.last_seen_at,
+	i.metadata_json, i.allowed_dns_names, i.allowed_ip_addresses, i.status, i.created_at, i.updated_at,
+	iss.id, iss.name, iss.kind, iss.status, iss.parent_issuer_id, iss.certificate_pem, iss.key_ref, iss.aia_url, iss.crl_distribution_points, iss.trust_anchor, iss.created_at, iss.updated_at
+FROM certificates c
+JOIN identities i ON i.id = c.identity_id
+JOIN issuers iss ON iss.id = c.issuer_id`
+	args := make([]any, 0)
+	conditions := make([]string, 0)
+	addCondition := func(condition string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if filter.Owner != "" {
+		addCondition("i.owner = $%d", filter.Owner)
+	}
+	if filter.Team != "" {
+		addCondition("i.team = $%d", filter.Team)
+	}
+	if filter.Service != "" {
+		addCondition("i.service = $%d", filter.Service)
+	}
+	if filter.Environment != "" {
+		addCondition("i.environment = $%d", filter.Environment)
+	}
+	if filter.IssuerID != "" {
+		addCondition("c.issuer_id = $%d", filter.IssuerID)
+	}
+	if filter.ProfileID != "" {
+		addCondition("c.certificate_profile_id = $%d", filter.ProfileID)
+	}
+	if filter.RevocationState != "" {
+		addCondition("c.status = $%d", filter.RevocationState)
+	}
+	if len(conditions) > 0 {
+		query += "\nWHERE " + strings.Join(conditions, " AND ")
+	}
+	query += "\nORDER BY c.id"
+	if filter.Limit > 0 {
+		args = append(args, filter.Limit, filter.Offset)
+		query += fmt.Sprintf("\nLIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	} else if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		query += fmt.Sprintf("\nLIMIT 9223372036854775807 OFFSET $%d", len(args))
+	}
+
+	rows, err := r.exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]CertificateInventoryRecord, 0)
+	for rows.Next() {
+		record, err := scanCertificateInventoryRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func (r sqlRepository) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
@@ -2729,6 +2805,7 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 	var basicConstraints string
 	var subjectKeyIdentifier bool
 	var authorityKeyIdentifier bool
+	var publicTLS bool
 	var createdAt any
 	var updatedAt any
 
@@ -2746,6 +2823,7 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 		&basicConstraints,
 		&subjectKeyIdentifier,
 		&authorityKeyIdentifier,
+		&publicTLS,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -2782,6 +2860,7 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 	profile.AllowedIPRanges = parsedAllowedIPRanges
 	profile.SubjectKeyIdentifier = subjectKeyIdentifier
 	profile.AuthorityKeyIdentifier = authorityKeyIdentifier
+	profile.PublicTLS = publicTLS
 	profile.CreatedAt = parsedCreatedAt
 	profile.UpdatedAt = parsedUpdatedAt
 	return profile, nil
@@ -2935,6 +3014,149 @@ func scanCertificate(scanner sqlScanner) (domain.Certificate, error) {
 	certificate.CreatedAt = parsedCreatedAt
 	certificate.UpdatedAt = parsedUpdatedAt
 	return certificate, nil
+}
+
+func scanCertificateInventoryRecord(scanner sqlScanner) (CertificateInventoryRecord, error) {
+	var record CertificateInventoryRecord
+	var certificateStatus string
+	var dnsNames string
+	var ipAddresses string
+	var notBefore any
+	var notAfter any
+	var renewalNotifiedAt any
+	var certificateCreatedAt any
+	var certificateUpdatedAt any
+	var identityType string
+	var identityStatus string
+	var lastSeenAt any
+	var allowedDNSNames string
+	var allowedIPAddresses string
+	var identityCreatedAt any
+	var identityUpdatedAt any
+	var issuerKind string
+	var issuerStatus string
+	var distributionPoints string
+	var issuerCreatedAt any
+	var issuerUpdatedAt any
+
+	if err := scanner.Scan(
+		&record.Certificate.ID,
+		&record.Certificate.IdentityID,
+		&record.Certificate.IssuerID,
+		&record.Certificate.EnrollmentID,
+		&record.Certificate.CertificateProfileID,
+		&record.Certificate.SerialNumber,
+		&record.Certificate.Subject,
+		&dnsNames,
+		&ipAddresses,
+		&notBefore,
+		&notAfter,
+		&certificateStatus,
+		&record.Certificate.CertificatePEM,
+		&renewalNotifiedAt,
+		&certificateCreatedAt,
+		&certificateUpdatedAt,
+		&record.Identity.ID,
+		&identityType,
+		&record.Identity.Name,
+		&record.Identity.ExternalID,
+		&record.Identity.Owner,
+		&record.Identity.Team,
+		&record.Identity.Service,
+		&record.Identity.Environment,
+		&record.Identity.DeploymentTarget,
+		&lastSeenAt,
+		&record.Identity.MetadataJSON,
+		&allowedDNSNames,
+		&allowedIPAddresses,
+		&identityStatus,
+		&identityCreatedAt,
+		&identityUpdatedAt,
+		&record.Issuer.ID,
+		&record.Issuer.Name,
+		&issuerKind,
+		&issuerStatus,
+		&record.Issuer.ParentIssuerID,
+		&record.Issuer.CertificatePEM,
+		&record.Issuer.KeyRef,
+		&record.Issuer.AIAURL,
+		&distributionPoints,
+		&record.Issuer.TrustAnchor,
+		&issuerCreatedAt,
+		&issuerUpdatedAt,
+	); err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+
+	var err error
+	record.Certificate.DNSNames, err = unmarshalStringSlice(dnsNames)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.IPAddresses, err = unmarshalStringSlice(ipAddresses)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.NotBefore, err = parseSQLTime(notBefore)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.NotAfter, err = parseSQLTime(notAfter)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.RenewalNotifiedAt, err = parseSQLTime(renewalNotifiedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.CreatedAt, err = parseSQLTime(certificateCreatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.UpdatedAt, err = parseSQLTime(certificateUpdatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Certificate.Status = domain.CertificateStatus(certificateStatus)
+
+	record.Identity.Type = domain.IdentityType(identityType)
+	record.Identity.LastSeenAt, err = parseSQLTime(lastSeenAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Identity.AllowedDNSNames, err = unmarshalStringSlice(allowedDNSNames)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Identity.AllowedIPAddresses, err = unmarshalStringSlice(allowedIPAddresses)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Identity.Status = domain.IdentityStatus(identityStatus)
+	record.Identity.CreatedAt, err = parseSQLTime(identityCreatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Identity.UpdatedAt, err = parseSQLTime(identityUpdatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+
+	record.Issuer.Kind = domain.IssuerKind(issuerKind)
+	record.Issuer.Status = domain.IssuerStatus(issuerStatus)
+	record.Issuer.CRLDistributionPoints, err = unmarshalStringSlice(distributionPoints)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Issuer.CreatedAt, err = parseSQLTime(issuerCreatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	record.Issuer.UpdatedAt, err = parseSQLTime(issuerUpdatedAt)
+	if err != nil {
+		return CertificateInventoryRecord{}, err
+	}
+	return record, nil
 }
 
 func scanIssuanceAttempt(scanner sqlScanner) (domain.IssuanceAttempt, error) {

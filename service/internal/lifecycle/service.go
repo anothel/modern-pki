@@ -77,14 +77,15 @@ func (UUIDGenerator) NewID() string {
 }
 
 type Service struct {
-	repo               store.Repository
-	issuer             CertificateIssuer
-	clock              Clock
-	idgen              IDGenerator
-	acmeHTTP01Verifier ACMEHTTP01Verifier
-	apiKeyPepper       string
-	productionPolicy   bool
-	issueMu            sync.Mutex
+	repo                         store.Repository
+	issuer                       CertificateIssuer
+	clock                        Clock
+	idgen                        IDGenerator
+	acmeHTTP01Verifier           ACMEHTTP01Verifier
+	apiKeyPepper                 string
+	productionPolicy             bool
+	publicTLSMaxValidityOverride time.Duration
+	issueMu                      sync.Mutex
 }
 
 type AuditRequestMetadata struct {
@@ -161,6 +162,7 @@ type CreateCertificateProfileRequest struct {
 	Description            string
 	IssuerID               string
 	ValidityPeriodSeconds  int64
+	PublicTLS              bool
 	SubjectTemplate        string
 	AllowedDNSPatterns     []string
 	AllowedIPRanges        []string
@@ -219,6 +221,15 @@ const (
 	defaultACMEAuthorizationLifetime = 24 * time.Hour
 	defaultIssuanceSigningLease      = 5 * time.Minute
 )
+
+var publicTLSValidityCeilingSchedule = []struct {
+	start time.Time
+	max   time.Duration
+}{
+	{start: time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC), max: 200 * 24 * time.Hour},
+	{start: time.Date(2027, time.March, 15, 0, 0, 0, 0, time.UTC), max: 100 * 24 * time.Hour},
+	{start: time.Date(2029, time.March, 15, 0, 0, 0, 0, time.UTC), max: 47 * 24 * time.Hour},
+}
 
 type RenewCertificateRequest struct {
 	CSRPEM            string
@@ -348,6 +359,14 @@ func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer Cert
 
 func (s *Service) EnableProductionPolicy() {
 	s.productionPolicy = true
+}
+
+func (s *Service) SetPublicTLSMaxValidity(maxValidity time.Duration) error {
+	if maxValidity <= 0 {
+		return domain.ErrInvalidRequest
+	}
+	s.publicTLSMaxValidityOverride = maxValidity
+	return nil
 }
 
 func defaultACMEHTTP01Verifier() ACMEHTTP01Verifier {
@@ -1595,17 +1614,18 @@ func (s *Service) DisableNotificationEndpoint(ctx context.Context, actor string,
 }
 
 func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, req CreateCertificateProfileRequest) (domain.CertificateProfile, error) {
-	if err := validateCreateCertificateProfileRequest(req); err != nil {
+	now := s.clock.Now()
+	if err := validateCreateCertificateProfileRequest(req, now, s.publicTLSMaxValidityOverride); err != nil {
 		return domain.CertificateProfile{}, err
 	}
 
-	now := s.clock.Now()
 	profile := domain.CertificateProfile{
 		ID:                     s.idgen.NewID(),
 		Name:                   req.Name,
 		Description:            req.Description,
 		IssuerID:               req.IssuerID,
 		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
+		PublicTLS:              req.PublicTLS,
 		SubjectTemplate:        req.SubjectTemplate,
 		AllowedDNSPatterns:     append([]string(nil), req.AllowedDNSPatterns...),
 		AllowedIPRanges:        append([]string(nil), req.AllowedIPRanges...),
@@ -2619,32 +2639,26 @@ func (s *Service) ListCertificateInventory(ctx context.Context, opts Certificate
 	if opts.Limit < 0 || opts.Offset < 0 {
 		return nil, domain.ErrInvalidRequest
 	}
-	certificates, err := s.repo.ListCertificates(ctx)
-	if err != nil {
-		return nil, err
-	}
-	identities, err := s.repo.ListIdentities(ctx)
-	if err != nil {
-		return nil, err
-	}
-	issuers, err := s.repo.ListIssuers(ctx)
+	records, err := s.repo.ListCertificateInventory(ctx, store.CertificateInventoryFilter{
+		Owner:           opts.Owner,
+		Team:            opts.Team,
+		Service:         opts.Service,
+		Environment:     opts.Environment,
+		IssuerID:        opts.IssuerID,
+		ProfileID:       opts.ProfileID,
+		RevocationState: opts.RevocationState,
+		Limit:           opts.Limit,
+		Offset:          opts.Offset,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	identitiesByID := make(map[string]domain.Identity, len(identities))
-	for _, identity := range identities {
-		identitiesByID[identity.ID] = identity
-	}
-	issuersByID := make(map[string]domain.Issuer, len(issuers))
-	for _, issuer := range issuers {
-		issuersByID[issuer.ID] = issuer
-	}
-
-	entries := make([]CertificateInventoryEntry, 0, len(certificates))
-	for _, certificate := range certificates {
-		identity := identitiesByID[certificate.IdentityID]
-		issuer := issuersByID[certificate.IssuerID]
+	entries := make([]CertificateInventoryEntry, 0, len(records))
+	for _, record := range records {
+		certificate := record.Certificate
+		identity := record.Identity
+		issuer := record.Issuer
 		entries = append(entries, CertificateInventoryEntry{
 			CertificateID:        certificate.ID,
 			Owner:                identity.Owner,
@@ -2660,10 +2674,7 @@ func (s *Service) ListCertificateInventory(ctx context.Context, opts Certificate
 			CompletenessWarnings: identityCompletenessWarnings(identity),
 		})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].CertificateID < entries[j].CertificateID
-	})
-	return filterCertificateInventory(entries, opts), nil
+	return entries, nil
 }
 
 func (s *Service) ExpirySLO(ctx context.Context) (ExpirySLO, error) {
@@ -2688,42 +2699,6 @@ func (s *Service) ExpirySLO(ctx context.Context) (ExpirySLO, error) {
 		UnhandledIDs:   ids,
 		OK:             len(ids) == 0,
 	}, nil
-}
-
-func filterCertificateInventory(entries []CertificateInventoryEntry, opts CertificateInventoryOptions) []CertificateInventoryEntry {
-	filtered := make([]CertificateInventoryEntry, 0, len(entries))
-	for _, entry := range entries {
-		if opts.Owner != "" && entry.Owner != opts.Owner {
-			continue
-		}
-		if opts.Team != "" && entry.Team != opts.Team {
-			continue
-		}
-		if opts.Service != "" && entry.Service != opts.Service {
-			continue
-		}
-		if opts.Environment != "" && entry.Environment != opts.Environment {
-			continue
-		}
-		if opts.IssuerID != "" && entry.IssuerID != opts.IssuerID {
-			continue
-		}
-		if opts.ProfileID != "" && entry.ProfileID != opts.ProfileID {
-			continue
-		}
-		if opts.RevocationState != "" && entry.RevocationState != opts.RevocationState {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	if opts.Offset >= len(filtered) {
-		return []CertificateInventoryEntry{}
-	}
-	filtered = filtered[opts.Offset:]
-	if opts.Limit > 0 && opts.Limit < len(filtered) {
-		filtered = filtered[:opts.Limit]
-	}
-	return filtered
 }
 
 func (s *Service) GetCertificate(ctx context.Context, id string) (domain.Certificate, error) {
@@ -3471,9 +3446,15 @@ func isSingleRepeatedRune(value string) bool {
 	return value != ""
 }
 
-func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest) error {
+func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest, now time.Time, publicTLSMaxValidityOverride time.Duration) error {
 	if isBlank(req.Name) || isBlank(req.IssuerID) || req.ValidityPeriodSeconds <= 0 {
 		return domain.ErrInvalidRequest
+	}
+	if req.PublicTLS {
+		maxValidity := publicTLSValidityCeiling(now, publicTLSMaxValidityOverride)
+		if time.Duration(req.ValidityPeriodSeconds)*time.Second > maxValidity {
+			return domain.ErrInvalidRequest
+		}
 	}
 	if req.BasicConstraints.MaxPathLen != nil {
 		if *req.BasicConstraints.MaxPathLen < 0 || !req.BasicConstraints.CA {
@@ -3481,6 +3462,19 @@ func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest
 		}
 	}
 	return nil
+}
+
+func publicTLSValidityCeiling(now time.Time, override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	maxValidity := publicTLSValidityCeilingSchedule[0].max
+	for _, ceiling := range publicTLSValidityCeilingSchedule {
+		if !now.Before(ceiling.start) {
+			maxValidity = ceiling.max
+		}
+	}
+	return maxValidity
 }
 
 func validateCreateEnrollmentRequest(req CreateEnrollmentRequest, now time.Time) error {

@@ -35,6 +35,38 @@ func TestLoadOutboxConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPublicTLSConfig(t *testing.T) {
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY", "")
+	cfg, err := loadPublicTLSConfig()
+	if err != nil {
+		t.Fatalf("loadPublicTLSConfig default returned error: %v", err)
+	}
+	if cfg.MaxValidity != 0 {
+		t.Fatalf("default public TLS max validity = %s, want zero override", cfg.MaxValidity)
+	}
+
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY", "720h")
+	cfg, err = loadPublicTLSConfig()
+	if err != nil {
+		t.Fatalf("loadPublicTLSConfig override returned error: %v", err)
+	}
+	if cfg.MaxValidity != 720*time.Hour {
+		t.Fatalf("public TLS max validity = %s, want 720h", cfg.MaxValidity)
+	}
+}
+
+func TestLoadPublicTLSConfigRejectsInvalidMaxValidity(t *testing.T) {
+	for _, value := range []string{"0s", "-1h", "soon"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY", value)
+			_, err := loadPublicTLSConfig()
+			if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY") {
+				t.Fatalf("loadPublicTLSConfig error = %v, want env name", err)
+			}
+		})
+	}
+}
+
 func TestNewHTTPServerAppliesOperationalTimeouts(t *testing.T) {
 	srv := newHTTPServer(":8080", http.NewServeMux())
 

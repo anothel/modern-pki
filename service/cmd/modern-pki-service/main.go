@@ -92,6 +92,10 @@ type acmeDefaultsConfig struct {
 	IssuerKeyRef      string
 }
 
+type publicTLSConfig struct {
+	MaxValidity time.Duration
+}
+
 type authConfig struct {
 	HTTP                 httpapi.AuthConfig
 	BootstrapAPIKey      string
@@ -137,6 +141,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load ACME defaults config: %v", err)
 	}
+	publicTLSCfg, err := loadPublicTLSConfig()
+	if err != nil {
+		log.Fatalf("load public TLS config: %v", err)
+	}
 
 	db, err := sql.Open(dbDriver, dbDSN)
 	if err != nil {
@@ -156,6 +164,11 @@ func main() {
 	svc := lifecycle.NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo, corecli.Runner{Bin: coreBin}, lifecycle.RealClock{}, lifecycle.UUIDGenerator{}, acmeHTTP01Verifier, authCfg.APIKeyPepper)
 	if isProductionEnv(os.Getenv("MODERN_PKI_ENV")) {
 		svc.EnableProductionPolicy()
+	}
+	if publicTLSCfg.MaxValidity > 0 {
+		if err := svc.SetPublicTLSMaxValidity(publicTLSCfg.MaxValidity); err != nil {
+			log.Fatalf("set public TLS max validity: %v", err)
+		}
 	}
 	if acmeHTTP01VerifierCfg.BaseURL != "" {
 		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
@@ -553,6 +566,21 @@ func loadExpirationScanConfig() (expirationScanConfig, error) {
 		WarningWindow: warningWindow,
 		BatchSize:     batchSize,
 	}, nil
+}
+
+func loadPublicTLSConfig() (publicTLSConfig, error) {
+	value := strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY"))
+	if value == "" {
+		return publicTLSConfig{}, nil
+	}
+	maxValidity, err := time.ParseDuration(value)
+	if err != nil {
+		return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY: %w", err)
+	}
+	if maxValidity <= 0 {
+		return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY must be positive")
+	}
+	return publicTLSConfig{MaxValidity: maxValidity}, nil
 }
 
 func loadACMEHTTP01VerifierConfig() (acmeHTTP01VerifierConfig, error) {

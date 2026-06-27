@@ -11,6 +11,9 @@ Public TLS issuance must enforce configurable maximum certificate validity:
 | 2029-03-15 | 47 days | 10 days |
 
 Private PKI profiles may use different limits. Public TLS profiles must not.
+Set certificate profiles with `public_tls=true` to enforce these limits. Leave
+`MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY` unset to use the schedule above, or set it
+to a shorter positive duration for an emergency or operator-specific ceiling.
 
 ## Validation Reuse
 

@@ -11,6 +11,20 @@ permissions:
 jobs:
   go-service:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: modern_pki_test
+          POSTGRES_USER: modern_pki
+          POSTGRES_PASSWORD: modern_pki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U modern_pki -d modern_pki_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: service
@@ -23,6 +37,9 @@ jobs:
             service/go.mod
             service/go.sum
       - run: go test ./...
+      - run: go test ./internal/store -run TestApplyInitialMigrationPostgresIntegration -v
+        env:
+          MODERN_PKI_POSTGRES_TEST_DSN: postgres://modern_pki:modern_pki@localhost:5432/modern_pki_test?sslmode=disable
       - run: go build ./cmd/modern-pki-service
 
   cpp-core:

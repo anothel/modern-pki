@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -52,6 +53,263 @@ func TestSQLStoreListCertificatesExpiringWithin(t *testing.T) {
 		t.Fatalf("ApplyInitialMigration returned error: %v", err)
 	}
 	testListCertificatesExpiringWithin(t, NewSQLStore(db))
+}
+
+func TestSQLStoreListCertificateInventoryFiltersInRepository(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	repo := NewSQLStore(db)
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	issuer := domain.Issuer{
+		ID:             "issuer-inventory",
+		Name:           "Inventory Issuer",
+		Kind:           domain.IssuerIntermediateCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-pem",
+		KeyRef:         "keyref://inventory",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.CreateIssuer(ctx, issuer); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	profile := domain.CertificateProfile{
+		ID:                    "profile-inventory",
+		Name:                  "inventory-profile",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		AllowedDNSPatterns:    []string{},
+		AllowedIPRanges:       []string{},
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	if err := repo.CreateCertificateProfile(ctx, profile); err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+	matchingIdentity := domain.Identity{
+		ID:          "identity-match",
+		Type:        domain.IdentityService,
+		Name:        "payments",
+		Owner:       "platform",
+		Team:        "edge",
+		Service:     "pay-api",
+		Environment: "prod",
+		LastSeenAt:  now.Add(-time.Hour),
+		Status:      domain.IdentityActive,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	otherIdentity := matchingIdentity
+	otherIdentity.ID = "identity-other"
+	otherIdentity.Name = "billing"
+	otherIdentity.Owner = "finance"
+	otherIdentity.Service = "billing-api"
+	if err := repo.CreateIdentity(ctx, matchingIdentity); err != nil {
+		t.Fatalf("CreateIdentity matching returned error: %v", err)
+	}
+	if err := repo.CreateIdentity(ctx, otherIdentity); err != nil {
+		t.Fatalf("CreateIdentity other returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:                   "cert-match",
+		IdentityID:           matchingIdentity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		SerialNumber:         "1001",
+		Subject:              "CN=pay-api",
+		Status:               domain.CertificateValid,
+		NotBefore:            now,
+		NotAfter:             now.Add(24 * time.Hour),
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}); err != nil {
+		t.Fatalf("CreateCertificate matching returned error: %v", err)
+	}
+	if err := repo.CreateCertificate(ctx, domain.Certificate{
+		ID:                   "cert-other",
+		IdentityID:           otherIdentity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: profile.ID,
+		SerialNumber:         "1002",
+		Subject:              "CN=billing-api",
+		Status:               domain.CertificateRevoked,
+		NotBefore:            now,
+		NotAfter:             now.Add(24 * time.Hour),
+		CreatedAt:            now.Add(time.Second),
+		UpdatedAt:            now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("CreateCertificate other returned error: %v", err)
+	}
+
+	records, err := repo.ListCertificateInventory(ctx, CertificateInventoryFilter{
+		Owner:           "platform",
+		Service:         "pay-api",
+		Environment:     "prod",
+		RevocationState: string(domain.CertificateValid),
+		Limit:           1,
+	})
+	if err != nil {
+		t.Fatalf("ListCertificateInventory returned error: %v", err)
+	}
+	if len(records) != 1 || records[0].Certificate.ID != "cert-match" {
+		t.Fatalf("records = %#v, want cert-match only", records)
+	}
+	if records[0].Identity.Owner != "platform" || records[0].Issuer.KeyRef != issuer.KeyRef {
+		t.Fatalf("inventory join record = %#v", records[0])
+	}
+}
+
+func TestSQLStoreRestoreDrillPreservesOperationalState(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "restore-drill.db")
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	repo := NewSQLStore(db)
+	issuer := domain.Issuer{
+		ID:             "issuer-restore",
+		Name:           "Restore Issuer",
+		Kind:           domain.IssuerIntermediateCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-pem",
+		KeyRef:         "kms://issuer-restore",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.CreateIssuer(ctx, issuer); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	if err := repo.CreateAuditEvent(ctx, domain.AuditEvent{
+		ID:           "audit-restore",
+		Actor:        "operator",
+		Action:       "restore.seeded",
+		ResourceType: "issuer",
+		ResourceID:   issuer.ID,
+		MetadataJSON: `{"restore_drill":true}`,
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreateAuditEvent returned error: %v", err)
+	}
+	if err := repo.CreateCRLPublication(ctx, domain.CRLPublication{
+		ID:                "crl-restore",
+		IssuerID:          issuer.ID,
+		DistributionPoint: "https://pki.example/crl.pem",
+		CRLNumber:         7,
+		ThisUpdate:        now,
+		NextUpdate:        now.Add(24 * time.Hour),
+		Status:            domain.CRLPublicationPublished,
+		CRLPEM:            "crl-pem",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("CreateCRLPublication returned error: %v", err)
+	}
+	if err := repo.CreateOCSPResponder(ctx, domain.OCSPResponder{
+		ID:             "ocsp-restore",
+		IssuerID:       issuer.ID,
+		Name:           "Restore OCSP",
+		Status:         domain.OCSPResponderActive,
+		CertificatePEM: "ocsp-pem",
+		KeyRef:         "kms://ocsp-restore",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateOCSPResponder returned error: %v", err)
+	}
+	outboxMessage := domain.OutboxMessage{
+		ID:          "outbox-restore",
+		Type:        "restore.drill",
+		PayloadJSON: `{"restore":true}`,
+		Status:      domain.OutboxDeadLetter,
+		AvailableAt: now,
+		MaxAttempts: 3,
+		LastError:   "seeded",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := repo.CreateOutboxMessage(ctx, outboxMessage); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+	if err := repo.CreateJobAttempt(ctx, domain.JobAttempt{
+		ID:              "job-restore",
+		OutboxMessageID: outboxMessage.ID,
+		Status:          domain.JobAttemptFailed,
+		Error:           "seeded failure",
+		StartedAt:       now,
+		FinishedAt:      now.Add(time.Second),
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateJobAttempt returned error: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded db: %v", err)
+	}
+
+	restoredDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open restored sqlite: %v", err)
+	}
+	defer restoredDB.Close()
+	if err := CheckInitialMigration(ctx, restoredDB, "sqlite"); err != nil {
+		t.Fatalf("CheckInitialMigration restored db returned error: %v", err)
+	}
+	restored := NewSQLStore(restoredDB)
+	restoredIssuer, err := restored.GetIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetIssuer restored returned error: %v", err)
+	}
+	if restoredIssuer.KeyRef != issuer.KeyRef {
+		t.Fatalf("restored issuer key ref = %q, want %q", restoredIssuer.KeyRef, issuer.KeyRef)
+	}
+	auditEvents, err := restored.ListAuditEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListAuditEvents restored returned error: %v", err)
+	}
+	if len(auditEvents) != 1 || auditEvents[0].Action != "restore.seeded" {
+		t.Fatalf("restored audit events = %#v", auditEvents)
+	}
+	crl, err := restored.GetLatestCRLPublicationByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetLatestCRLPublicationByIssuer restored returned error: %v", err)
+	}
+	if crl.CRLNumber != 7 || crl.CRLPEM != "crl-pem" {
+		t.Fatalf("restored CRL = %#v", crl)
+	}
+	ocsp, err := restored.GetActiveOCSPResponderByIssuer(ctx, issuer.ID)
+	if err != nil {
+		t.Fatalf("GetActiveOCSPResponderByIssuer restored returned error: %v", err)
+	}
+	if ocsp.KeyRef != "kms://ocsp-restore" {
+		t.Fatalf("restored OCSP = %#v", ocsp)
+	}
+	messages, err := restored.ListOutboxMessages(ctx, domain.OutboxDeadLetter)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages restored returned error: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != outboxMessage.ID {
+		t.Fatalf("restored outbox messages = %#v", messages)
+	}
+	attempts, err := restored.ListJobAttemptsByOutboxMessage(ctx, outboxMessage.ID)
+	if err != nil {
+		t.Fatalf("ListJobAttemptsByOutboxMessage restored returned error: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].Status != domain.JobAttemptFailed {
+		t.Fatalf("restored job attempts = %#v", attempts)
+	}
 }
 
 func TestMemoryStoreAPIKeys(t *testing.T) {

@@ -28,29 +28,24 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### Migration And Recovery
 
-- Run PostgreSQL migration integration tests in CI against a disposable database.
-- Add automated restore drills that verify schema version, audit state, issuer
-  key references, CRL artifacts, OCSP responder state, and lifecycle jobs.
+No remaining P0 migration and recovery work.
 
 ### Inventory, Ownership, And Expiry Control
 
-- Move operator inventory filters from service-side filtering into SQL when large
-  inventory tests show response time risk.
 - Keep discovery/import scoped to the first real source requested by operators;
   defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
   until one integration proves the model.
 
 ### Webhook And Outbox Safety
 
-- Add generated webhook receiver examples for common operator languages.
+No remaining P0 webhook and outbox safety work.
 
 ### Public TLS Readiness
 
-- Enforce configurable public TLS validity ceilings for 200/100/47-day eras.
-- Track Domain/IP validation reuse age separately from certificate validity.
-- Add policy checks for CAA DNSSEC handling and RFC 8657 CAA parameters where
-  public TLS issuance is enabled.
-- Add mass-revocation planning docs and a tabletop drill checklist.
+- Persist Domain/IP validation evidence age separately from certificate
+  validity and reject stale reuse for public TLS issuance.
+- Add executable CAA DNSSEC handling and RFC 8657 CAA parameter policy checks
+  where public TLS issuance is enabled.
 
 ## P1: ACME Security And Compatibility
 

@@ -100,7 +100,7 @@ Notification endpoints deliver lifecycle outbox events to operator webhooks:
 - `GET /notification-endpoints`
 - `POST /notification-endpoints/{id}/disable`
 
-Webhook endpoints require a shared secret when created. In production mode, webhook endpoint URLs must use HTTPS and webhook secrets must be at least 32 characters and not common defaults. Deliveries receive JSON with `schema_version`, `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
+Webhook endpoints require a shared secret when created. In production mode, webhook endpoint URLs must use HTTPS and webhook secrets must be at least 32 characters and not common defaults. Deliveries receive JSON with `schema_version`, `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Receiver examples are in `docs/reference/webhook-receivers.md`. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
 
 Outbox operations expose delivery state for operators:
 
@@ -186,6 +186,7 @@ Environment variables:
 | `MODERN_PKI_EXPIRATION_SCAN_INTERVAL` | `1h` | Expiration scan worker interval. |
 | `MODERN_PKI_EXPIRATION_WARNING_WINDOW` | `720h` | Renewal warning window for valid certificates. |
 | `MODERN_PKI_EXPIRATION_SCAN_BATCH_SIZE` | `100` | Max certificates processed per expiration scan. |
+| `MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY` | empty | Optional override for public TLS profile max validity. Empty uses 200/100/47-day BR-era defaults. |
 | `MODERN_PKI_ACME_HTTP01_BASE_URL` | empty | Optional local smoke override for HTTP-01 challenge fetches. |
 | `MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS` | `false` | Local smoke-only bootstrap for default ACME identity, issuer, and profile. |
 | `MODERN_PKI_ACME_DEFAULT_VALIDITY` | `24h` | Validity used by ACME smoke defaults. |

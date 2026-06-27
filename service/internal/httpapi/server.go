@@ -1000,6 +1000,7 @@ func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request
 		Description:            req.Description,
 		IssuerID:               req.IssuerID,
 		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
+		PublicTLS:              req.PublicTLS,
 		SubjectTemplate:        req.SubjectTemplate,
 		AllowedDNSPatterns:     req.AllowedDNSPatterns,
 		AllowedIPRanges:        req.AllowedIPRanges,
@@ -2204,6 +2205,7 @@ type createCertificateProfileRequest struct {
 	Description            string                           `json:"description"`
 	IssuerID               string                           `json:"issuer_id"`
 	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	PublicTLS              bool                             `json:"public_tls"`
 	SubjectTemplate        string                           `json:"subject_template"`
 	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
 	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
@@ -2546,6 +2548,7 @@ type certificateProfileResponse struct {
 	Description            string                           `json:"description"`
 	IssuerID               string                           `json:"issuer_id"`
 	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	PublicTLS              bool                             `json:"public_tls"`
 	SubjectTemplate        string                           `json:"subject_template"`
 	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
 	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
@@ -3009,6 +3012,7 @@ func toCertificateProfileResponse(profile domain.CertificateProfile) certificate
 		Description:            profile.Description,
 		IssuerID:               profile.IssuerID,
 		ValidityPeriodSeconds:  profile.ValidityPeriodSeconds,
+		PublicTLS:              profile.PublicTLS,
 		SubjectTemplate:        profile.SubjectTemplate,
 		AllowedDNSPatterns:     profile.AllowedDNSPatterns,
 		AllowedIPRanges:        profile.AllowedIPRanges,

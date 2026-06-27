@@ -245,6 +245,7 @@ type CertificateProfile struct {
 	Description            string
 	IssuerID               string
 	ValidityPeriodSeconds  int64
+	PublicTLS              bool
 	SubjectTemplate        string
 	AllowedDNSPatterns     []string
 	AllowedIPRanges        []string

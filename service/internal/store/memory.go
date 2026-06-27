@@ -364,6 +364,13 @@ func (s *MemoryStore) ListCertificates(ctx context.Context) ([]domain.Certificat
 	return certificates, nil
 }
 
+func (s *MemoryStore) ListCertificateInventory(ctx context.Context, filter CertificateInventoryFilter) ([]CertificateInventoryRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listCertificateInventory(s.certificates, s.identities, s.issuers, filter), nil
+}
+
 func (s *MemoryStore) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1354,6 +1361,10 @@ func (tx *memoryTx) ListCertificates(ctx context.Context) ([]domain.Certificate,
 	return certificates, nil
 }
 
+func (tx *memoryTx) ListCertificateInventory(ctx context.Context, filter CertificateInventoryFilter) ([]CertificateInventoryRecord, error) {
+	return listCertificateInventory(tx.certificates, tx.identities, tx.issuers, filter), nil
+}
+
 func (tx *memoryTx) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
 	return listCertificatesExpiringWithin(tx.certificates, now, cutoff, limit, offset), nil
 }
@@ -1800,6 +1811,58 @@ func listCertificatesExpiringWithin(certificates map[string]domain.Certificate, 
 		return result[:limit]
 	}
 	return result
+}
+
+func listCertificateInventory(certificates map[string]domain.Certificate, identities map[string]domain.Identity, issuers map[string]domain.Issuer, filter CertificateInventoryFilter) []CertificateInventoryRecord {
+	result := make([]CertificateInventoryRecord, 0)
+	for _, certificate := range certificates {
+		identity := identities[certificate.IdentityID]
+		issuer := issuers[certificate.IssuerID]
+		if !certificateInventoryRecordMatches(certificate, identity, filter) {
+			continue
+		}
+		result = append(result, CertificateInventoryRecord{
+			Certificate: copyCertificate(certificate),
+			Identity:    copyIdentity(identity),
+			Issuer:      copyIssuer(issuer),
+		})
+	}
+	sort.Slice(result, func(i int, j int) bool {
+		return result[i].Certificate.ID < result[j].Certificate.ID
+	})
+	if filter.Offset >= len(result) {
+		return []CertificateInventoryRecord{}
+	}
+	result = result[filter.Offset:]
+	if filter.Limit > 0 && filter.Limit < len(result) {
+		result = result[:filter.Limit]
+	}
+	return result
+}
+
+func certificateInventoryRecordMatches(certificate domain.Certificate, identity domain.Identity, filter CertificateInventoryFilter) bool {
+	if filter.Owner != "" && identity.Owner != filter.Owner {
+		return false
+	}
+	if filter.Team != "" && identity.Team != filter.Team {
+		return false
+	}
+	if filter.Service != "" && identity.Service != filter.Service {
+		return false
+	}
+	if filter.Environment != "" && identity.Environment != filter.Environment {
+		return false
+	}
+	if filter.IssuerID != "" && certificate.IssuerID != filter.IssuerID {
+		return false
+	}
+	if filter.ProfileID != "" && certificate.CertificateProfileID != filter.ProfileID {
+		return false
+	}
+	if filter.RevocationState != "" && string(certificate.Status) != filter.RevocationState {
+		return false
+	}
+	return true
 }
 
 func certificateNeedsExpirationScan(certificate domain.Certificate, now time.Time, warningBefore time.Time) bool {

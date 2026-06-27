@@ -3873,6 +3873,7 @@ type apiCertificateProfile struct {
 	Description            string                           `json:"description"`
 	IssuerID               string                           `json:"issuer_id"`
 	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
+	PublicTLS              bool                             `json:"public_tls"`
 	SubjectTemplate        string                           `json:"subject_template"`
 	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
 	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`

@@ -2105,6 +2105,79 @@ func TestCreateCertificateProfileRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestCreateCertificateProfileEnforcesPublicTLSValidityCeiling(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name       string
+		now        time.Time
+		validity   time.Duration
+		wantReject bool
+	}{
+		{name: "200 day era allows 200 days", now: time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC), validity: 200 * 24 * time.Hour},
+		{name: "100 day era rejects 101 days", now: time.Date(2027, time.March, 15, 0, 0, 0, 0, time.UTC), validity: 101 * 24 * time.Hour, wantReject: true},
+		{name: "47 day era rejects 48 days", now: time.Date(2029, time.March, 15, 0, 0, 0, 0, time.UTC), validity: 48 * 24 * time.Hour, wantReject: true},
+		{name: "private profile may exceed public ceiling", now: time.Date(2029, time.March, 15, 0, 0, 0, 0, time.UTC), validity: 90 * 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := New(store.NewMemoryStore(), &fakeIssuer{}, fixedClock{now: tt.now}, &fakeIDGenerator{})
+			issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+				Name:           "intermediate-ca",
+				Kind:           domain.IssuerIntermediateCA,
+				CertificatePEM: "issuer-cert-pem",
+				KeyRef:         "issuer-key-ref",
+			})
+			if err != nil {
+				t.Fatalf("CreateIssuer returned error: %v", err)
+			}
+
+			_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+				Name:                  "server",
+				IssuerID:              issuer.ID,
+				ValidityPeriodSeconds: int64(tt.validity.Seconds()),
+				PublicTLS:             tt.name != "private profile may exceed public ceiling",
+			})
+			if tt.wantReject {
+				if !errors.Is(err, domain.ErrInvalidRequest) {
+					t.Fatalf("CreateCertificateProfile error = %v, want ErrInvalidRequest", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CreateCertificateProfile returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateCertificateProfileUsesConfiguredPublicTLSValidityCeiling(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC)
+	service := New(store.NewMemoryStore(), &fakeIssuer{}, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := service.SetPublicTLSMaxValidity(30 * 24 * time.Hour); err != nil {
+		t.Fatalf("SetPublicTLSMaxValidity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((31 * 24 * time.Hour).Seconds()),
+		PublicTLS:             true,
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateCertificateProfile error = %v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestCreateEnrollmentRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
