@@ -343,6 +343,52 @@ type CertificateInventoryOptions struct {
 	Offset          int
 }
 
+type IdentityListOptions struct {
+	Owner       string
+	Team        string
+	Service     string
+	Environment string
+	Sort        string
+	Limit       int
+	Offset      int
+}
+
+type EnrollmentListOptions struct {
+	IdentityID string
+	IssuerID   string
+	ProfileID  string
+	Status     domain.EnrollmentStatus
+	Sort       string
+	Limit      int
+	Offset     int
+}
+
+type CertificateListOptions struct {
+	Owner             string
+	Team              string
+	Service           string
+	Environment       string
+	IssuerID          string
+	ProfileID         string
+	SAN               string
+	RevocationState   string
+	RenewalState      string
+	ExpiresWithinDays int
+	Sort              string
+	Limit             int
+	Offset            int
+}
+
+type OutboxMessageListOptions struct {
+	Status      domain.OutboxMessageStatus
+	Type        string
+	CreatedFrom time.Time
+	CreatedTo   time.Time
+	Sort        string
+	Limit       int
+	Offset      int
+}
+
 type ExpirySLO struct {
 	WindowDays     int
 	UnhandledCount int
@@ -1655,6 +1701,38 @@ func (s *Service) ListOutboxMessages(ctx context.Context, status domain.OutboxMe
 	return s.repo.ListOutboxMessages(ctx, status)
 }
 
+func (s *Service) ListOutboxMessagesQuery(ctx context.Context, opts OutboxMessageListOptions) ([]domain.OutboxMessage, error) {
+	if err := validateListOptions(opts.Sort, opts.Limit, opts.Offset); err != nil {
+		return nil, err
+	}
+	if opts.Status != "" && !isValidOutboxMessageStatus(opts.Status) {
+		return nil, domain.ErrInvalidRequest
+	}
+	messages, err := s.repo.ListOutboxMessages(ctx, opts.Status)
+	if err != nil {
+		return nil, err
+	}
+	filtered := messages[:0]
+	for _, message := range messages {
+		if opts.Type != "" && message.Type != opts.Type {
+			continue
+		}
+		if !opts.CreatedFrom.IsZero() && message.CreatedAt.Before(opts.CreatedFrom) {
+			continue
+		}
+		if !opts.CreatedTo.IsZero() && message.CreatedAt.After(opts.CreatedTo) {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	return sortAndPage(filtered, opts.Sort, opts.Limit, opts.Offset, func(a, b domain.OutboxMessage) bool {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	}), nil
+}
+
 func (s *Service) RetryOutboxMessage(ctx context.Context, actor string, id string) (domain.OutboxMessage, error) {
 	if isBlank(id) {
 		return domain.OutboxMessage{}, domain.ErrInvalidRequest
@@ -2765,6 +2843,38 @@ func (s *Service) ListIdentities(ctx context.Context) ([]domain.Identity, error)
 	return s.repo.ListIdentities(ctx)
 }
 
+func (s *Service) ListIdentitiesQuery(ctx context.Context, opts IdentityListOptions) ([]domain.Identity, error) {
+	if err := validateListOptions(opts.Sort, opts.Limit, opts.Offset); err != nil {
+		return nil, err
+	}
+	identities, err := s.repo.ListIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := identities[:0]
+	for _, identity := range identities {
+		if opts.Owner != "" && identity.Owner != opts.Owner {
+			continue
+		}
+		if opts.Team != "" && identity.Team != opts.Team {
+			continue
+		}
+		if opts.Service != "" && identity.Service != opts.Service {
+			continue
+		}
+		if opts.Environment != "" && identity.Environment != opts.Environment {
+			continue
+		}
+		filtered = append(filtered, identity)
+	}
+	return sortAndPage(filtered, opts.Sort, opts.Limit, opts.Offset, func(a, b domain.Identity) bool {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	}), nil
+}
+
 func (s *Service) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
 	return s.repo.ListIssuers(ctx)
 }
@@ -2785,12 +2895,109 @@ func (s *Service) ListEnrollments(ctx context.Context) ([]domain.Enrollment, err
 	return s.repo.ListEnrollments(ctx)
 }
 
+func (s *Service) ListEnrollmentsQuery(ctx context.Context, opts EnrollmentListOptions) ([]domain.Enrollment, error) {
+	if err := validateListOptions(opts.Sort, opts.Limit, opts.Offset); err != nil {
+		return nil, err
+	}
+	if opts.Status != "" && !isValidEnrollmentStatus(opts.Status) {
+		return nil, domain.ErrInvalidRequest
+	}
+	enrollments, err := s.repo.ListEnrollments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := enrollments[:0]
+	for _, enrollment := range enrollments {
+		if opts.IdentityID != "" && enrollment.IdentityID != opts.IdentityID {
+			continue
+		}
+		if opts.IssuerID != "" && enrollment.IssuerID != opts.IssuerID {
+			continue
+		}
+		if opts.ProfileID != "" && enrollment.CertificateProfileID != opts.ProfileID {
+			continue
+		}
+		if opts.Status != "" && enrollment.Status != opts.Status {
+			continue
+		}
+		filtered = append(filtered, enrollment)
+	}
+	return sortAndPage(filtered, opts.Sort, opts.Limit, opts.Offset, func(a, b domain.Enrollment) bool {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	}), nil
+}
+
 func (s *Service) GetEnrollment(ctx context.Context, id string) (domain.Enrollment, error) {
 	return s.repo.GetEnrollment(ctx, id)
 }
 
 func (s *Service) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
 	return s.repo.ListCertificates(ctx)
+}
+
+func (s *Service) ListCertificatesQuery(ctx context.Context, opts CertificateListOptions) ([]domain.Certificate, error) {
+	if err := validateListOptions(opts.Sort, opts.Limit, opts.Offset); err != nil {
+		return nil, err
+	}
+	if opts.RevocationState != "" && !isValidCertificateStatus(domain.CertificateStatus(opts.RevocationState)) {
+		return nil, domain.ErrInvalidRequest
+	}
+	if opts.RenewalState != "" && opts.RenewalState != "notified" && opts.RenewalState != "unnotified" {
+		return nil, domain.ErrInvalidRequest
+	}
+	if opts.ExpiresWithinDays != 0 && !isAllowedExpiryWindowDays(opts.ExpiresWithinDays) {
+		return nil, domain.ErrInvalidRequest
+	}
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identityByID, err := s.identityFilterLookup(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	cutoff := now.Add(time.Duration(opts.ExpiresWithinDays) * 24 * time.Hour)
+	filtered := certificates[:0]
+	for _, certificate := range certificates {
+		if opts.IssuerID != "" && certificate.IssuerID != opts.IssuerID {
+			continue
+		}
+		if opts.ProfileID != "" && certificate.CertificateProfileID != opts.ProfileID {
+			continue
+		}
+		if opts.SAN != "" && !certificateHasSAN(certificate, opts.SAN) {
+			continue
+		}
+		if opts.RevocationState != "" && string(certificate.Status) != opts.RevocationState {
+			continue
+		}
+		if opts.RenewalState == "notified" && certificate.RenewalNotifiedAt.IsZero() {
+			continue
+		}
+		if opts.RenewalState == "unnotified" && !certificate.RenewalNotifiedAt.IsZero() {
+			continue
+		}
+		if opts.ExpiresWithinDays != 0 && (certificate.Status != domain.CertificateValid || certificate.NotAfter.Before(now) || certificate.NotAfter.After(cutoff)) {
+			continue
+		}
+		if identityByID != nil {
+			identity, ok := identityByID[certificate.IdentityID]
+			if !ok || !identityMatchesCertificateFilters(identity, opts) {
+				continue
+			}
+		}
+		filtered = append(filtered, certificate)
+	}
+	return sortAndPage(filtered, opts.Sort, opts.Limit, opts.Offset, func(a, b domain.Certificate) bool {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	}), nil
 }
 
 func (s *Service) ListCertificatesExpiringWithin(ctx context.Context, days int, limit int, offset int) ([]domain.Certificate, error) {
@@ -4099,6 +4306,100 @@ func isValidOutboxMessageStatus(status domain.OutboxMessageStatus) bool {
 	default:
 		return false
 	}
+}
+
+func isValidEnrollmentStatus(status domain.EnrollmentStatus) bool {
+	switch status {
+	case domain.EnrollmentPending, domain.EnrollmentApproved, domain.EnrollmentRejected, domain.EnrollmentIssued, domain.EnrollmentCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidCertificateStatus(status domain.CertificateStatus) bool {
+	switch status {
+	case domain.CertificateValid, domain.CertificateSuspended, domain.CertificateRevoked, domain.CertificateExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateListOptions(sortOrder string, limit int, offset int) error {
+	if sortOrder != "" && sortOrder != "asc" && sortOrder != "desc" {
+		return domain.ErrInvalidRequest
+	}
+	if limit < 0 || offset < 0 {
+		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func sortAndPage[T any](items []T, sortOrder string, limit int, offset int, less func(T, T) bool) []T {
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if sortOrder == "desc" {
+			return less(items[j], items[i])
+		}
+		return less(items[i], items[j])
+	})
+	if offset >= len(items) {
+		return []T{}
+	}
+	start := offset
+	end := len(items)
+	if limit > 0 && start+limit < end {
+		end = start + limit
+	}
+	return items[start:end]
+}
+
+func (s *Service) identityFilterLookup(ctx context.Context, opts CertificateListOptions) (map[string]domain.Identity, error) {
+	if opts.Owner == "" && opts.Team == "" && opts.Service == "" && opts.Environment == "" {
+		return nil, nil
+	}
+	identities, err := s.repo.ListIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]domain.Identity, len(identities))
+	for _, identity := range identities {
+		byID[identity.ID] = identity
+	}
+	return byID, nil
+}
+
+func identityMatchesCertificateFilters(identity domain.Identity, opts CertificateListOptions) bool {
+	if opts.Owner != "" && identity.Owner != opts.Owner {
+		return false
+	}
+	if opts.Team != "" && identity.Team != opts.Team {
+		return false
+	}
+	if opts.Service != "" && identity.Service != opts.Service {
+		return false
+	}
+	if opts.Environment != "" && identity.Environment != opts.Environment {
+		return false
+	}
+	return true
+}
+
+func certificateHasSAN(certificate domain.Certificate, san string) bool {
+	for _, dnsName := range certificate.DNSNames {
+		if dnsName == san {
+			return true
+		}
+	}
+	for _, ipAddress := range certificate.IPAddresses {
+		if ipAddress == san {
+			return true
+		}
+	}
+	return false
 }
 
 func isAllowedExpiryWindowDays(days int) bool {

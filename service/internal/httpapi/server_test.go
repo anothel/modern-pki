@@ -1836,6 +1836,37 @@ func TestListOutboxMessagesByStatusAndRetry(t *testing.T) {
 	}
 }
 
+func TestListOutboxMessagesFiltersSortsAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	base := testNow.Add(-time.Hour)
+	for _, message := range []domain.OutboxMessage{
+		testOutboxMessage("message-1", "certificate.issued", domain.OutboxPending, base),
+		testOutboxMessage("message-2", "certificate.revoked", domain.OutboxDeadLetter, base.Add(time.Minute)),
+		testOutboxMessage("message-3", "certificate.revoked", domain.OutboxPending, base.Add(2*time.Minute)),
+	} {
+		if err := api.repo.CreateOutboxMessage(api.ctx, message); err != nil {
+			t.Fatalf("CreateOutboxMessage(%s) returned error: %v", message.ID, err)
+		}
+	}
+
+	var messages []apiOutboxMessage
+	path := "/outbox/messages?type=certificate.revoked&status=pending&sort=desc&limit=1"
+	status := api.doJSON(t, http.MethodGet, path, "", nil, &messages)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiOutboxMessageIDs(messages); !reflect.DeepEqual(got, []string{"message-3"}) {
+		t.Fatalf("filtered outbox IDs = %#v", got)
+	}
+
+	from := base.Format(time.RFC3339)
+	to := base.Add(3 * time.Minute).Format(time.RFC3339)
+	path = "/outbox/messages?from=" + url.QueryEscape(from) + "&to=" + url.QueryEscape(to) + "&sort=asc&limit=1&offset=1"
+	status = api.doJSON(t, http.MethodGet, path, "", nil, &messages)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiOutboxMessageIDs(messages); !reflect.DeepEqual(got, []string{"message-2"}) {
+		t.Fatalf("paged outbox IDs = %#v", got)
+	}
+}
+
 func TestReplayDeadLetterOutboxMessagesRequiresGuards(t *testing.T) {
 	api := newTestAPI(t)
 
@@ -2160,6 +2191,96 @@ func TestOperatorCertificateInventoryFiltersAndPaginates(t *testing.T) {
 	var body errorResponse
 	status = api.doJSON(t, http.MethodGet, "/operator/certificate-inventory?limit=0", "", nil, &body)
 	assertStatus(t, status, http.StatusBadRequest)
+}
+
+func TestListIdentitiesFiltersSortsAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	for _, identity := range []domain.Identity{
+		testHTTPIdentity("identity-1", "alpha", "platform", "payments", "pay-api", "prod"),
+		testHTTPIdentity("identity-2", "beta", "platform", "payments", "pay-api", "stage"),
+		testHTTPIdentity("identity-3", "gamma", "security", "identity", "id-api", "prod"),
+	} {
+		if err := api.repo.CreateIdentity(api.ctx, identity); err != nil {
+			t.Fatalf("CreateIdentity(%s) returned error: %v", identity.ID, err)
+		}
+	}
+
+	var identities []apiIdentity
+	status := api.doJSON(t, http.MethodGet, "/identities?owner=platform&service=pay-api&environment=prod&sort=desc&limit=1", "", nil, &identities)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiIdentityIDs(identities); !reflect.DeepEqual(got, []string{"identity-1"}) {
+		t.Fatalf("filtered identity IDs = %#v", got)
+	}
+
+	status = api.doJSON(t, http.MethodGet, "/identities?sort=asc&limit=1&offset=1", "", nil, &identities)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiIdentityIDs(identities); !reflect.DeepEqual(got, []string{"identity-2"}) {
+		t.Fatalf("paged identity IDs = %#v", got)
+	}
+}
+
+func TestListEnrollmentsFiltersSortsAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	now := testNow
+	for _, enrollment := range []domain.Enrollment{
+		testHTTPEnrollment("enrollment-1", "identity-1", "issuer-1", "profile-1", domain.EnrollmentPending, now),
+		testHTTPEnrollment("enrollment-2", "identity-2", "issuer-1", "profile-1", domain.EnrollmentRejected, now.Add(time.Minute)),
+		testHTTPEnrollment("enrollment-3", "identity-1", "issuer-2", "profile-2", domain.EnrollmentPending, now.Add(2*time.Minute)),
+	} {
+		if err := api.repo.CreateEnrollment(api.ctx, enrollment); err != nil {
+			t.Fatalf("CreateEnrollment(%s) returned error: %v", enrollment.ID, err)
+		}
+	}
+
+	var enrollments []apiEnrollment
+	status := api.doJSON(t, http.MethodGet, "/enrollments?identity_id=identity-1&status=pending&sort=desc&limit=1", "", nil, &enrollments)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiEnrollmentIDs(enrollments); !reflect.DeepEqual(got, []string{"enrollment-3"}) {
+		t.Fatalf("filtered enrollment IDs = %#v", got)
+	}
+
+	status = api.doJSON(t, http.MethodGet, "/enrollments?issuer_id=issuer-1&profile_id=profile-1&sort=asc&limit=1&offset=1", "", nil, &enrollments)
+	assertStatus(t, status, http.StatusOK)
+	if got := apiEnrollmentIDs(enrollments); !reflect.DeepEqual(got, []string{"enrollment-2"}) {
+		t.Fatalf("paged enrollment IDs = %#v", got)
+	}
+}
+
+func TestListCertificatesFiltersSortsAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	now := testNow
+	for _, identity := range []domain.Identity{
+		testHTTPIdentity("identity-1", "alpha", "platform", "payments", "pay-api", "prod"),
+		testHTTPIdentity("identity-2", "beta", "security", "identity", "id-api", "stage"),
+	} {
+		if err := api.repo.CreateIdentity(api.ctx, identity); err != nil {
+			t.Fatalf("CreateIdentity(%s) returned error: %v", identity.ID, err)
+		}
+	}
+	certificates := []domain.Certificate{
+		testHTTPCertificate("certificate-1", "identity-1", "issuer-1", "profile-1", domain.CertificateValid, now.Add(24*time.Hour), []string{"alpha.example.test"}, nil),
+		testHTTPCertificate("certificate-2", "identity-1", "issuer-1", "profile-1", domain.CertificateValid, now.Add(48*time.Hour), []string{"beta.example.test"}, nil),
+		testHTTPCertificate("certificate-3", "identity-2", "issuer-2", "profile-2", domain.CertificateRevoked, now.Add(72*time.Hour), []string{"gamma.example.test"}, nil),
+	}
+	certificates[1].RenewalNotifiedAt = now
+	for _, certificate := range certificates {
+		if err := api.repo.CreateCertificate(api.ctx, certificate); err != nil {
+			t.Fatalf("CreateCertificate(%s) returned error: %v", certificate.ID, err)
+		}
+	}
+
+	var listed []apiCertificate
+	status := api.doJSON(t, http.MethodGet, "/certificates?owner=platform&service=pay-api&environment=prod&issuer_id=issuer-1&profile_id=profile-1&san=beta.example.test&renewal_state=notified&sort=desc&limit=1", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if got := certificateIDs(listed); !reflect.DeepEqual(got, []string{"certificate-2"}) {
+		t.Fatalf("filtered certificate IDs = %#v", got)
+	}
+
+	status = api.doJSON(t, http.MethodGet, "/certificates?revocation_state=valid&expires_within_days=30&sort=asc&limit=1&offset=1", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if got := certificateIDs(listed); !reflect.DeepEqual(got, []string{"certificate-2"}) {
+		t.Fatalf("paged certificate IDs = %#v", got)
+	}
 }
 
 func TestScanCertificateExpirations(t *testing.T) {
@@ -3807,6 +3928,80 @@ func certificateIDs(certificates []apiCertificate) []string {
 		ids = append(ids, certificate.ID)
 	}
 	return ids
+}
+
+func apiIdentityIDs(identities []apiIdentity) []string {
+	ids := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		ids = append(ids, identity.ID)
+	}
+	return ids
+}
+
+func apiEnrollmentIDs(enrollments []apiEnrollment) []string {
+	ids := make([]string, 0, len(enrollments))
+	for _, enrollment := range enrollments {
+		ids = append(ids, enrollment.ID)
+	}
+	return ids
+}
+
+func apiOutboxMessageIDs(messages []apiOutboxMessage) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
+}
+
+func testHTTPIdentity(id string, name string, owner string, team string, serviceName string, environment string) domain.Identity {
+	return domain.Identity{
+		ID:          id,
+		Type:        domain.IdentityMachine,
+		Name:        name,
+		Owner:       owner,
+		Team:        team,
+		Service:     serviceName,
+		Environment: environment,
+		Status:      domain.IdentityActive,
+		CreatedAt:   testNow,
+		UpdatedAt:   testNow,
+	}
+}
+
+func testHTTPEnrollment(id string, identityID string, issuerID string, profileID string, status domain.EnrollmentStatus, createdAt time.Time) domain.Enrollment {
+	return domain.Enrollment{
+		ID:                   id,
+		IdentityID:           identityID,
+		IssuerID:             issuerID,
+		CertificateProfileID: profileID,
+		CSRPEM:               "csr-" + id,
+		Status:               status,
+		RequestedSubject:     "CN=" + id,
+		RequestedNotAfter:    testNow.Add(24 * time.Hour),
+		CreatedAt:            createdAt,
+		UpdatedAt:            createdAt,
+	}
+}
+
+func testHTTPCertificate(id string, identityID string, issuerID string, profileID string, status domain.CertificateStatus, notAfter time.Time, dnsNames []string, ipAddresses []string) domain.Certificate {
+	return domain.Certificate{
+		ID:                   id,
+		IdentityID:           identityID,
+		IssuerID:             issuerID,
+		EnrollmentID:         "enrollment-" + id,
+		CertificateProfileID: profileID,
+		SerialNumber:         "serial-" + id,
+		Subject:              "CN=" + id,
+		DNSNames:             append([]string(nil), dnsNames...),
+		IPAddresses:          append([]string(nil), ipAddresses...),
+		NotBefore:            testNow.Add(-time.Hour),
+		NotAfter:             notAfter,
+		Status:               status,
+		CertificatePEM:       "cert-pem",
+		CreatedAt:            notAfter,
+		UpdatedAt:            notAfter,
+	}
 }
 
 func (api *testAPI) createCertificateForIdentity(t *testing.T, name string, owner string, team string, serviceName string, environment string, deploymentTarget string) domain.Certificate {

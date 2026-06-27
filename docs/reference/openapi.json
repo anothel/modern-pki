@@ -37,6 +37,15 @@
       "get": {
         "tags": ["identities"],
         "operationId": "listIdentities",
+        "parameters": [
+          {"$ref": "#/components/parameters/owner"},
+          {"$ref": "#/components/parameters/team"},
+          {"$ref": "#/components/parameters/service"},
+          {"$ref": "#/components/parameters/environment"},
+          {"$ref": "#/components/parameters/sort"},
+          {"$ref": "#/components/parameters/limit"},
+          {"$ref": "#/components/parameters/offset"}
+        ],
         "responses": {"200": {"$ref": "#/components/responses/IdentityList"}, "default": {"$ref": "#/components/responses/Error"}}
       },
       "post": {
@@ -136,6 +145,15 @@
       "get": {
         "tags": ["enrollments"],
         "operationId": "listEnrollments",
+        "parameters": [
+          {"$ref": "#/components/parameters/identityID"},
+          {"$ref": "#/components/parameters/issuerID"},
+          {"$ref": "#/components/parameters/profileID"},
+          {"$ref": "#/components/parameters/enrollmentStatus"},
+          {"$ref": "#/components/parameters/sort"},
+          {"$ref": "#/components/parameters/limit"},
+          {"$ref": "#/components/parameters/offset"}
+        ],
         "responses": {"200": {"$ref": "#/components/responses/EnrollmentList"}, "default": {"$ref": "#/components/responses/Error"}}
       },
       "post": {
@@ -173,7 +191,21 @@
       "get": {
         "tags": ["certificates"],
         "operationId": "listCertificates",
-        "parameters": [{"$ref": "#/components/parameters/expiresWithinDays"}, {"$ref": "#/components/parameters/limit"}, {"$ref": "#/components/parameters/offset"}],
+        "parameters": [
+          {"$ref": "#/components/parameters/owner"},
+          {"$ref": "#/components/parameters/team"},
+          {"$ref": "#/components/parameters/service"},
+          {"$ref": "#/components/parameters/environment"},
+          {"$ref": "#/components/parameters/issuerID"},
+          {"$ref": "#/components/parameters/profileID"},
+          {"$ref": "#/components/parameters/certificateSAN"},
+          {"$ref": "#/components/parameters/revocationState"},
+          {"$ref": "#/components/parameters/renewalState"},
+          {"$ref": "#/components/parameters/expiresWithinDays"},
+          {"$ref": "#/components/parameters/sort"},
+          {"$ref": "#/components/parameters/limit"},
+          {"$ref": "#/components/parameters/offset"}
+        ],
         "responses": {"200": {"$ref": "#/components/responses/CertificateList"}, "default": {"$ref": "#/components/responses/Error"}}
       },
       "post": {
@@ -318,7 +350,15 @@
       "get": {
         "tags": ["outbox"],
         "operationId": "listOutboxMessages",
-        "parameters": [{"$ref": "#/components/parameters/outboxStatus"}],
+        "parameters": [
+          {"$ref": "#/components/parameters/outboxStatus"},
+          {"$ref": "#/components/parameters/outboxType"},
+          {"$ref": "#/components/parameters/from"},
+          {"$ref": "#/components/parameters/to"},
+          {"$ref": "#/components/parameters/sort"},
+          {"$ref": "#/components/parameters/limit"},
+          {"$ref": "#/components/parameters/offset"}
+        ],
         "responses": {"200": {"$ref": "#/components/responses/OutboxMessageList"}, "default": {"$ref": "#/components/responses/Error"}}
       }
     },
@@ -489,7 +529,13 @@
       "environment": {"name": "environment", "in": "query", "schema": {"type": "string"}},
       "issuer": {"name": "issuer", "in": "query", "schema": {"type": "string"}},
       "profile": {"name": "profile", "in": "query", "schema": {"type": "string"}},
-      "revocationState": {"name": "revocation_state", "in": "query", "schema": {"type": "string"}},
+      "identityID": {"name": "identity_id", "in": "query", "schema": {"type": "string"}},
+      "issuerID": {"name": "issuer_id", "in": "query", "schema": {"type": "string"}},
+      "profileID": {"name": "profile_id", "in": "query", "schema": {"type": "string"}},
+      "enrollmentStatus": {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["pending", "approved", "rejected", "issued", "canceled"]}},
+      "certificateSAN": {"name": "san", "in": "query", "schema": {"type": "string"}},
+      "revocationState": {"name": "revocation_state", "in": "query", "schema": {"type": "string", "enum": ["valid", "suspended", "revoked", "expired"]}},
+      "renewalState": {"name": "renewal_state", "in": "query", "schema": {"type": "string", "enum": ["notified", "unnotified"]}},
       "auditActor": {"name": "actor", "in": "query", "schema": {"type": "string"}},
       "auditAction": {"name": "action", "in": "query", "schema": {"type": "string"}},
       "auditResourceType": {"name": "resource_type", "in": "query", "schema": {"type": "string"}},
@@ -497,7 +543,11 @@
       "auditFrom": {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
       "auditTo": {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}},
       "auditSort": {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}},
-      "outboxStatus": {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["pending", "processing", "completed", "failed", "dead_letter"]}}
+      "sort": {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+      "from": {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+      "to": {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+      "outboxStatus": {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["pending", "processing", "completed", "failed", "dead_letter"]}},
+      "outboxType": {"name": "type", "in": "query", "schema": {"type": "string"}}
     },
     "requestBodies": {
       "IdentityCreate": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IdentityCreate"}}}},

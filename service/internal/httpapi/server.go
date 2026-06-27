@@ -312,7 +312,12 @@ func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
-	identities, err := s.service.ListIdentities(r.Context())
+	opts, err := identityListOptionsFromQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	identities, err := s.service.ListIdentitiesQuery(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -459,7 +464,12 @@ func (s *Server) disableNotificationEndpoint(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) listOutboxMessages(w http.ResponseWriter, r *http.Request) {
-	messages, err := s.service.ListOutboxMessages(r.Context(), domain.OutboxMessageStatus(r.URL.Query().Get("status")))
+	opts, err := outboxMessageListOptionsFromQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	messages, err := s.service.ListOutboxMessagesQuery(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -1191,7 +1201,12 @@ func (s *Server) createEnrollment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listEnrollments(w http.ResponseWriter, r *http.Request) {
-	enrollments, err := s.service.ListEnrollments(r.Context())
+	opts, err := enrollmentListOptionsFromQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	enrollments, err := s.service.ListEnrollmentsQuery(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -1242,28 +1257,109 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
-	var certificates []domain.Certificate
-	var err error
-	if rawWindow := r.URL.Query().Get("expires_within_days"); rawWindow != "" {
-		days, parseErr := strconv.Atoi(rawWindow)
-		if parseErr != nil {
-			s.writeError(w, r, domain.ErrInvalidRequest)
-			return
-		}
-		limit, offset, parseErr := paginationFromQuery(r)
-		if parseErr != nil {
-			s.writeError(w, r, parseErr)
-			return
-		}
-		certificates, err = s.service.ListCertificatesExpiringWithin(r.Context(), days, limit, offset)
-	} else {
-		certificates, err = s.service.ListCertificates(r.Context())
+	opts, err := certificateListOptionsFromQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
 	}
+	certificates, err := s.service.ListCertificatesQuery(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponses(certificates))
+}
+
+func identityListOptionsFromQuery(r *http.Request) (lifecycle.IdentityListOptions, error) {
+	query := r.URL.Query()
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.IdentityListOptions{}, err
+	}
+	return lifecycle.IdentityListOptions{
+		Owner:       query.Get("owner"),
+		Team:        query.Get("team"),
+		Service:     query.Get("service"),
+		Environment: query.Get("environment"),
+		Sort:        query.Get("sort"),
+		Limit:       limit,
+		Offset:      offset,
+	}, nil
+}
+
+func enrollmentListOptionsFromQuery(r *http.Request) (lifecycle.EnrollmentListOptions, error) {
+	query := r.URL.Query()
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.EnrollmentListOptions{}, err
+	}
+	return lifecycle.EnrollmentListOptions{
+		IdentityID: query.Get("identity_id"),
+		IssuerID:   query.Get("issuer_id"),
+		ProfileID:  query.Get("profile_id"),
+		Status:     domain.EnrollmentStatus(query.Get("status")),
+		Sort:       query.Get("sort"),
+		Limit:      limit,
+		Offset:     offset,
+	}, nil
+}
+
+func certificateListOptionsFromQuery(r *http.Request) (lifecycle.CertificateListOptions, error) {
+	query := r.URL.Query()
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.CertificateListOptions{}, err
+	}
+	opts := lifecycle.CertificateListOptions{
+		Owner:           query.Get("owner"),
+		Team:            query.Get("team"),
+		Service:         query.Get("service"),
+		Environment:     query.Get("environment"),
+		IssuerID:        query.Get("issuer_id"),
+		ProfileID:       query.Get("profile_id"),
+		SAN:             query.Get("san"),
+		RevocationState: query.Get("revocation_state"),
+		RenewalState:    query.Get("renewal_state"),
+		Sort:            query.Get("sort"),
+		Limit:           limit,
+		Offset:          offset,
+	}
+	if raw := query.Get("expires_within_days"); raw != "" {
+		days, err := strconv.Atoi(raw)
+		if err != nil {
+			return lifecycle.CertificateListOptions{}, domain.ErrInvalidRequest
+		}
+		opts.ExpiresWithinDays = days
+	}
+	return opts, nil
+}
+
+func outboxMessageListOptionsFromQuery(r *http.Request) (lifecycle.OutboxMessageListOptions, error) {
+	query := r.URL.Query()
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.OutboxMessageListOptions{}, err
+	}
+	opts := lifecycle.OutboxMessageListOptions{
+		Status: domain.OutboxMessageStatus(query.Get("status")),
+		Type:   query.Get("type"),
+		Sort:   query.Get("sort"),
+		Limit:  limit,
+		Offset: offset,
+	}
+	if raw := query.Get("from"); raw != "" {
+		opts.CreatedFrom, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return lifecycle.OutboxMessageListOptions{}, domain.ErrInvalidRequest
+		}
+	}
+	if raw := query.Get("to"); raw != "" {
+		opts.CreatedTo, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return lifecycle.OutboxMessageListOptions{}, domain.ErrInvalidRequest
+		}
+	}
+	return opts, nil
 }
 
 func (s *Server) listCertificateInventory(w http.ResponseWriter, r *http.Request) {

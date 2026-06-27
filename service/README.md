@@ -164,6 +164,14 @@ go run ./cmd/modern-pki-service
 
 curl.exe -H "Authorization: Bearer change-me" http://localhost:8080/identities
 
+curl.exe -H "Authorization: Bearer change-me" "http://localhost:8080/identities?owner=platform&service=payments&environment=prod&sort=desc&limit=50"
+
+curl.exe -H "Authorization: Bearer change-me" "http://localhost:8080/enrollments?identity_id=identity-1&issuer_id=issuer-1&profile_id=profile-1&status=pending&sort=asc&limit=50"
+
+curl.exe -H "Authorization: Bearer change-me" "http://localhost:8080/certificates?owner=platform&service=payments&issuer_id=issuer-1&profile_id=profile-1&san=api.example.com&revocation_state=valid&renewal_state=unnotified&expires_within_days=30&sort=asc&limit=50"
+
+curl.exe -H "Authorization: Bearer change-me" "http://localhost:8080/outbox/messages?status=pending&type=certificate.revoked&from=2026-07-01T00:00:00Z&to=2026-07-02T00:00:00Z&sort=asc&limit=50"
+
 curl.exe -X POST http://localhost:8080/api-keys `
   -H "Authorization: Bearer change-me" `
   -H "Content-Type: application/json" `

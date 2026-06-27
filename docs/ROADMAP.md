@@ -65,14 +65,8 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### API Scale
 
-- Add pagination/filter/sort for identities.
-- Add pagination/filter/sort for certificates.
-- Add pagination/filter/sort for enrollments.
-- Add pagination/filter/sort for outbox messages.
-- Add filters for owner, service, environment, issuer, profile, SAN, expiration
-  window, revocation state, and renewal state.
 - Add indexes only for exposed query patterns.
-- Add large inventory tests for stable ordering and response time.
+- Add large inventory/list tests for stable ordering and response time.
 
 ## P3: Key Boundary And Core Robustness
 
