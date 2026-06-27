@@ -17,6 +17,7 @@ import (
 )
 
 type webhookDeliveryRequest struct {
+	SchemaVersion   int            `json:"schema_version"`
 	OutboxMessageID string         `json:"outbox_message_id"`
 	EventType       string         `json:"event_type"`
 	Payload         map[string]any `json:"payload"`
@@ -55,6 +56,7 @@ func (h *WebhookOutboxHandler) HandleOutboxMessage(ctx context.Context, message 
 		return fmt.Errorf("decode outbox payload: %w", err)
 	}
 	body := webhookDeliveryRequest{
+		SchemaVersion:   1,
 		OutboxMessageID: message.ID,
 		EventType:       message.Type,
 		Payload:         payload,

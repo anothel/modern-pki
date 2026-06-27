@@ -1703,6 +1703,75 @@ func TestCreateIdentityRecordsMachineMetadata(t *testing.T) {
 	}
 }
 
+func TestProductionPolicyRequiresIdentityOwner(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	service.EnableProductionPolicy()
+
+	_, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityWorkload,
+		Name: "payments-api",
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateIdentity error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestProductionPolicyRejectsCertificateForIncompleteIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	service := New(
+		repo,
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type:  domain.IdentityMachine,
+		Name:  "edge-01",
+		Owner: "platform",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    time.Date(2026, time.January, 3, 3, 4, 5, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	service.EnableProductionPolicy()
+	_, err = service.IssueCertificate(ctx, "issuer", enrollment.ID)
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("IssueCertificate error = %v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestCreateIssuerRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	valid := CreateIssuerRequest{

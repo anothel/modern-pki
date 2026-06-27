@@ -234,6 +234,27 @@ type CertificateExpirationScanResult struct {
 	ExpirationWarnings []domain.Certificate
 }
 
+type CertificateInventoryEntry struct {
+	CertificateID        string
+	Owner                string
+	Service              string
+	Environment          string
+	DeploymentTarget     string
+	IssuerID             string
+	ProfileID            string
+	IssuerKeyRef         string
+	RevocationState      string
+	LastSeenAt           time.Time
+	CompletenessWarnings []string
+}
+
+type ExpirySLO struct {
+	WindowDays     int
+	UnhandledCount int
+	UnhandledIDs   []string
+	OK             bool
+}
+
 type PublishCRLRequest struct {
 	IssuerID          string
 	DistributionPoint string
@@ -732,7 +753,7 @@ func (s *Service) RotateAPIKey(ctx context.Context, actor string, id string) (Cr
 }
 
 func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateIdentityRequest) (domain.Identity, error) {
-	if err := validateCreateIdentityRequest(req); err != nil {
+	if err := validateCreateIdentityRequest(req, s.productionPolicy); err != nil {
 		return domain.Identity{}, err
 	}
 
@@ -1918,6 +1939,9 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	if err != nil {
 		return domain.Certificate{}, err
 	}
+	if s.productionPolicy && len(identityCompletenessWarnings(identity)) > 0 {
+		return domain.Certificate{}, domain.ErrInvalidRequest
+	}
 	var profile domain.CertificateProfile
 	if enrollment.CertificateProfileID != "" {
 		profile, err = s.repo.GetCertificateProfile(ctx, enrollment.CertificateProfileID)
@@ -2471,6 +2495,10 @@ func (s *Service) ListIdentities(ctx context.Context) ([]domain.Identity, error)
 	return s.repo.ListIdentities(ctx)
 }
 
+func (s *Service) ListIssuers(ctx context.Context) ([]domain.Issuer, error) {
+	return s.repo.ListIssuers(ctx)
+}
+
 func (s *Service) GetIdentity(ctx context.Context, id string) (domain.Identity, error) {
 	return s.repo.GetIdentity(ctx, id)
 }
@@ -2493,6 +2521,95 @@ func (s *Service) GetEnrollment(ctx context.Context, id string) (domain.Enrollme
 
 func (s *Service) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
 	return s.repo.ListCertificates(ctx)
+}
+
+func (s *Service) ListCertificatesExpiringWithin(ctx context.Context, days int) ([]domain.Certificate, error) {
+	if !isAllowedExpiryWindowDays(days) {
+		return nil, domain.ErrInvalidRequest
+	}
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	cutoff := now.Add(time.Duration(days) * 24 * time.Hour)
+	filtered := make([]domain.Certificate, 0, len(certificates))
+	for _, certificate := range certificates {
+		if certificate.Status == domain.CertificateValid &&
+			certificate.NotAfter.After(now) &&
+			!certificate.NotAfter.After(cutoff) {
+			filtered = append(filtered, certificate)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *Service) ListCertificateInventory(ctx context.Context) ([]CertificateInventoryEntry, error) {
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identities, err := s.repo.ListIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	issuers, err := s.repo.ListIssuers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	identitiesByID := make(map[string]domain.Identity, len(identities))
+	for _, identity := range identities {
+		identitiesByID[identity.ID] = identity
+	}
+	issuersByID := make(map[string]domain.Issuer, len(issuers))
+	for _, issuer := range issuers {
+		issuersByID[issuer.ID] = issuer
+	}
+
+	entries := make([]CertificateInventoryEntry, 0, len(certificates))
+	for _, certificate := range certificates {
+		identity := identitiesByID[certificate.IdentityID]
+		issuer := issuersByID[certificate.IssuerID]
+		entries = append(entries, CertificateInventoryEntry{
+			CertificateID:        certificate.ID,
+			Owner:                identity.Owner,
+			Service:              identityMetadataString(identity.MetadataJSON, "service"),
+			Environment:          identityMetadataString(identity.MetadataJSON, "environment"),
+			DeploymentTarget:     identityMetadataString(identity.MetadataJSON, "deployment_target"),
+			IssuerID:             certificate.IssuerID,
+			ProfileID:            certificate.CertificateProfileID,
+			IssuerKeyRef:         issuer.KeyRef,
+			RevocationState:      string(certificate.Status),
+			LastSeenAt:           identityMetadataTime(identity.MetadataJSON, "last_seen_at"),
+			CompletenessWarnings: identityCompletenessWarnings(identity),
+		})
+	}
+	return entries, nil
+}
+
+func (s *Service) ExpirySLO(ctx context.Context) (ExpirySLO, error) {
+	certificates, err := s.repo.ListCertificates(ctx)
+	if err != nil {
+		return ExpirySLO{}, err
+	}
+	now := s.clock.Now()
+	cutoff := now.Add(14 * 24 * time.Hour)
+	ids := make([]string, 0)
+	for _, certificate := range certificates {
+		if (certificate.Status == domain.CertificateValid || certificate.Status == domain.CertificateSuspended) &&
+			certificate.NotAfter.After(now) &&
+			!certificate.NotAfter.After(cutoff) &&
+			certificate.RenewalNotifiedAt.IsZero() {
+			ids = append(ids, certificate.ID)
+		}
+	}
+	return ExpirySLO{
+		WindowDays:     14,
+		UnhandledCount: len(ids),
+		UnhandledIDs:   ids,
+		OK:             len(ids) == 0,
+	}, nil
 }
 
 func (s *Service) GetCertificate(ctx context.Context, id string) (domain.Certificate, error) {
@@ -3160,9 +3277,15 @@ func ocspAuditCertificates(ids []corecli.OCSPCertificateID, statuses []corecli.O
 	return entries
 }
 
-func validateCreateIdentityRequest(req CreateIdentityRequest) error {
+func validateCreateIdentityRequest(req CreateIdentityRequest, productionPolicy bool) error {
 	if !isValidIdentityType(req.Type) || isBlank(req.Name) {
 		return domain.ErrInvalidRequest
+	}
+	if productionPolicy {
+		identity := domain.Identity{Owner: req.Owner, MetadataJSON: req.MetadataJSON}
+		if len(identityCompletenessWarnings(identity)) > 0 {
+			return domain.ErrInvalidRequest
+		}
 	}
 	return nil
 }
@@ -3476,6 +3599,15 @@ func isValidOutboxMessageStatus(status domain.OutboxMessageStatus) bool {
 	}
 }
 
+func isAllowedExpiryWindowDays(days int) bool {
+	switch days {
+	case 30, 14, 7, 3, 1:
+		return true
+	default:
+		return false
+	}
+}
+
 func isValidRevocationReason(reason domain.RevocationReason) bool {
 	switch reason {
 	case domain.RevocationKeyCompromise,
@@ -3493,6 +3625,41 @@ func isValidRevocationReason(reason domain.RevocationReason) bool {
 
 func isBlank(value string) bool {
 	return strings.TrimSpace(value) == ""
+}
+
+func identityCompletenessWarnings(identity domain.Identity) []string {
+	warnings := make([]string, 0, 3)
+	if isBlank(identity.Owner) {
+		warnings = append(warnings, "missing_owner")
+	}
+	if isBlank(identityMetadataString(identity.MetadataJSON, "team")) {
+		warnings = append(warnings, "missing_team")
+	}
+	if isBlank(identityMetadataString(identity.MetadataJSON, "service")) {
+		warnings = append(warnings, "missing_service")
+	}
+	return warnings
+}
+
+func identityMetadataString(metadataJSON string, key string) string {
+	var metadata map[string]any
+	if strings.TrimSpace(metadataJSON) == "" || json.Unmarshal([]byte(metadataJSON), &metadata) != nil {
+		return ""
+	}
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func identityMetadataTime(metadataJSON string, key string) time.Time {
+	raw := identityMetadataString(metadataJSON, key)
+	if raw == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 func mapIssueError(err error) error {

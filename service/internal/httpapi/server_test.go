@@ -93,6 +93,21 @@ func TestCreateIdentity(t *testing.T) {
 	}
 }
 
+func TestCreateIdentityRejectsMissingOwnerInProduction(t *testing.T) {
+	api := newTestAPI(t)
+	api.service.EnableProductionPolicy()
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
 func TestBodySizeLimitRejectsOversizedJSON(t *testing.T) {
 	api := newTestAPI(t)
 
@@ -1809,6 +1824,44 @@ func TestIssueCertificate(t *testing.T) {
 	assertStatus(t, status, http.StatusOK)
 	if got.ID != issued.ID {
 		t.Fatalf("got certificate ID = %q, want %q", got.ID, issued.ID)
+	}
+}
+
+func TestListCertificatesFiltersExpiryWindows(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var listed []apiCertificate
+	status := api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=1", "", nil, &listed)
+	assertStatus(t, status, http.StatusOK)
+	if len(listed) != 1 || listed[0].ID != certificate.ID {
+		t.Fatalf("listed certificates = %#v, want certificate %q", listed, certificate.ID)
+	}
+
+	var body errorResponse
+	status = api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=2", "", nil, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+}
+
+func TestOperatorCertificateInventoryAndExpirySLO(t *testing.T) {
+	api := newTestAPI(t)
+	certificate := api.createCertificate(t)
+
+	var inventory []apiCertificateInventoryEntry
+	status := api.doJSON(t, http.MethodGet, "/operator/certificate-inventory", "", nil, &inventory)
+	assertStatus(t, status, http.StatusOK)
+	if len(inventory) != 1 || inventory[0].CertificateID != certificate.ID {
+		t.Fatalf("inventory = %#v, want certificate %q", inventory, certificate.ID)
+	}
+	if inventory[0].IssuerKeyRef != "issuer-key-ref" || inventory[0].RevocationState != string(domain.CertificateValid) {
+		t.Fatalf("inventory entry = %#v", inventory[0])
+	}
+
+	var slo apiExpirySLO
+	status = api.doJSON(t, http.MethodGet, "/operator/expiry-slo", "", nil, &slo)
+	assertStatus(t, status, http.StatusOK)
+	if slo.WindowDays != 14 || slo.UnhandledCount != 1 || slo.OK {
+		t.Fatalf("expiry SLO = %#v, want one unhandled certificate inside 14 days", slo)
 	}
 }
 
@@ -3543,6 +3596,27 @@ type apiOutboxMessage struct {
 	LastError    string                     `json:"last_error"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
+}
+
+type apiCertificateInventoryEntry struct {
+	CertificateID        string    `json:"certificate_id"`
+	Owner                string    `json:"owner"`
+	Service              string    `json:"service"`
+	Environment          string    `json:"environment"`
+	DeploymentTarget     string    `json:"deployment_target"`
+	IssuerID             string    `json:"issuer_id"`
+	ProfileID            string    `json:"profile_id"`
+	IssuerKeyRef         string    `json:"issuer_key_ref"`
+	RevocationState      string    `json:"revocation_state"`
+	LastSeenAt           time.Time `json:"last_seen_at"`
+	CompletenessWarnings []string  `json:"completeness_warnings"`
+}
+
+type apiExpirySLO struct {
+	WindowDays     int      `json:"window_days"`
+	UnhandledCount int      `json:"unhandled_count"`
+	UnhandledIDs   []string `json:"unhandled_ids"`
+	OK             bool     `json:"ok"`
 }
 
 type apiCertificateProfile struct {

@@ -70,6 +70,16 @@ Certificate lifecycle operations include revocation, suspension, and resumption:
 - `POST /certificates/{id}/reissue`
 - `POST /certificates/expiration-scan`
 
+Certificate inventory and expiry views are available for operators:
+
+- `GET /certificates?expires_within_days=30`
+- `GET /certificates?expires_within_days=14`
+- `GET /certificates?expires_within_days=7`
+- `GET /certificates?expires_within_days=3`
+- `GET /certificates?expires_within_days=1`
+- `GET /operator/certificate-inventory`
+- `GET /operator/expiry-slo`
+
 Issuance uses a DB-backed enrollment claim to prevent duplicate signing across service nodes. If signing succeeds but DB finalization fails, retry finalizes from stored signed material without calling the signer again. If `certificate.issued` audit repair is needed after finalized state is stored, operators can call:
 
 - `POST /audit-events/repair/issuance`
@@ -79,6 +89,8 @@ Renewal creates a new pending enrollment from a valid certificate, copying ident
 Reissue creates a new pending enrollment from a valid certificate with a new CSR while preserving the original certificate expiration.
 Expiration scans mark `valid` and `suspended` certificates as `expired` when `not_after` is in the past. They emit one renewal warning for each `valid` certificate inside the requested warning window, tracked by `renewal_notified_at`.
 The expiration scan worker is disabled by default. Set `MODERN_PKI_EXPIRATION_SCAN_ENABLED=true` to run scans automatically on startup and then at the configured interval.
+The operator expiry SLO reports zero success only when no valid or suspended certificates inside the 14-day window are still missing a renewal notification.
+The inventory view joins certificate, identity, issuer, and profile references. It exposes owner, service, environment, deployment target, issuer, profile, issuer key reference, revocation state, last seen timestamp from identity metadata, and ownership completeness warnings.
 
 Notification endpoints deliver lifecycle outbox events to operator webhooks:
 
@@ -86,7 +98,7 @@ Notification endpoints deliver lifecycle outbox events to operator webhooks:
 - `GET /notification-endpoints`
 - `POST /notification-endpoints/{id}/disable`
 
-Webhook endpoints require a shared secret when created. In production mode, webhook endpoint URLs must use HTTPS and webhook secrets must be at least 32 characters and not common defaults. Deliveries receive JSON with `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
+Webhook endpoints require a shared secret when created. In production mode, webhook endpoint URLs must use HTTPS and webhook secrets must be at least 32 characters and not common defaults. Deliveries receive JSON with `schema_version`, `outbox_message_id`, `event_type`, `payload`, and `created_at`. Empty `event_types` subscribes to all lifecycle outbox event types. Delivery requests include `X-Modern-PKI-Event`, `X-Modern-PKI-Delivery`, `X-Modern-PKI-Timestamp`, and `X-Modern-PKI-Signature`. The signature is `sha256=<hex HMAC-SHA256(secret, timestamp + "." + raw_body)>`; receivers should reject stale timestamps to reduce replay risk. Failed webhook delivery creates a failed job attempt and reschedules the outbox message for retry after one minute.
 
 Outbox operations expose delivery state for operators:
 
@@ -126,7 +138,7 @@ API keys are managed by operator-scoped keys:
 - `POST /api-keys/{id}/rotate`
 - `POST /api-keys/{id}/disable`
 
-Scopes are ordered as `operator`, `write`, and `read`. `operator` can access all protected APIs, including API key management, outbox operations, audit events, and expiration scans. `write` can read and mutate lifecycle resources. `read` can only read non-operator APIs. Created API keys return the generated token once in the creation response. List and disable responses never include token material.
+Scopes are ordered as `operator`, `write`, and `read`. `operator` can access all protected APIs, including API key management, outbox operations, audit events, operator inventory, expiry SLOs, and expiration scans. `write` can read and mutate lifecycle resources. `read` can only read non-operator APIs. Created API keys return the generated token once in the creation response. List and disable responses never include token material.
 
 API keys can include an optional `expires_at` timestamp. Expired keys are rejected during Bearer authentication. Successful API key authentication records `last_used_at`, which is visible to operator key listing. API key responses include a short `token_fingerprint` derived from the stored token hash so operators can identify keys without exposing token material. Rotating an active key disables the old key and returns the replacement token once.
 
@@ -190,4 +202,12 @@ $env:MODERN_PKI_ADDR = ":8080"
 $env:MODERN_PKI_DB_DRIVER = "sqlite"
 $env:MODERN_PKI_DB_DSN = "modern-pki.db"
 go run ./cmd/modern-pki-service
+```
+
+Optional PostgreSQL migration integration test:
+
+```powershell
+cd service
+$env:MODERN_PKI_POSTGRES_TEST_DSN = "postgres://user:pass@localhost:5432/modern_pki_test?sslmode=disable"
+go test ./internal/store -run TestApplyInitialMigrationPostgresIntegration -v
 ```

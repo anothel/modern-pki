@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	_ "modernc.org/sqlite"
 )
@@ -67,6 +69,52 @@ WHERE version = 1`).Scan(&rerunAppliedAt)
 	}
 	if rerunAppliedAt != appliedAt {
 		t.Fatalf("rerun applied_at = %q, want %q", rerunAppliedAt, appliedAt)
+	}
+}
+
+func TestApplyInitialMigrationPostgresIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("MODERN_PKI_POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("set MODERN_PKI_POSTGRES_TEST_DSN to run PostgreSQL migration integration test")
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	if err := ApplyInitialMigration(ctx, db, "pgx"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	sqlBytes, err := migrationFiles.ReadFile("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("read postgres migration: %v", err)
+	}
+
+	var checksum string
+	var dirty bool
+	err = db.QueryRowContext(ctx, `
+SELECT checksum, dirty
+FROM schema_migrations
+WHERE version = 1`).Scan(&checksum, &dirty)
+	if err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if checksum != migrationChecksum(sqlBytes) {
+		t.Fatalf("checksum = %q, want %q", checksum, migrationChecksum(sqlBytes))
+	}
+	if dirty {
+		t.Fatalf("dirty = true, want false")
+	}
+	if err := CheckInitialMigration(ctx, db, "pgx"); err != nil {
+		t.Fatalf("CheckInitialMigration returned error: %v", err)
+	}
+	if err := ApplyInitialMigration(ctx, db, "pgx"); err != nil {
+		t.Fatalf("ApplyInitialMigration rerun returned error: %v", err)
 	}
 }
 

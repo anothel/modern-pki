@@ -587,9 +587,11 @@ func bootstrapACMEDefaults(ctx context.Context, svc *lifecycle.Service, validity
 		return httpapi.ACMEConfig{}, err
 	}
 	identity, err := svc.CreateIdentity(ctx, "system", lifecycle.CreateIdentityRequest{
-		Type:       "machine",
-		Name:       "acme-smoke-edge-01",
-		ExternalID: "acme-smoke-edge-01",
+		Type:         "machine",
+		Name:         "acme-smoke-edge-01",
+		ExternalID:   "acme-smoke-edge-01",
+		Owner:        "platform",
+		MetadataJSON: `{"team":"platform","service":"acme-smoke","environment":"local","deployment_target":"local"}`,
 	})
 	if err != nil {
 		return httpapi.ACMEConfig{}, err

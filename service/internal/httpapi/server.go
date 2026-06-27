@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -158,6 +159,9 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("GET /outbox/messages", s.listOutboxMessages)
 	s.mux.HandleFunc("POST /outbox/messages/{id}/retry", s.retryOutboxMessage)
+
+	s.mux.HandleFunc("GET /operator/certificate-inventory", s.listCertificateInventory)
+	s.mux.HandleFunc("GET /operator/expiry-slo", s.getExpirySLO)
 
 	s.mux.HandleFunc("POST /api-keys", s.createAPIKey)
 	s.mux.HandleFunc("GET /api-keys", s.listAPIKeys)
@@ -1081,12 +1085,41 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
-	certificates, err := s.service.ListCertificates(r.Context())
+	var certificates []domain.Certificate
+	var err error
+	if rawWindow := r.URL.Query().Get("expires_within_days"); rawWindow != "" {
+		days, parseErr := strconv.Atoi(rawWindow)
+		if parseErr != nil {
+			s.writeError(w, r, domain.ErrInvalidRequest)
+			return
+		}
+		certificates, err = s.service.ListCertificatesExpiringWithin(r.Context(), days)
+	} else {
+		certificates, err = s.service.ListCertificates(r.Context())
+	}
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateResponses(certificates))
+}
+
+func (s *Server) listCertificateInventory(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.service.ListCertificateInventory(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toCertificateInventoryResponses(entries))
+}
+
+func (s *Server) getExpirySLO(w http.ResponseWriter, r *http.Request) {
+	slo, err := s.service.ExpirySLO(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toExpirySLOResponse(slo))
 }
 
 func (s *Server) scanCertificateExpirations(w http.ResponseWriter, r *http.Request) {
@@ -1805,7 +1838,7 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 }
 
 func requiredScopeForRequest(method string, path string) requiredScope {
-	if strings.HasPrefix(path, "/api-keys") || strings.HasPrefix(path, "/outbox/") || strings.HasPrefix(path, "/audit-events") {
+	if strings.HasPrefix(path, "/api-keys") || strings.HasPrefix(path, "/outbox/") || strings.HasPrefix(path, "/audit-events") || strings.HasPrefix(path, "/operator/") {
 		return requiredScopeOperator
 	}
 	if method == http.MethodPost && path == "/certificates/expiration-scan" {
@@ -2280,6 +2313,27 @@ type outboxMessageResponse struct {
 	UpdatedAt    time.Time                  `json:"updated_at"`
 }
 
+type certificateInventoryEntryResponse struct {
+	CertificateID        string    `json:"certificate_id"`
+	Owner                string    `json:"owner"`
+	Service              string    `json:"service"`
+	Environment          string    `json:"environment"`
+	DeploymentTarget     string    `json:"deployment_target"`
+	IssuerID             string    `json:"issuer_id"`
+	ProfileID            string    `json:"profile_id"`
+	IssuerKeyRef         string    `json:"issuer_key_ref"`
+	RevocationState      string    `json:"revocation_state"`
+	LastSeenAt           time.Time `json:"last_seen_at"`
+	CompletenessWarnings []string  `json:"completeness_warnings"`
+}
+
+type expirySLOResponse struct {
+	WindowDays     int      `json:"window_days"`
+	UnhandledCount int      `json:"unhandled_count"`
+	UnhandledIDs   []string `json:"unhandled_ids"`
+	OK             bool     `json:"ok"`
+}
+
 type apiKeyResponse struct {
 	ID               string               `json:"id"`
 	Name             string               `json:"name"`
@@ -2584,6 +2638,39 @@ func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageRe
 		responses = append(responses, toOutboxMessageResponse(message))
 	}
 	return responses
+}
+
+func toCertificateInventoryResponse(entry lifecycle.CertificateInventoryEntry) certificateInventoryEntryResponse {
+	return certificateInventoryEntryResponse{
+		CertificateID:        entry.CertificateID,
+		Owner:                entry.Owner,
+		Service:              entry.Service,
+		Environment:          entry.Environment,
+		DeploymentTarget:     entry.DeploymentTarget,
+		IssuerID:             entry.IssuerID,
+		ProfileID:            entry.ProfileID,
+		IssuerKeyRef:         entry.IssuerKeyRef,
+		RevocationState:      entry.RevocationState,
+		LastSeenAt:           entry.LastSeenAt,
+		CompletenessWarnings: entry.CompletenessWarnings,
+	}
+}
+
+func toCertificateInventoryResponses(entries []lifecycle.CertificateInventoryEntry) []certificateInventoryEntryResponse {
+	responses := make([]certificateInventoryEntryResponse, 0, len(entries))
+	for _, entry := range entries {
+		responses = append(responses, toCertificateInventoryResponse(entry))
+	}
+	return responses
+}
+
+func toExpirySLOResponse(slo lifecycle.ExpirySLO) expirySLOResponse {
+	return expirySLOResponse{
+		WindowDays:     slo.WindowDays,
+		UnhandledCount: slo.UnhandledCount,
+		UnhandledIDs:   slo.UnhandledIDs,
+		OK:             slo.OK,
+	}
 }
 
 func toAPIKeyResponse(key domain.APIKey) apiKeyResponse {

@@ -96,6 +96,9 @@ go run ./cmd/modern-pki-service
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
 - [Issuance consistency reference](docs/reference/issuance-consistency.md): signing claim, retry, and audit repair behavior.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
+- [Production recovery runbook](docs/runbooks/production-recovery.md): backup, rollback, restore, and DR drill rules.
+- [Webhook and outbox safety runbook](docs/runbooks/webhook-outbox-safety.md): receiver verification, replay cache, schema versioning, and dead-letter replay.
+- [Public TLS readiness runbook](docs/runbooks/public-tls-readiness.md): validity ceilings, validation reuse, CAA checks, and mass-revocation drill.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
 ## Current Status

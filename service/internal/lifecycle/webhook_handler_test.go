@@ -82,6 +82,7 @@ func TestWebhookOutboxHandlerPostsMatchingActiveEndpoint(t *testing.T) {
 	}
 	if received.OutboxMessageID != "outbox-1" ||
 		received.EventType != "certificate.expiration_warning" ||
+		received.SchemaVersion != 1 ||
 		received.CreatedAt != now {
 		t.Fatalf("webhook body = %#v", received)
 	}
