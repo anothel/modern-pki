@@ -337,6 +337,7 @@ CREATE TABLE acme_accounts (
 	for _, index := range []string{
 		"idx_certificates_enrollment",
 		"idx_certificates_issuer_serial",
+		"idx_certificates_expiration_scan",
 		"idx_identities_inventory_fields",
 		"idx_certificate_issuance_attempts_status_lease",
 		"idx_crl_publications_issuer_distribution_number",

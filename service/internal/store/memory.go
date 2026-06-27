@@ -364,6 +364,13 @@ func (s *MemoryStore) ListCertificates(ctx context.Context) ([]domain.Certificat
 	return certificates, nil
 }
 
+func (s *MemoryStore) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return listCertificatesExpiringWithin(s.certificates, now, cutoff, limit, offset), nil
+}
+
 func (s *MemoryStore) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1347,6 +1354,10 @@ func (tx *memoryTx) ListCertificates(ctx context.Context) ([]domain.Certificate,
 	return certificates, nil
 }
 
+func (tx *memoryTx) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
+	return listCertificatesExpiringWithin(tx.certificates, now, cutoff, limit, offset), nil
+}
+
 func (tx *memoryTx) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
 	return listCertificatesForExpirationScan(tx.certificates, now, warningBefore, limit), nil
 }
@@ -1761,6 +1772,31 @@ func listCertificatesForExpirationScan(certificates map[string]domain.Certificat
 		return result[i].ID < result[j].ID
 	})
 	if len(result) > limit {
+		return result[:limit]
+	}
+	return result
+}
+
+func listCertificatesExpiringWithin(certificates map[string]domain.Certificate, now time.Time, cutoff time.Time, limit int, offset int) []domain.Certificate {
+	result := make([]domain.Certificate, 0)
+	for _, certificate := range certificates {
+		if certificate.Status == domain.CertificateValid &&
+			certificate.NotAfter.After(now) &&
+			!certificate.NotAfter.After(cutoff) {
+			result = append(result, copyCertificate(certificate))
+		}
+	}
+	sort.Slice(result, func(i int, j int) bool {
+		if !result[i].NotAfter.Equal(result[j].NotAfter) {
+			return result[i].NotAfter.Before(result[j].NotAfter)
+		}
+		return result[i].ID < result[j].ID
+	})
+	if offset >= len(result) {
+		return []domain.Certificate{}
+	}
+	result = result[offset:]
+	if limit > 0 && len(result) > limit {
 		return result[:limit]
 	}
 	return result

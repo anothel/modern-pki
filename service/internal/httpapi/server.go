@@ -1098,7 +1098,12 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, r, domain.ErrInvalidRequest)
 			return
 		}
-		certificates, err = s.service.ListCertificatesExpiringWithin(r.Context(), days)
+		limit, offset, parseErr := paginationFromQuery(r)
+		if parseErr != nil {
+			s.writeError(w, r, parseErr)
+			return
+		}
+		certificates, err = s.service.ListCertificatesExpiringWithin(r.Context(), days, limit, offset)
 	} else {
 		certificates, err = s.service.ListCertificates(r.Context())
 	}
@@ -1134,21 +1139,37 @@ func certificateInventoryOptionsFromQuery(r *http.Request) (lifecycle.Certificat
 		ProfileID:       query.Get("profile_id"),
 		RevocationState: query.Get("revocation_state"),
 	}
+	limit, offset, err := paginationFromQuery(r)
+	if err != nil {
+		return lifecycle.CertificateInventoryOptions{}, err
+	}
+	opts.Limit = limit
+	opts.Offset = offset
+	return opts, nil
+}
+
+func paginationFromQuery(r *http.Request) (int, int, error) {
+	query := r.URL.Query()
+	limit := 0
+	offset := 0
 	if rawLimit := query.Get("limit"); rawLimit != "" {
-		limit, err := strconv.Atoi(rawLimit)
-		if err != nil || limit < 1 {
-			return lifecycle.CertificateInventoryOptions{}, domain.ErrInvalidRequest
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 {
+			return 0, 0, domain.ErrInvalidRequest
 		}
-		opts.Limit = limit
+		limit = parsed
 	}
 	if rawOffset := query.Get("offset"); rawOffset != "" {
-		offset, err := strconv.Atoi(rawOffset)
-		if err != nil || offset < 0 {
-			return lifecycle.CertificateInventoryOptions{}, domain.ErrInvalidRequest
+		if limit == 0 {
+			return 0, 0, domain.ErrInvalidRequest
 		}
-		opts.Offset = offset
+		parsed, err := strconv.Atoi(rawOffset)
+		if err != nil || parsed < 0 {
+			return 0, 0, domain.ErrInvalidRequest
+		}
+		offset = parsed
 	}
-	return opts, nil
+	return limit, offset, nil
 }
 
 func (s *Server) getExpirySLO(w http.ResponseWriter, r *http.Request) {

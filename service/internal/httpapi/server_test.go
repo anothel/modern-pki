@@ -1859,6 +1859,43 @@ func TestListCertificatesFiltersExpiryWindows(t *testing.T) {
 	assertStatus(t, status, http.StatusBadRequest)
 }
 
+func TestListCertificatesExpiryWindowPaginatesByExpiration(t *testing.T) {
+	api := newTestAPI(t)
+	for _, certificate := range []domain.Certificate{
+		testCertificate("certificate-3", testNow.Add(72*time.Hour)),
+		testCertificate("certificate-1", testNow.Add(24*time.Hour)),
+		testCertificate("certificate-2", testNow.Add(48*time.Hour)),
+		testCertificate("certificate-expired", testNow.Add(-time.Hour)),
+		testCertificateWithStatus("certificate-revoked", testNow.Add(12*time.Hour), domain.CertificateRevoked),
+	} {
+		if err := api.repo.CreateCertificate(api.ctx, certificate); err != nil {
+			t.Fatalf("CreateCertificate(%s) returned error: %v", certificate.ID, err)
+		}
+	}
+
+	var first []apiCertificate
+	status := api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=7&limit=2&offset=0", "", nil, &first)
+	assertStatus(t, status, http.StatusOK)
+	if got := certificateIDs(first); !reflect.DeepEqual(got, []string{"certificate-1", "certificate-2"}) {
+		t.Fatalf("first expiry page IDs = %#v", got)
+	}
+
+	var second []apiCertificate
+	status = api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=7&limit=2&offset=2", "", nil, &second)
+	assertStatus(t, status, http.StatusOK)
+	if got := certificateIDs(second); !reflect.DeepEqual(got, []string{"certificate-3"}) {
+		t.Fatalf("second expiry page IDs = %#v", got)
+	}
+
+	var body errorResponse
+	status = api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=7&limit=0", "", nil, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	status = api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=7&offset=-1", "", nil, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	status = api.doJSON(t, http.MethodGet, "/certificates?expires_within_days=7&offset=1", "", nil, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+}
+
 func TestOperatorCertificateInventoryAndExpirySLO(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := api.createCertificate(t)
@@ -3357,6 +3394,35 @@ func (api *testAPI) createCertificate(t *testing.T) domain.Certificate {
 		t.Fatalf("IssueCertificate returned error: %v", err)
 	}
 	return certificate
+}
+
+func testCertificate(id string, notAfter time.Time) domain.Certificate {
+	return testCertificateWithStatus(id, notAfter, domain.CertificateValid)
+}
+
+func testCertificateWithStatus(id string, notAfter time.Time, status domain.CertificateStatus) domain.Certificate {
+	return domain.Certificate{
+		ID:             id,
+		IdentityID:     "identity-" + id,
+		IssuerID:       "issuer-" + id,
+		EnrollmentID:   "enrollment-" + id,
+		SerialNumber:   "serial-" + id,
+		Subject:        "CN=" + id,
+		NotBefore:      testNow.Add(-time.Hour),
+		NotAfter:       notAfter,
+		Status:         status,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      testNow,
+		UpdatedAt:      testNow,
+	}
+}
+
+func certificateIDs(certificates []apiCertificate) []string {
+	ids := make([]string, 0, len(certificates))
+	for _, certificate := range certificates {
+		ids = append(ids, certificate.ID)
+	}
+	return ids
 }
 
 func (api *testAPI) createCertificateForIdentity(t *testing.T, name string, owner string, team string, serviceName string, environment string, deploymentTarget string) domain.Certificate {

@@ -226,6 +226,35 @@ func TestMemoryStoreUpdateCertificateIfStatus(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreListCertificatesExpiringWithin(t *testing.T) {
+	testListCertificatesExpiringWithin(t, NewMemoryStore())
+}
+
+func testListCertificatesExpiringWithin(t *testing.T, repo Repository) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, certificate := range []domain.Certificate{
+		testStoreCertificate("certificate-3", now.Add(72*time.Hour), domain.CertificateValid),
+		testStoreCertificate("certificate-1", now.Add(24*time.Hour), domain.CertificateValid),
+		testStoreCertificate("certificate-2", now.Add(48*time.Hour), domain.CertificateValid),
+		testStoreCertificate("certificate-expired", now.Add(-time.Hour), domain.CertificateValid),
+		testStoreCertificate("certificate-revoked", now.Add(12*time.Hour), domain.CertificateRevoked),
+	} {
+		if err := repo.CreateCertificate(ctx, certificate); err != nil {
+			t.Fatalf("CreateCertificate(%s) returned error: %v", certificate.ID, err)
+		}
+	}
+
+	certificates, err := repo.ListCertificatesExpiringWithin(ctx, now, now.Add(7*24*time.Hour), 2, 1)
+	if err != nil {
+		t.Fatalf("ListCertificatesExpiringWithin returned error: %v", err)
+	}
+	if got := storeCertificateIDs(certificates); !reflect.DeepEqual(got, []string{"certificate-2", "certificate-3"}) {
+		t.Fatalf("expiring certificate IDs = %#v", got)
+	}
+}
+
 func TestMemoryStoreRejectsDuplicateCertificateFinalizationKeys(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryStore()
@@ -337,4 +366,29 @@ func TestMemoryStoreOCSPResponders(t *testing.T) {
 	if list[0].Status != domain.OCSPResponderDisabled || list[1].Status != domain.OCSPResponderActive {
 		t.Fatalf("responder statuses = %#v", list)
 	}
+}
+
+func testStoreCertificate(id string, notAfter time.Time, status domain.CertificateStatus) domain.Certificate {
+	return domain.Certificate{
+		ID:             id,
+		IdentityID:     "identity-" + id,
+		IssuerID:       "issuer-" + id,
+		EnrollmentID:   "enrollment-" + id,
+		SerialNumber:   "serial-" + id,
+		Subject:        "CN=" + id,
+		NotBefore:      notAfter.Add(-24 * time.Hour),
+		NotAfter:       notAfter,
+		Status:         status,
+		CertificatePEM: "cert-pem",
+		CreatedAt:      notAfter,
+		UpdatedAt:      notAfter,
+	}
+}
+
+func storeCertificateIDs(certificates []domain.Certificate) []string {
+	ids := make([]string, 0, len(certificates))
+	for _, certificate := range certificates {
+		ids = append(ids, certificate.ID)
+	}
+	return ids
 }

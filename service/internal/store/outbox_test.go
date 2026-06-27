@@ -41,6 +41,19 @@ func TestSQLStoreIdentityPolicyFieldsRoundTrip(t *testing.T) {
 	testIdentityPolicyFieldsRoundTrip(t, NewSQLStore(db))
 }
 
+func TestSQLStoreListCertificatesExpiringWithin(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	testListCertificatesExpiringWithin(t, NewSQLStore(db))
+}
+
 func TestMemoryStoreAPIKeys(t *testing.T) {
 	testAPIKeys(t, NewMemoryStore())
 }

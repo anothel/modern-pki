@@ -77,6 +77,7 @@ Certificate inventory and expiry views are available for operators:
 - `GET /certificates?expires_within_days=7`
 - `GET /certificates?expires_within_days=3`
 - `GET /certificates?expires_within_days=1`
+- `GET /certificates?expires_within_days=30&limit=50&offset=0`
 - `GET /operator/certificate-inventory`
 - `GET /operator/certificate-inventory?owner=platform&service=payments&environment=prod&limit=50&offset=0`
 - `GET /operator/expiry-slo`

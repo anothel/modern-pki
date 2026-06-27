@@ -34,7 +34,6 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### Inventory, Ownership, And Expiry Control
 
-- Add pagination and indexed filters for the expiry APIs.
 - Move operator inventory filters from service-side filtering into SQL when large
   inventory tests show response time risk.
 - Keep discovery/import scoped to the first real source requested by operators;

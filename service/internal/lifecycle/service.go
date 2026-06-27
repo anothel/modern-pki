@@ -2549,25 +2549,16 @@ func (s *Service) ListCertificates(ctx context.Context) ([]domain.Certificate, e
 	return s.repo.ListCertificates(ctx)
 }
 
-func (s *Service) ListCertificatesExpiringWithin(ctx context.Context, days int) ([]domain.Certificate, error) {
+func (s *Service) ListCertificatesExpiringWithin(ctx context.Context, days int, limit int, offset int) ([]domain.Certificate, error) {
 	if !isAllowedExpiryWindowDays(days) {
 		return nil, domain.ErrInvalidRequest
 	}
-	certificates, err := s.repo.ListCertificates(ctx)
-	if err != nil {
-		return nil, err
+	if limit < 0 || offset < 0 {
+		return nil, domain.ErrInvalidRequest
 	}
 	now := s.clock.Now()
 	cutoff := now.Add(time.Duration(days) * 24 * time.Hour)
-	filtered := make([]domain.Certificate, 0, len(certificates))
-	for _, certificate := range certificates {
-		if certificate.Status == domain.CertificateValid &&
-			certificate.NotAfter.After(now) &&
-			!certificate.NotAfter.After(cutoff) {
-			filtered = append(filtered, certificate)
-		}
-	}
-	return filtered, nil
+	return s.repo.ListCertificatesExpiringWithin(ctx, now, cutoff, limit, offset)
 }
 
 func (s *Service) ListCertificateInventory(ctx context.Context, opts CertificateInventoryOptions) ([]CertificateInventoryEntry, error) {

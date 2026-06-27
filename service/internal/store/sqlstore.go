@@ -159,6 +159,10 @@ func (s *SQLStore) ListCertificates(ctx context.Context) ([]domain.Certificate, 
 	return s.repository().ListCertificates(ctx)
 }
 
+func (s *SQLStore) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
+	return s.repository().ListCertificatesExpiringWithin(ctx, now, cutoff, limit, offset)
+}
+
 func (s *SQLStore) ListCertificatesForExpirationScan(ctx context.Context, now time.Time, warningBefore time.Time, limit int) ([]domain.Certificate, error) {
 	return s.repository().ListCertificatesForExpirationScan(ctx, now, warningBefore, limit)
 }
@@ -1063,6 +1067,39 @@ SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial
 	renewal_notified_at, created_at, updated_at
 FROM certificates
 ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	certificates := make([]domain.Certificate, 0)
+	for rows.Next() {
+		certificate, err := scanCertificate(rows)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return certificates, nil
+}
+
+func (r sqlRepository) ListCertificatesExpiringWithin(ctx context.Context, now time.Time, cutoff time.Time, limit int, offset int) ([]domain.Certificate, error) {
+	query := `
+SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial_number, subject,
+	dns_names, ip_addresses, not_before, not_after, status, certificate_pem,
+	renewal_notified_at, created_at, updated_at
+FROM certificates
+WHERE status = $1 AND not_after > $2 AND not_after <= $3
+ORDER BY not_after, id`
+	args := []any{string(domain.CertificateValid), formatSQLTime(now), formatSQLTime(cutoff)}
+	if limit > 0 {
+		query += ` LIMIT $4 OFFSET $5`
+		args = append(args, limit, offset)
+	}
+	rows, err := r.exec.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
