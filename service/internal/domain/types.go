@@ -432,14 +432,15 @@ type ACMEOrder struct {
 }
 
 type ACMEAuthorization struct {
-	ID              string
-	OrderID         string
-	IdentifierType  string
-	IdentifierValue string
-	Status          ACMEAuthorizationStatus
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                       string
+	OrderID                  string
+	IdentifierType           string
+	IdentifierValue          string
+	Status                   ACMEAuthorizationStatus
+	ExpiresAt                time.Time
+	ValidationReuseExpiresAt time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type ACMEChallenge struct {

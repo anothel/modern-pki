@@ -2482,14 +2482,15 @@ type acmeOrderResponse struct {
 }
 
 type acmeAuthorizationResponse struct {
-	ID              string                         `json:"id"`
-	OrderID         string                         `json:"order_id"`
-	IdentifierType  string                         `json:"identifier_type"`
-	IdentifierValue string                         `json:"identifier_value"`
-	Status          domain.ACMEAuthorizationStatus `json:"status"`
-	ExpiresAt       time.Time                      `json:"expires_at"`
-	CreatedAt       time.Time                      `json:"created_at"`
-	UpdatedAt       time.Time                      `json:"updated_at"`
+	ID                       string                         `json:"id"`
+	OrderID                  string                         `json:"order_id"`
+	IdentifierType           string                         `json:"identifier_type"`
+	IdentifierValue          string                         `json:"identifier_value"`
+	Status                   domain.ACMEAuthorizationStatus `json:"status"`
+	ExpiresAt                time.Time                      `json:"expires_at"`
+	ValidationReuseExpiresAt time.Time                      `json:"validation_reuse_expires_at"`
+	CreatedAt                time.Time                      `json:"created_at"`
+	UpdatedAt                time.Time                      `json:"updated_at"`
 }
 
 type acmeChallengeResponse struct {
@@ -2874,14 +2875,15 @@ func toACMEOrderResponses(orders []domain.ACMEOrder) []acmeOrderResponse {
 
 func toACMEAuthorizationResponse(authorization domain.ACMEAuthorization) acmeAuthorizationResponse {
 	return acmeAuthorizationResponse{
-		ID:              authorization.ID,
-		OrderID:         authorization.OrderID,
-		IdentifierType:  authorization.IdentifierType,
-		IdentifierValue: authorization.IdentifierValue,
-		Status:          authorization.Status,
-		ExpiresAt:       authorization.ExpiresAt,
-		CreatedAt:       authorization.CreatedAt,
-		UpdatedAt:       authorization.UpdatedAt,
+		ID:                       authorization.ID,
+		OrderID:                  authorization.OrderID,
+		IdentifierType:           authorization.IdentifierType,
+		IdentifierValue:          authorization.IdentifierValue,
+		Status:                   authorization.Status,
+		ExpiresAt:                authorization.ExpiresAt,
+		ValidationReuseExpiresAt: authorization.ValidationReuseExpiresAt,
+		CreatedAt:                authorization.CreatedAt,
+		UpdatedAt:                authorization.UpdatedAt,
 	}
 }
 

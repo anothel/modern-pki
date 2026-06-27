@@ -560,6 +560,7 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 	}{
 		{table: "acme_orders", name: "expires_at", definition: "expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"},
 		{table: "acme_authorizations", name: "expires_at", definition: "expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"},
+		{table: "acme_authorizations", name: "validation_reuse_expires_at", definition: "validation_reuse_expires_at TEXT"},
 	} {
 		exists, err := sqliteColumnExists(ctx, db, tableColumn.table, tableColumn.name)
 		if err != nil {
@@ -777,6 +778,7 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
 		"ALTER TABLE acme_authorizations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+		"ALTER TABLE acme_authorizations ADD COLUMN IF NOT EXISTS validation_reuse_expires_at TIMESTAMPTZ",
 		`CREATE INDEX IF NOT EXISTS idx_acme_authorizations_order
 			ON acme_authorizations(order_id, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS acme_challenges (

@@ -2209,9 +2209,9 @@ WHERE id = $16 AND status = $17`,
 func (r sqlRepository) CreateACMEAuthorization(ctx context.Context, authorization domain.ACMEAuthorization) error {
 	_, err := r.exec.ExecContext(ctx, `
 INSERT INTO acme_authorizations (
-	id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
+	id, order_id, identifier_type, identifier_value, status, expires_at, validation_reuse_expires_at, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8
+	$1, $2, $3, $4, $5, $6, $7, $8, $9
 )`,
 		authorization.ID,
 		authorization.OrderID,
@@ -2219,6 +2219,7 @@ INSERT INTO acme_authorizations (
 		authorization.IdentifierValue,
 		string(authorization.Status),
 		formatSQLTime(authorization.ExpiresAt),
+		formatNullableSQLTime(authorization.ValidationReuseExpiresAt),
 		formatSQLTime(authorization.CreatedAt),
 		formatSQLTime(authorization.UpdatedAt),
 	)
@@ -2227,7 +2228,7 @@ INSERT INTO acme_authorizations (
 
 func (r sqlRepository) GetACMEAuthorization(ctx context.Context, id string) (domain.ACMEAuthorization, error) {
 	authorization, err := scanACMEAuthorization(r.exec.QueryRowContext(ctx, `
-SELECT id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
+SELECT id, order_id, identifier_type, identifier_value, status, expires_at, validation_reuse_expires_at, created_at, updated_at
 FROM acme_authorizations
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2241,7 +2242,7 @@ WHERE id = $1`, id))
 
 func (r sqlRepository) ListACMEAuthorizationsByOrder(ctx context.Context, orderID string) ([]domain.ACMEAuthorization, error) {
 	rows, err := r.exec.QueryContext(ctx, `
-SELECT id, order_id, identifier_type, identifier_value, status, expires_at, created_at, updated_at
+SELECT id, order_id, identifier_type, identifier_value, status, expires_at, validation_reuse_expires_at, created_at, updated_at
 FROM acme_authorizations
 WHERE order_id = $1
 ORDER BY created_at, id`, orderID)
@@ -2267,13 +2268,14 @@ ORDER BY created_at, id`, orderID)
 func (r sqlRepository) UpdateACMEAuthorizationIfStatus(ctx context.Context, authorization domain.ACMEAuthorization, currentStatus domain.ACMEAuthorizationStatus) error {
 	result, err := r.exec.ExecContext(ctx, `
 UPDATE acme_authorizations
-SET order_id = $1, identifier_type = $2, identifier_value = $3, status = $4, expires_at = $5, created_at = $6, updated_at = $7
-WHERE id = $8 AND status = $9`,
+SET order_id = $1, identifier_type = $2, identifier_value = $3, status = $4, expires_at = $5, validation_reuse_expires_at = $6, created_at = $7, updated_at = $8
+WHERE id = $9 AND status = $10`,
 		authorization.OrderID,
 		authorization.IdentifierType,
 		authorization.IdentifierValue,
 		string(authorization.Status),
 		formatSQLTime(authorization.ExpiresAt),
+		formatNullableSQLTime(authorization.ValidationReuseExpiresAt),
 		formatSQLTime(authorization.CreatedAt),
 		formatSQLTime(authorization.UpdatedAt),
 		authorization.ID,
@@ -2485,6 +2487,7 @@ func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error)
 	var authorization domain.ACMEAuthorization
 	var status string
 	var expiresAt any
+	var validationReuseExpiresAt any
 	var createdAt any
 	var updatedAt any
 	if err := scanner.Scan(
@@ -2494,12 +2497,17 @@ func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error)
 		&authorization.IdentifierValue,
 		&status,
 		&expiresAt,
+		&validationReuseExpiresAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
 		return domain.ACMEAuthorization{}, err
 	}
 	parsedExpiresAt, err := parseSQLTime(expiresAt)
+	if err != nil {
+		return domain.ACMEAuthorization{}, err
+	}
+	parsedValidationReuseExpiresAt, err := parseSQLTime(validationReuseExpiresAt)
 	if err != nil {
 		return domain.ACMEAuthorization{}, err
 	}
@@ -2513,6 +2521,7 @@ func scanACMEAuthorization(scanner sqlScanner) (domain.ACMEAuthorization, error)
 	}
 	authorization.Status = domain.ACMEAuthorizationStatus(status)
 	authorization.ExpiresAt = parsedExpiresAt
+	authorization.ValidationReuseExpiresAt = parsedValidationReuseExpiresAt
 	authorization.CreatedAt = parsedCreatedAt
 	authorization.UpdatedAt = parsedUpdatedAt
 	return authorization, nil

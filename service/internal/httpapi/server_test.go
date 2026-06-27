@@ -3739,13 +3739,14 @@ type apiACMEOrder struct {
 }
 
 type apiACMEAuthorization struct {
-	ID              string                         `json:"id"`
-	OrderID         string                         `json:"order_id"`
-	IdentifierType  string                         `json:"identifier_type"`
-	IdentifierValue string                         `json:"identifier_value"`
-	Status          domain.ACMEAuthorizationStatus `json:"status"`
-	CreatedAt       time.Time                      `json:"created_at"`
-	UpdatedAt       time.Time                      `json:"updated_at"`
+	ID                       string                         `json:"id"`
+	OrderID                  string                         `json:"order_id"`
+	IdentifierType           string                         `json:"identifier_type"`
+	IdentifierValue          string                         `json:"identifier_value"`
+	Status                   domain.ACMEAuthorizationStatus `json:"status"`
+	ValidationReuseExpiresAt time.Time                      `json:"validation_reuse_expires_at"`
+	CreatedAt                time.Time                      `json:"created_at"`
+	UpdatedAt                time.Time                      `json:"updated_at"`
 }
 
 type apiACMEChallenge struct {

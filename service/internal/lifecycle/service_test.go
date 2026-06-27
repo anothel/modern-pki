@@ -3358,6 +3358,78 @@ func TestFinalizeACMEOrderKeepsFinalizedStateWhenAuditFails(t *testing.T) {
 	}
 }
 
+func TestFinalizeACMEOrderRejectsExpiredPublicTLSValidationEvidence(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	coreClient := &fakeIssuer{csrInfo: corecli.CSRInfo{
+		Subject:  "CN=edge-01",
+		DNSNames: []string{"edge-01.example.test"},
+	}}
+	now := time.Date(2029, time.March, 15, 1, 2, 3, 0, time.UTC)
+	service := New(repo, coreClient, fixedClock{now: now}, &fakeIDGenerator{})
+
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	publicProfile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "public-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		PublicTLS:             true,
+		AllowedDNSPatterns:    profile.AllowedDNSPatterns,
+		AllowedIPRanges:       profile.AllowedIPRanges,
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile public returned error: %v", err)
+	}
+	order, err := service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: publicProfile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedNotAfter:    now.Add(12 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEOrder returned error: %v", err)
+	}
+	authzs, err := service.ListACMEAuthorizations(ctx, order.ID)
+	if err != nil {
+		t.Fatalf("ListACMEAuthorizations returned error: %v", err)
+	}
+	challenges, err := service.ListACMEChallenges(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("ListACMEChallenges returned error: %v", err)
+	}
+	if _, err := service.CompleteACMEChallenge(ctx, "validator", challenges[0].ID); err != nil {
+		t.Fatalf("CompleteACMEChallenge returned error: %v", err)
+	}
+	authz, err := service.GetACMEAuthorization(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("GetACMEAuthorization returned error: %v", err)
+	}
+	authz.ValidationReuseExpiresAt = now.Add(-time.Minute)
+	if err := repo.UpdateACMEAuthorizationIfStatus(ctx, authz, domain.ACMEAuthorizationValid); err != nil {
+		t.Fatalf("UpdateACMEAuthorizationIfStatus returned error: %v", err)
+	}
+
+	_, err = service.FinalizeACMEOrder(ctx, "acme-client", order.ID, FinalizeACMEOrderRequest{
+		CSRPEM:           "csr-pem",
+		RequestedSubject: "CN=edge-01",
+	})
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("FinalizeACMEOrder error = %v, want ErrInvalidTransition", err)
+	}
+	if len(coreClient.requests) != 0 {
+		t.Fatalf("issuer request count = %d, want 0", len(coreClient.requests))
+	}
+}
+
 func TestCreateACMEOrderEnforcesIdentitySANPolicyBeforeAuthorization(t *testing.T) {
 	ctx := context.Background()
 	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
@@ -3457,6 +3529,13 @@ func TestValidateACMEHTTP01ChallengeVerifiesKeyAuthorizationAndPromotesOrder(t *
 	}
 	if ready.Status != domain.ACMEOrderReady {
 		t.Fatalf("order status = %q, want %q", ready.Status, domain.ACMEOrderReady)
+	}
+	authz, err := service.GetACMEAuthorization(ctx, authzs[0].ID)
+	if err != nil {
+		t.Fatalf("GetACMEAuthorization returned error: %v", err)
+	}
+	if !authz.ValidationReuseExpiresAt.Equal(clock.now.Add(200 * 24 * time.Hour)) {
+		t.Fatalf("validation reuse expires at = %s, want %s", authz.ValidationReuseExpiresAt, clock.now.Add(200*24*time.Hour))
 	}
 }
 

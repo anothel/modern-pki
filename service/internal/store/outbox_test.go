@@ -1148,14 +1148,15 @@ func testACMEState(t *testing.T, repo Repository) {
 	}
 
 	authz := domain.ACMEAuthorization{
-		ID:              "authz-1",
-		OrderID:         order.ID,
-		IdentifierType:  "dns",
-		IdentifierValue: "edge-01.example.test",
-		Status:          domain.ACMEAuthorizationPending,
-		ExpiresAt:       now.Add(2 * time.Hour),
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                       "authz-1",
+		OrderID:                  order.ID,
+		IdentifierType:           "dns",
+		IdentifierValue:          "edge-01.example.test",
+		Status:                   domain.ACMEAuthorizationPending,
+		ExpiresAt:                now.Add(2 * time.Hour),
+		ValidationReuseExpiresAt: now.Add(24 * time.Hour),
+		CreatedAt:                now,
+		UpdatedAt:                now,
 	}
 	if err := repo.CreateACMEAuthorization(ctx, authz); err != nil {
 		t.Fatalf("CreateACMEAuthorization returned error: %v", err)
@@ -1169,7 +1170,9 @@ func testACMEState(t *testing.T, repo Repository) {
 	if err != nil {
 		t.Fatalf("ListACMEAuthorizationsByOrder returned error: %v", err)
 	}
-	if len(authzs) != 1 || authzs[0].Status != domain.ACMEAuthorizationValid || !authzs[0].ExpiresAt.Equal(authz.ExpiresAt) {
+	if len(authzs) != 1 || authzs[0].Status != domain.ACMEAuthorizationValid ||
+		!authzs[0].ExpiresAt.Equal(authz.ExpiresAt) ||
+		!authzs[0].ValidationReuseExpiresAt.Equal(authz.ValidationReuseExpiresAt) {
 		t.Fatalf("authorizations = %#v", authzs)
 	}
 

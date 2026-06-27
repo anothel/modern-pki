@@ -24,30 +24,12 @@ Private PKI is not forced to follow public Web PKI timelines, but the same
 timeline is a useful pressure test: manual renewal and deployment must disappear
 before 100-day and 47-day public certificate operations become normal.
 
-## P0: Production Safety
-
-### Migration And Recovery
-
-No remaining P0 migration and recovery work.
-
-### Inventory, Ownership, And Expiry Control
-
-- Keep discovery/import scoped to the first real source requested by operators;
-  defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
-  until one integration proves the model.
-
-### Webhook And Outbox Safety
-
-No remaining P0 webhook and outbox safety work.
+## P1: ACME Security And Compatibility
 
 ### Public TLS Readiness
 
-- Persist Domain/IP validation evidence age separately from certificate
-  validity and reject stale reuse for public TLS issuance.
 - Add executable CAA DNSSEC handling and RFC 8657 CAA parameter policy checks
   where public TLS issuance is enabled.
-
-## P1: ACME Security And Compatibility
 
 ### Real Client Coverage
 
@@ -87,6 +69,12 @@ No remaining P0 webhook and outbox safety work.
 - Add RFC 8555 conformance matrix.
 
 ## P2: Operator Surface
+
+### Inventory And Discovery
+
+- Keep discovery/import scoped to the first real source requested by operators;
+  defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
+  until one integration proves the model.
 
 ### Documentation And Release Readiness
 

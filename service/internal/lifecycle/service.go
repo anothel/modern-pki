@@ -231,6 +231,15 @@ var publicTLSValidityCeilingSchedule = []struct {
 	{start: time.Date(2029, time.March, 15, 0, 0, 0, 0, time.UTC), max: 47 * 24 * time.Hour},
 }
 
+var publicTLSValidationReuseCeilingSchedule = []struct {
+	start time.Time
+	max   time.Duration
+}{
+	{start: time.Date(2026, time.March, 15, 0, 0, 0, 0, time.UTC), max: 200 * 24 * time.Hour},
+	{start: time.Date(2027, time.March, 15, 0, 0, 0, 0, time.UTC), max: 100 * 24 * time.Hour},
+	{start: time.Date(2029, time.March, 15, 0, 0, 0, 0, time.UTC), max: 10 * 24 * time.Hour},
+}
+
 type RenewCertificateRequest struct {
 	CSRPEM            string
 	RequestedNotAfter time.Time
@@ -1447,6 +1456,9 @@ func (s *Service) FinalizeACMEOrder(ctx context.Context, actor string, orderID s
 			return domain.ACMEOrder{}, err
 		}
 		return domain.ACMEOrder{}, domain.ErrInvalidTransition
+	}
+	if err := s.validateACMEPublicTLSValidationEvidence(ctx, order, s.clock.Now()); err != nil {
+		return domain.ACMEOrder{}, err
 	}
 
 	enrollment, err := s.CreateEnrollment(ctx, actor, CreateEnrollmentRequest{
@@ -2991,6 +3003,7 @@ func (s *Service) promoteACMEAuthorizationIfReady(ctx context.Context, repo stor
 		}
 	}
 	authorization.Status = domain.ACMEAuthorizationValid
+	authorization.ValidationReuseExpiresAt = now.Add(publicTLSValidationReuseCeiling(now))
 	authorization.UpdatedAt = now
 	if err := repo.UpdateACMEAuthorizationIfStatus(ctx, authorization, domain.ACMEAuthorizationPending); err != nil {
 		return err
@@ -3018,6 +3031,31 @@ func (s *Service) promoteACMEOrderIfReady(ctx context.Context, repo store.Reposi
 	order.Status = domain.ACMEOrderReady
 	order.UpdatedAt = now
 	return repo.UpdateACMEOrderIfStatus(ctx, order, domain.ACMEOrderPending)
+}
+
+func (s *Service) validateACMEPublicTLSValidationEvidence(ctx context.Context, order domain.ACMEOrder, now time.Time) error {
+	if order.CertificateProfileID == "" {
+		return nil
+	}
+	profile, err := s.repo.GetCertificateProfile(ctx, order.CertificateProfileID)
+	if err != nil {
+		return err
+	}
+	if !profile.PublicTLS {
+		return nil
+	}
+	authorizations, err := s.repo.ListACMEAuthorizationsByOrder(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	for _, authorization := range authorizations {
+		if authorization.Status != domain.ACMEAuthorizationValid ||
+			acmeExpired(authorization.ValidationReuseExpiresAt, now) ||
+			authorization.ValidationReuseExpiresAt.IsZero() {
+			return domain.ErrInvalidTransition
+		}
+	}
+	return nil
 }
 
 func auditFields(pairs ...string) map[string]any {
@@ -3470,6 +3508,16 @@ func publicTLSValidityCeiling(now time.Time, override time.Duration) time.Durati
 	}
 	maxValidity := publicTLSValidityCeilingSchedule[0].max
 	for _, ceiling := range publicTLSValidityCeilingSchedule {
+		if !now.Before(ceiling.start) {
+			maxValidity = ceiling.max
+		}
+	}
+	return maxValidity
+}
+
+func publicTLSValidationReuseCeiling(now time.Time) time.Duration {
+	maxValidity := publicTLSValidationReuseCeilingSchedule[0].max
+	for _, ceiling := range publicTLSValidationReuseCeilingSchedule {
 		if !now.Before(ceiling.start) {
 			maxValidity = ceiling.max
 		}

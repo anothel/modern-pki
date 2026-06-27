@@ -314,6 +314,7 @@ CREATE TABLE acme_accounts (
 		{table: "identities", name: "allowed_ip_addresses"},
 		{table: "certificate_profiles", name: "subject_key_identifier"},
 		{table: "certificate_profiles", name: "authority_key_identifier"},
+		{table: "certificate_profiles", name: "public_tls"},
 		{table: "enrollments", name: "certificate_profile_id"},
 		{table: "certificates", name: "certificate_profile_id"},
 		{table: "certificates", name: "renewal_notified_at"},
@@ -324,6 +325,7 @@ CREATE TABLE acme_accounts (
 		{table: "notification_endpoints", name: "secret"},
 		{table: "acme_accounts", name: "key_thumbprint"},
 		{table: "acme_accounts", name: "key_jwk_json"},
+		{table: "acme_authorizations", name: "validation_reuse_expires_at"},
 	} {
 		if !testSQLiteColumnExists(t, db, tt.table, tt.name) {
 			t.Fatalf("column %s.%s does not exist after migration", tt.table, tt.name)
