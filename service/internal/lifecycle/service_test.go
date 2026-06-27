@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -3838,6 +3839,57 @@ func TestACMEHTTP01GuardRejectsUnsafeRedirectTarget(t *testing.T) {
 	}
 	if err := validateACMEHTTP01FetchURL(redirectURL); !errors.Is(err, domain.ErrInvalidRequest) {
 		t.Fatalf("validateACMEHTTP01FetchURL error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestACMEHTTP01ClientPolicyIsExplicit(t *testing.T) {
+	client := newACMEHTTP01Client(true)
+	if client.Timeout != acmeHTTP01ClientTimeout {
+		t.Fatalf("client timeout = %s, want %s", client.Timeout, acmeHTTP01ClientTimeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != acmeHTTP01ResponseHeaderTimeout {
+		t.Fatalf("response header timeout = %s, want %s", transport.ResponseHeaderTimeout, acmeHTTP01ResponseHeaderTimeout)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://edge-01.example.test/.well-known/acme-challenge/token-1", nil)
+	via := make([]*http.Request, acmeHTTP01RedirectLimit)
+	if err := client.CheckRedirect(req, via); !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CheckRedirect error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestACMEHTTP01GuardRejectsUnsafeScheme(t *testing.T) {
+	fetchURL, err := url.Parse("ftp://edge-01.example.test/.well-known/acme-challenge/token-1")
+	if err != nil {
+		t.Fatalf("url.Parse returned error: %v", err)
+	}
+	if err := validateACMEHTTP01FetchURL(fetchURL); !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("validateACMEHTTP01FetchURL error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestACMEHTTP01DialTargetsUseSafeResolverResultsOnly(t *testing.T) {
+	targets, err := acmeHTTP01DialTargets(context.Background(), "edge-01.example.test", "80", func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{
+			{IP: net.ParseIP("127.0.0.1")},
+			{IP: net.ParseIP("93.184.216.34")},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("acmeHTTP01DialTargets returned error: %v", err)
+	}
+	if !reflect.DeepEqual(targets, []string{"93.184.216.34:80"}) {
+		t.Fatalf("dial targets = %#v", targets)
+	}
+
+	_, err = acmeHTTP01DialTargets(context.Background(), "edge-01.example.test", "80", func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("unsafe-only dial targets error = %v, want ErrInvalidRequest", err)
 	}
 }
 

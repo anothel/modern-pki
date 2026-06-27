@@ -251,7 +251,7 @@ func TestACMEProtocolDirectoryAndNonce(t *testing.T) {
 	var directory map[string]any
 	status := api.doJSON(t, http.MethodGet, "/acme/directory", "", nil, &directory)
 	assertStatus(t, status, http.StatusOK)
-	for _, key := range []string{"newNonce", "newAccount", "newOrder"} {
+	for _, key := range []string{"newNonce", "newAccount", "newOrder", "revokeCert"} {
 		value, ok := directory[key].(string)
 		if !ok || value == "" {
 			t.Fatalf("directory[%s] = %#v", key, directory[key])
@@ -298,6 +298,31 @@ func TestACMEProtocolRejectsReplayNonce(t *testing.T) {
 	}
 	if body.Type != "urn:ietf:params:acme:error:badNonce" || body.Detail != domain.ErrInvalidRequest.Error() || body.Status != http.StatusBadRequest {
 		t.Fatalf("problem body = %#v", body)
+	}
+}
+
+func TestACMEProtocolRateLimitsAccountRequests(t *testing.T) {
+	api := newTestAPIWithACMEConfig(t, ACMEConfig{RateLimit: 1, RateLimitWindow: time.Minute})
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	response := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, response.StatusCode, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var problem acmeProblemResponse
+	response = api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &problem)
+	assertStatus(t, response.StatusCode, http.StatusTooManyRequests)
+	if problem.Type != "urn:ietf:params:acme:error:rateLimited" ||
+		problem.Detail != domain.ErrRateLimited.Error() ||
+		response.RetryAfter == "" {
+		t.Fatalf("rate limit response = %#v problem = %#v", response, problem)
 	}
 }
 
@@ -1330,6 +1355,20 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		postAsGetCert.ReplayNonce == "" ||
 		!strings.Contains(postAsGetCert.Link, "/acme/directory>;rel=\"index\"") {
 		t.Fatalf("POST-as-GET cert response = %#v", postAsGetCert)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	revokeResponse := api.doACMEJWSWithResponse(t, "/acme/revoke-cert", nonce, accountKID, accountSigner, map[string]any{
+		"certificate_id": strings.TrimPrefix(certificatePath, "/acme/cert/"),
+		"reason":         string(domain.RevocationSuperseded),
+	}, nil)
+	assertStatus(t, revokeResponse.StatusCode, http.StatusOK)
+	revoked, err := api.repo.GetCertificate(api.ctx, strings.TrimPrefix(certificatePath, "/acme/cert/"))
+	if err != nil {
+		t.Fatalf("GetCertificate returned error: %v", err)
+	}
+	if revoked.Status != domain.CertificateRevoked {
+		t.Fatalf("revoked certificate status = %q, want %q", revoked.Status, domain.CertificateRevoked)
 	}
 	if len(api.acmeHTTP01.requests) != len(order.Authorizations) {
 		t.Fatalf("HTTP-01 verifier request count = %d, want %d", len(api.acmeHTTP01.requests), len(order.Authorizations))
@@ -2874,9 +2913,18 @@ func newTestAPIWithAuth(t *testing.T, auth AuthConfig) *testAPI {
 	return newTestAPIWithAuthAndAPIKeyPepper(t, auth, "")
 }
 
+func newTestAPIWithACMEConfig(t *testing.T, acme ACMEConfig) *testAPI {
+	t.Helper()
+	return newTestAPIWithAuthACMEAndAPIKeyPepper(t, AuthConfig{Mode: AuthModeDev}, acme, "")
+}
+
 func newTestAPIWithAuthAndAPIKeyPepper(t *testing.T, auth AuthConfig, pepper string) *testAPI {
 	t.Helper()
+	return newTestAPIWithAuthACMEAndAPIKeyPepper(t, auth, ACMEConfig{}, pepper)
+}
 
+func newTestAPIWithAuthACMEAndAPIKeyPepper(t *testing.T, auth AuthConfig, acme ACMEConfig, pepper string) *testAPI {
+	t.Helper()
 	issuer := &fakeIssuer{}
 	acmeHTTP01 := &fakeACMEHTTP01Verifier{}
 	repo := store.NewMemoryStore()
@@ -2888,7 +2936,7 @@ func newTestAPIWithAuthAndAPIKeyPepper(t *testing.T, auth AuthConfig, pepper str
 		acmeHTTP01,
 		pepper,
 	)
-	server := httptest.NewServer(NewWithAuth(service, auth))
+	server := httptest.NewServer(NewWithAuthAndACME(service, auth, acme))
 	t.Cleanup(server.Close)
 
 	return &testAPI{

@@ -30,26 +30,13 @@ before 100-day and 47-day public certificate operations become normal.
 
 - Run certbot smoke from Linux or elevated Windows.
 - Convert certbot/lego differences into protocol fixture tests.
-- Build compatibility matrix for client, OS, account key type, challenge type,
-  and smoke result.
-
-### HTTP-01 Egress Policy
-
-- Harden DNS rebinding defenses.
-- Validate resolver result and dialed address consistency.
-- Make connect timeout, read timeout, redirect limit, and scheme policy explicit.
-- Add tests for unsafe redirect targets.
-- Add optional egress allow/deny list only if static safety rules prove
-  insufficient.
 
 ### ACME Completeness
 
 - Add account key rollover support.
-- Add ACME revocation endpoint.
 - Add External Account Binding if a real subscriber/account integration requires
   it.
 - Add DNS-01 only when an operator-owned DNS provider integration is selected.
-- Add rate limits for ACME account/order/challenge/finalize paths.
 - Add RFC 8555 conformance matrix.
 
 ## P2: Operator Surface

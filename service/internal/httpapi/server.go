@@ -36,6 +36,8 @@ type Server struct {
 	auth    AuthConfig
 	acme    ACMEConfig
 	nonces  ACMENonceStore
+	rateMu  sync.Mutex
+	rates   map[string]acmeRateBucket
 }
 
 var errACMEBadNonce = errors.New("acme bad nonce")
@@ -47,6 +49,8 @@ const (
 	defaultOCSPBodyLimit      = 16 << 10
 	defaultACMENonceTTL       = 10 * time.Minute
 	defaultACMENonceCacheSize = 1024
+	defaultACMERateLimit      = 120
+	defaultACMERateWindow     = time.Minute
 )
 
 type AuthMode string
@@ -67,6 +71,8 @@ type ACMEConfig struct {
 	DefaultCertificateProfileID string
 	DefaultValidityPeriod       time.Duration
 	NonceStore                  ACMENonceStore
+	RateLimit                   int
+	RateLimitWindow             time.Duration
 }
 
 type ACMENonceStore interface {
@@ -83,6 +89,11 @@ type acmeMemoryNonceStore struct {
 type acmeStoredNonce struct {
 	IssuedAt  time.Time
 	ExpiresAt time.Time
+}
+
+type acmeRateBucket struct {
+	Count   int
+	ResetAt time.Time
 }
 
 type requiredScope string
@@ -111,12 +122,19 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 	if nonceStore == nil {
 		nonceStore = newACMEMemoryNonceStore(defaultACMENonceCacheSize)
 	}
+	if acme.RateLimit <= 0 {
+		acme.RateLimit = defaultACMERateLimit
+	}
+	if acme.RateLimitWindow <= 0 {
+		acme.RateLimitWindow = defaultACMERateWindow
+	}
 	s := &Server{
 		service: service,
 		mux:     http.NewServeMux(),
 		auth:    auth,
 		acme:    acme,
 		nonces:  nonceStore,
+		rates:   make(map[string]acmeRateBucket),
 	}
 	s.registerRoutes()
 	return s
@@ -139,6 +157,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(authenticated)
+	if err := s.checkACMERateLimit(r); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -210,6 +232,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /acme/authz/{id}", s.acmePostAsGetAuthorization)
 	s.mux.HandleFunc("POST /acme/challenge/{id}", s.acmeCompleteChallenge)
 	s.mux.HandleFunc("POST /acme/order/{id}/finalize", s.acmeFinalizeOrder)
+	s.mux.HandleFunc("POST /acme/revoke-cert", s.acmeRevokeCertificate)
 	s.mux.HandleFunc("GET /acme/cert/{id}", s.acmeGetCertificate)
 	s.mux.HandleFunc("POST /acme/cert/{id}", s.acmePostAsGetCertificate)
 
@@ -610,6 +633,7 @@ func (s *Server) acmeDirectory(w http.ResponseWriter, r *http.Request) {
 		"newNonce":   baseURL + "/acme/new-nonce",
 		"newAccount": baseURL + "/acme/new-account",
 		"newOrder":   baseURL + "/acme/new-order",
+		"revokeCert": baseURL + "/acme/revoke-cert",
 		"meta": map[string]any{
 			"externalAccountRequired": false,
 		},
@@ -898,6 +922,32 @@ func (s *Server) acmeFinalizeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeACMEJSON(w, r, http.StatusOK, response)
+}
+
+func (s *Server) acmeRevokeCertificate(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var req acmeRevokeCertificateRequest
+	if err := json.Unmarshal(jws.Payload, &req); err != nil {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if req.CertificateID == "" || req.Reason == "" {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	if err := s.requireACMECertificateAccount(r.Context(), req.CertificateID, jws.AccountID); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if _, err := s.service.RevokeCertificate(r.Context(), requestActor(r), req.CertificateID, req.Reason); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, map[string]any{})
 }
 
 func (s *Server) acmeGetCertificate(w http.ResponseWriter, r *http.Request) {
@@ -1946,7 +1996,7 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 	if (method == http.MethodHead || method == http.MethodGet) && path == "/acme/new-nonce" {
 		return true
 	}
-	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order") {
+	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order" || path == "/acme/revoke-cert") {
 		return true
 	}
 	if method == http.MethodPost && strings.HasPrefix(path, "/acme/account/") {
@@ -1962,6 +2012,52 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) checkACMERateLimit(r *http.Request) error {
+	if !isRateLimitedACMEProtocolEndpoint(r.Method, r.URL.Path) {
+		return nil
+	}
+	now := time.Now()
+	key := requestClientIP(r, s.auth.TrustedProxies) + " " + acmeRateLimitClass(r.URL.Path)
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	bucket := s.rates[key]
+	if bucket.ResetAt.IsZero() || !bucket.ResetAt.After(now) {
+		bucket = acmeRateBucket{ResetAt: now.Add(s.acme.RateLimitWindow)}
+	}
+	if bucket.Count >= s.acme.RateLimit {
+		s.rates[key] = bucket
+		return domain.ErrRateLimited
+	}
+	bucket.Count++
+	s.rates[key] = bucket
+	return nil
+}
+
+func isRateLimitedACMEProtocolEndpoint(method string, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	return path == "/acme/new-account" ||
+		path == "/acme/new-order" ||
+		strings.HasPrefix(path, "/acme/challenge/") ||
+		(strings.HasPrefix(path, "/acme/order/") && strings.HasSuffix(path, "/finalize"))
+}
+
+func acmeRateLimitClass(path string) string {
+	switch {
+	case path == "/acme/new-account":
+		return "account"
+	case path == "/acme/new-order":
+		return "order"
+	case strings.HasPrefix(path, "/acme/challenge/"):
+		return "challenge"
+	case strings.HasPrefix(path, "/acme/order/") && strings.HasSuffix(path, "/finalize"):
+		return "finalize"
+	default:
+		return path
+	}
 }
 
 func requiredScopeForRequest(method string, path string) requiredScope {
@@ -2058,6 +2154,9 @@ func (s *Server) writeACMEProblem(w http.ResponseWriter, r *http.Request, status
 		w.Header().Set("Replay-Nonce", nonce)
 	}
 	w.Header().Set("Link", acmeDirectoryLink(r))
+	if errors.Is(err, domain.ErrRateLimited) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.acme.RateLimitWindow.Seconds())))
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(acmeProblem{
@@ -2072,6 +2171,8 @@ func acmeProblemType(err error) string {
 	switch {
 	case errors.Is(err, errACMEBadNonce):
 		return "urn:ietf:params:acme:error:badNonce"
+	case errors.Is(err, domain.ErrRateLimited):
+		return "urn:ietf:params:acme:error:rateLimited"
 	case errors.Is(err, domain.ErrACMEAccountDeactivated):
 		return "urn:ietf:params:acme:error:unauthorized"
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrForbidden):
@@ -2100,6 +2201,8 @@ func publicErrorMessage(err error) string {
 		return domain.ErrUnauthorized.Error()
 	case errors.Is(err, domain.ErrForbidden):
 		return domain.ErrForbidden.Error()
+	case errors.Is(err, domain.ErrRateLimited):
+		return domain.ErrRateLimited.Error()
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return domain.ErrInvalidTransition.Error()
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -2163,6 +2266,8 @@ func statusForError(err error) int {
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrForbidden):
 		return http.StatusForbidden
+	case errors.Is(err, domain.ErrRateLimited):
+		return http.StatusTooManyRequests
 	case errors.Is(err, domain.ErrACMEAccountDeactivated):
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrInvalidTransition):
@@ -2323,6 +2428,11 @@ type finalizeACMEOrderRequest struct {
 	CSRPEM           string `json:"csr_pem"`
 	CSR              string `json:"csr"`
 	RequestedSubject string `json:"requested_subject"`
+}
+
+type acmeRevokeCertificateRequest struct {
+	CertificateID string                  `json:"certificate_id"`
+	Reason        domain.RevocationReason `json:"reason"`
 }
 
 type acmeJWSRequest struct {
