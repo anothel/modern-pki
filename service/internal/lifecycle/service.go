@@ -3374,6 +3374,8 @@ func auditErrorCode(err error) string {
 		return "unauthorized"
 	case errors.Is(err, domain.ErrForbidden):
 		return "forbidden"
+	case errors.Is(err, domain.ErrRateLimited):
+		return "rate_limited"
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return "invalid_lifecycle_transition"
 	case errors.Is(err, domain.ErrIdentityNotFound):
@@ -3382,6 +3384,8 @@ func auditErrorCode(err error) string {
 		return "issuer_not_found"
 	case errors.Is(err, domain.ErrOCSPResponderNotFound):
 		return "ocsp_responder_not_found"
+	case errors.Is(err, domain.ErrNotificationEndpointNotFound):
+		return "notification_endpoint_not_found"
 	case errors.Is(err, domain.ErrCertificateProfileNotFound):
 		return "certificate_profile_not_found"
 	case errors.Is(err, domain.ErrEnrollmentNotFound):
@@ -3390,8 +3394,14 @@ func auditErrorCode(err error) string {
 		return "certificate_not_found"
 	case errors.Is(err, domain.ErrCRLPublicationNotFound):
 		return "crl_publication_not_found"
+	case errors.Is(err, domain.ErrOutboxMessageNotFound):
+		return "outbox_message_not_found"
+	case errors.Is(err, domain.ErrAPIKeyNotFound):
+		return "api_key_not_found"
 	case errors.Is(err, domain.ErrACMEAccountNotFound):
 		return "acme_account_not_found"
+	case errors.Is(err, domain.ErrACMEAccountDeactivated):
+		return "acme_account_deactivated"
 	case errors.Is(err, domain.ErrACMEOrderNotFound):
 		return "acme_order_not_found"
 	case errors.Is(err, domain.ErrACMEAuthorizationNotFound):

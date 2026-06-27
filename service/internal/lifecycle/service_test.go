@@ -190,6 +190,27 @@ func TestManualEnrollmentLifecycle(t *testing.T) {
 	}
 }
 
+func TestAuditErrorCodeMapsPublicErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "rate limited", err: domain.ErrRateLimited, want: "rate_limited"},
+		{name: "notification endpoint not found", err: domain.ErrNotificationEndpointNotFound, want: "notification_endpoint_not_found"},
+		{name: "outbox message not found", err: domain.ErrOutboxMessageNotFound, want: "outbox_message_not_found"},
+		{name: "api key not found", err: domain.ErrAPIKeyNotFound, want: "api_key_not_found"},
+		{name: "acme account deactivated", err: domain.ErrACMEAccountDeactivated, want: "acme_account_deactivated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := auditErrorCode(tt.err); got != tt.want {
+				t.Fatalf("auditErrorCode(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIssueRequiresApprovedEnrollment(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()

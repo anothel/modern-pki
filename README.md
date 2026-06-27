@@ -93,6 +93,10 @@ go run ./cmd/modern-pki-service
 - [Roadmap](docs/ROADMAP.md): completed work, next big work, backlog, and verification policy.
 - [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
 - [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
+- [Project scope](docs/reference/project-scope.md): supported PKI domains, explicit non-goals, and current boundaries.
+- [Target architecture](docs/reference/target-architecture.md): RA/API, policy, lifecycle, issuer adapter, key provider, audit, CRL, and OCSP boundaries.
+- [State transitions](docs/reference/state-transitions.md): lifecycle status transitions and invalid transition boundaries.
+- [API error codes](docs/reference/api-errors.md): public HTTP error mapping, ACME problem types, and audit error codes.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
 - [Issuance consistency reference](docs/reference/issuance-consistency.md): signing claim, retry, and audit repair behavior.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
@@ -101,6 +105,11 @@ go run ./cmd/modern-pki-service
 - [Public TLS readiness runbook](docs/runbooks/public-tls-readiness.md): validity ceilings, validation reuse, CAA checks, and mass-revocation drill.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
+## License
+
+No `LICENSE` file has been selected yet. Until the owner chooses a license,
+assume all rights are reserved.
+
 ## Current Status
 
-This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, security/contribution docs, CI workflow, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is remaining ACME security hardening and broader client coverage.
+This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, security/contribution docs, CI workflow, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is operator documentation and release readiness, plus certbot live coverage when a Linux or elevated Windows environment is available.

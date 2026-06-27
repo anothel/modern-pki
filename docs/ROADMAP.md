@@ -49,20 +49,12 @@ before 100-day and 47-day public certificate operations become normal.
 ### Documentation And Release Readiness
 
 - Get owner decision for `LICENSE`.
-- Add README license status.
-- Write project scope covering public TLS, private CA, internal mTLS, device
-  certificates, code signing, and explicit non-goals.
-- Write target architecture docs for RA/API, policy engine, lifecycle service,
-  issuer adapters, key providers, deploy adapters, audit, CRL, and OCSP.
 - Write production deployment guide with secure sample config.
 - Write bootstrap API key provisioning/removal/rotation runbook.
-- Write state transition reference.
-- Write API error code reference.
 - Write OpenAPI spec for lifecycle/operator APIs.
 - Write release process.
 - Write incident response runbook for mis-issuance, key exposure, CA outage,
   failed renewal, failed revocation, and webhook outage.
-- Write backup/restore runbook.
 - Add compliance matrix for RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR,
   Mozilla root-store expectations, NIST SP 800-57, and NIST SP 1800-16.
 
