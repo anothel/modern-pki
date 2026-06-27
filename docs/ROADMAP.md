@@ -49,12 +49,7 @@ before 100-day and 47-day public certificate operations become normal.
 ### Documentation And Release Readiness
 
 - Get owner decision for `LICENSE`.
-- Write production deployment guide with secure sample config.
-- Write bootstrap API key provisioning/removal/rotation runbook.
 - Write OpenAPI spec for lifecycle/operator APIs.
-- Write release process.
-- Write incident response runbook for mis-issuance, key exposure, CA outage,
-  failed renewal, failed revocation, and webhook outage.
 - Add compliance matrix for RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR,
   Mozilla root-store expectations, NIST SP 800-57, and NIST SP 1800-16.
 
