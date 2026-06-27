@@ -29,13 +29,14 @@ before 100-day and 47-day public certificate operations become normal.
 ### Real Client Coverage
 
 - Run certbot smoke from Linux or elevated Windows.
-- Convert certbot/lego differences into protocol fixture tests.
+- If certbot smoke exposes client-specific behavior differences, convert them
+  into protocol fixture tests.
 
-### ACME Completeness
+## Deferred Until A Real Integration Is Selected
 
-- Add External Account Binding if a real subscriber/account integration requires
-  it.
-- Add DNS-01 only when an operator-owned DNS provider integration is selected.
+- Add External Account Binding only after a real subscriber/account integration
+  requires it.
+- Add DNS-01 only after an operator-owned DNS provider integration is selected.
 
 ## P2: Operator Surface
 
