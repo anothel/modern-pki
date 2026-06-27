@@ -72,6 +72,43 @@ type CertificateInventoryFilter struct {
 	Offset          int
 }
 
+type IdentityQuery struct {
+	Owner       string
+	Team        string
+	Service     string
+	Environment string
+	Sort        string
+	Limit       int
+	Offset      int
+}
+
+type EnrollmentQuery struct {
+	IdentityID string
+	IssuerID   string
+	ProfileID  string
+	Status     domain.EnrollmentStatus
+	Sort       string
+	Limit      int
+	Offset     int
+}
+
+type CertificateQuery struct {
+	Owner           string
+	Team            string
+	Service         string
+	Environment     string
+	IssuerID        string
+	ProfileID       string
+	SAN             string
+	RevocationState string
+	RenewalState    string
+	ExpiresAfter    time.Time
+	ExpiresBefore   time.Time
+	Sort            string
+	Limit           int
+	Offset          int
+}
+
 type CertificateInventoryRecord struct {
 	Certificate domain.Certificate
 	Identity    domain.Identity
@@ -126,6 +163,16 @@ type OutboxRepository interface {
 	ListJobAttemptsByOutboxMessage(ctx context.Context, outboxMessageID string) ([]domain.JobAttempt, error)
 	GetWebhookDelivery(ctx context.Context, outboxMessageID string, endpointID string) (domain.WebhookDelivery, error)
 	UpsertWebhookDelivery(ctx context.Context, delivery domain.WebhookDelivery) error
+}
+
+type OutboxMessageQuery struct {
+	Status      domain.OutboxMessageStatus
+	Type        string
+	CreatedFrom time.Time
+	CreatedTo   time.Time
+	Sort        string
+	Limit       int
+	Offset      int
 }
 
 type APIKeyRepository interface {

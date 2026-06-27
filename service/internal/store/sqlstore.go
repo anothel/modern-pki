@@ -63,6 +63,10 @@ func (s *SQLStore) ListIdentities(ctx context.Context) ([]domain.Identity, error
 	return s.repository().ListIdentities(ctx)
 }
 
+func (s *SQLStore) ListIdentitiesQuery(ctx context.Context, query IdentityQuery) ([]domain.Identity, error) {
+	return s.repository().ListIdentitiesQuery(ctx, query)
+}
+
 func (s *SQLStore) CreateIssuer(ctx context.Context, issuer domain.Issuer) error {
 	return s.repository().CreateIssuer(ctx, issuer)
 }
@@ -135,6 +139,10 @@ func (s *SQLStore) ListEnrollments(ctx context.Context) ([]domain.Enrollment, er
 	return s.repository().ListEnrollments(ctx)
 }
 
+func (s *SQLStore) ListEnrollmentsQuery(ctx context.Context, query EnrollmentQuery) ([]domain.Enrollment, error) {
+	return s.repository().ListEnrollmentsQuery(ctx, query)
+}
+
 func (s *SQLStore) UpdateEnrollment(ctx context.Context, enrollment domain.Enrollment) error {
 	return s.repository().UpdateEnrollment(ctx, enrollment)
 }
@@ -157,6 +165,10 @@ func (s *SQLStore) GetCertificateByEnrollmentID(ctx context.Context, enrollmentI
 
 func (s *SQLStore) ListCertificates(ctx context.Context) ([]domain.Certificate, error) {
 	return s.repository().ListCertificates(ctx)
+}
+
+func (s *SQLStore) ListCertificatesQuery(ctx context.Context, query CertificateQuery) ([]domain.Certificate, error) {
+	return s.repository().ListCertificatesQuery(ctx, query)
 }
 
 func (s *SQLStore) ListCertificateInventory(ctx context.Context, filter CertificateInventoryFilter) ([]CertificateInventoryRecord, error) {
@@ -241,6 +253,10 @@ func (s *SQLStore) GetOutboxMessage(ctx context.Context, id string) (domain.Outb
 
 func (s *SQLStore) ListOutboxMessages(ctx context.Context, status domain.OutboxMessageStatus) ([]domain.OutboxMessage, error) {
 	return s.repository().ListOutboxMessages(ctx, status)
+}
+
+func (s *SQLStore) ListOutboxMessagesQuery(ctx context.Context, query OutboxMessageQuery) ([]domain.OutboxMessage, error) {
+	return s.repository().ListOutboxMessagesQuery(ctx, query)
 }
 
 func (s *SQLStore) ListDueOutboxMessages(ctx context.Context, now time.Time, limit int) ([]domain.OutboxMessage, error) {
@@ -363,6 +379,50 @@ func (r sqlRepository) WithinTx(ctx context.Context, fn func(Repository) error) 
 	return fn(r)
 }
 
+func addSQLStringCondition(args *[]any, conditions *[]string, column string, value string) {
+	if value == "" {
+		return
+	}
+	*args = append(*args, value)
+	*conditions = append(*conditions, fmt.Sprintf("%s = $%d", column, len(*args)))
+}
+
+func appendSQLWhere(query *strings.Builder, conditions []string) {
+	if len(conditions) == 0 {
+		return
+	}
+	query.WriteString("\nWHERE ")
+	query.WriteString(strings.Join(conditions, " AND "))
+}
+
+func appendSQLSort(query *strings.Builder, sortOrder string, createdAtColumn string, idColumn string) {
+	if sortOrder == "desc" {
+		query.WriteString(fmt.Sprintf("\nORDER BY %s DESC, %s DESC", createdAtColumn, idColumn))
+		return
+	}
+	query.WriteString(fmt.Sprintf("\nORDER BY %s ASC, %s ASC", createdAtColumn, idColumn))
+}
+
+func appendSQLLimitOffset(query *strings.Builder, args *[]any, limit int, offset int) {
+	if limit <= 0 {
+		return
+	}
+	*args = append(*args, limit)
+	query.WriteString(fmt.Sprintf("\nLIMIT $%d", len(*args)))
+	if offset > 0 {
+		*args = append(*args, offset)
+		query.WriteString(fmt.Sprintf(" OFFSET $%d", len(*args)))
+	}
+}
+
+func sqlJSONStringElementPattern(value string) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return "%" + string(encoded) + "%", nil
+}
+
 func (r sqlRepository) CreateIdentity(ctx context.Context, identity domain.Identity) error {
 	allowedDNSNames, err := marshalStringSlice(identity.AllowedDNSNames)
 	if err != nil {
@@ -420,6 +480,41 @@ SELECT id, type, name, external_id, owner, team, service, environment, deploymen
 	metadata_json, allowed_dns_names, allowed_ip_addresses, status, created_at, updated_at
 FROM identities
 ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	identities := make([]domain.Identity, 0)
+	for rows.Next() {
+		identity, err := scanIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return identities, nil
+}
+
+func (r sqlRepository) ListIdentitiesQuery(ctx context.Context, query IdentityQuery) ([]domain.Identity, error) {
+	sqlQuery := strings.Builder{}
+	sqlQuery.WriteString(`SELECT id, type, name, external_id, owner, team, service, environment, deployment_target, last_seen_at,
+	metadata_json, allowed_dns_names, allowed_ip_addresses, status, created_at, updated_at
+FROM identities`)
+	args := make([]any, 0)
+	conditions := make([]string, 0)
+	addSQLStringCondition(&args, &conditions, "owner", query.Owner)
+	addSQLStringCondition(&args, &conditions, "team", query.Team)
+	addSQLStringCondition(&args, &conditions, "service", query.Service)
+	addSQLStringCondition(&args, &conditions, "environment", query.Environment)
+	appendSQLWhere(&sqlQuery, conditions)
+	appendSQLSort(&sqlQuery, query.Sort, "created_at", "id")
+	appendSQLLimitOffset(&sqlQuery, &args, query.Limit, query.Offset)
+
+	rows, err := r.exec.QueryContext(ctx, sqlQuery.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -910,6 +1005,44 @@ ORDER BY created_at, id`)
 	return enrollments, nil
 }
 
+func (r sqlRepository) ListEnrollmentsQuery(ctx context.Context, query EnrollmentQuery) ([]domain.Enrollment, error) {
+	sqlQuery := strings.Builder{}
+	sqlQuery.WriteString(`SELECT id, identity_id, issuer_id, certificate_profile_id, csr_pem, status, requested_subject,
+	requested_dns_names, requested_ip_addresses, csr_dns_names, csr_ip_addresses, requested_not_after,
+	approved_by, approved_at, created_at, updated_at
+FROM enrollments`)
+	args := make([]any, 0)
+	conditions := make([]string, 0)
+	addSQLStringCondition(&args, &conditions, "identity_id", query.IdentityID)
+	addSQLStringCondition(&args, &conditions, "issuer_id", query.IssuerID)
+	addSQLStringCondition(&args, &conditions, "certificate_profile_id", query.ProfileID)
+	if query.Status != "" {
+		addSQLStringCondition(&args, &conditions, "status", string(query.Status))
+	}
+	appendSQLWhere(&sqlQuery, conditions)
+	appendSQLSort(&sqlQuery, query.Sort, "created_at", "id")
+	appendSQLLimitOffset(&sqlQuery, &args, query.Limit, query.Offset)
+
+	rows, err := r.exec.QueryContext(ctx, sqlQuery.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	enrollments := make([]domain.Enrollment, 0)
+	for rows.Next() {
+		enrollment, err := scanEnrollment(rows)
+		if err != nil {
+			return nil, err
+		}
+		enrollments = append(enrollments, enrollment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return enrollments, nil
+}
+
 func (r sqlRepository) UpdateEnrollment(ctx context.Context, enrollment domain.Enrollment) error {
 	result, err := r.updateEnrollment(ctx, enrollment, "", false)
 	if err != nil {
@@ -1080,6 +1213,70 @@ SELECT id, identity_id, issuer_id, enrollment_id, certificate_profile_id, serial
 	renewal_notified_at, created_at, updated_at
 FROM certificates
 ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	certificates := make([]domain.Certificate, 0)
+	for rows.Next() {
+		certificate, err := scanCertificate(rows)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return certificates, nil
+}
+
+func (r sqlRepository) ListCertificatesQuery(ctx context.Context, query CertificateQuery) ([]domain.Certificate, error) {
+	sqlQuery := strings.Builder{}
+	sqlQuery.WriteString(`SELECT c.id, c.identity_id, c.issuer_id, c.enrollment_id, c.certificate_profile_id, c.serial_number, c.subject,
+	c.dns_names, c.ip_addresses, c.not_before, c.not_after, c.status, c.certificate_pem,
+	c.renewal_notified_at, c.created_at, c.updated_at
+FROM certificates c`)
+	if query.Owner != "" || query.Team != "" || query.Service != "" || query.Environment != "" {
+		sqlQuery.WriteString(`
+JOIN identities i ON i.id = c.identity_id`)
+	}
+	args := make([]any, 0)
+	conditions := make([]string, 0)
+	addSQLStringCondition(&args, &conditions, "i.owner", query.Owner)
+	addSQLStringCondition(&args, &conditions, "i.team", query.Team)
+	addSQLStringCondition(&args, &conditions, "i.service", query.Service)
+	addSQLStringCondition(&args, &conditions, "i.environment", query.Environment)
+	addSQLStringCondition(&args, &conditions, "c.issuer_id", query.IssuerID)
+	addSQLStringCondition(&args, &conditions, "c.certificate_profile_id", query.ProfileID)
+	addSQLStringCondition(&args, &conditions, "c.status", query.RevocationState)
+	if query.SAN != "" {
+		pattern, err := sqlJSONStringElementPattern(query.SAN)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, pattern, pattern)
+		conditions = append(conditions, fmt.Sprintf("(c.dns_names LIKE $%d OR c.ip_addresses LIKE $%d)", len(args)-1, len(args)))
+	}
+	if query.RenewalState == "notified" {
+		conditions = append(conditions, "c.renewal_notified_at IS NOT NULL")
+	} else if query.RenewalState == "unnotified" {
+		conditions = append(conditions, "c.renewal_notified_at IS NULL")
+	}
+	if !query.ExpiresAfter.IsZero() {
+		args = append(args, formatSQLTime(query.ExpiresAfter))
+		conditions = append(conditions, fmt.Sprintf("c.not_after > $%d", len(args)))
+	}
+	if !query.ExpiresBefore.IsZero() {
+		args = append(args, formatSQLTime(query.ExpiresBefore))
+		conditions = append(conditions, fmt.Sprintf("c.not_after <= $%d", len(args)))
+	}
+	appendSQLWhere(&sqlQuery, conditions)
+	appendSQLSort(&sqlQuery, query.Sort, "c.created_at", "c.id")
+	appendSQLLimitOffset(&sqlQuery, &args, query.Limit, query.Offset)
+
+	rows, err := r.exec.QueryContext(ctx, sqlQuery.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1716,6 +1913,48 @@ FROM outbox_messages`
 	query += " ORDER BY created_at, id"
 
 	rows, err := r.exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := make([]domain.OutboxMessage, 0)
+	for rows.Next() {
+		message, err := scanOutboxMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (r sqlRepository) ListOutboxMessagesQuery(ctx context.Context, query OutboxMessageQuery) ([]domain.OutboxMessage, error) {
+	sqlQuery := strings.Builder{}
+	sqlQuery.WriteString(`SELECT id, type, payload_json, status, available_at, processing_deadline_at, attempt_count, max_attempts, last_error, created_at, updated_at
+FROM outbox_messages`)
+	args := make([]any, 0)
+	conditions := make([]string, 0)
+	if query.Status != "" {
+		addSQLStringCondition(&args, &conditions, "status", string(query.Status))
+	}
+	addSQLStringCondition(&args, &conditions, "type", query.Type)
+	if !query.CreatedFrom.IsZero() {
+		args = append(args, formatSQLTime(query.CreatedFrom))
+		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if !query.CreatedTo.IsZero() {
+		args = append(args, formatSQLTime(query.CreatedTo))
+		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
+	appendSQLWhere(&sqlQuery, conditions)
+	appendSQLSort(&sqlQuery, query.Sort, "created_at", "id")
+	appendSQLLimitOffset(&sqlQuery, &args, query.Limit, query.Offset)
+
+	rows, err := r.exec.QueryContext(ctx, sqlQuery.String(), args...)
 	if err != nil {
 		return nil, err
 	}

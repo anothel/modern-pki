@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -165,6 +166,197 @@ func TestSQLStoreListCertificateInventoryFiltersInRepository(t *testing.T) {
 	if records[0].Identity.Owner != "platform" || records[0].Issuer.KeyRef != issuer.KeyRef {
 		t.Fatalf("inventory join record = %#v", records[0])
 	}
+}
+
+func TestSQLStoreLargeListQueriesFilterSortAndPage(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	repo := NewSQLStore(db)
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	issuer := domain.Issuer{
+		ID:             "issuer-list",
+		Name:           "List Issuer",
+		Kind:           domain.IssuerIntermediateCA,
+		Status:         domain.IssuerActive,
+		CertificatePEM: "issuer-pem",
+		KeyRef:         "keyref://list",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.CreateIssuer(ctx, issuer); err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	profile := domain.CertificateProfile{
+		ID:                    "profile-list",
+		Name:                  "list-profile",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		AllowedDNSPatterns:    []string{},
+		AllowedIPRanges:       []string{},
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	if err := repo.CreateCertificateProfile(ctx, profile); err != nil {
+		t.Fatalf("CreateCertificateProfile returned error: %v", err)
+	}
+
+	for i := 0; i < 600; i++ {
+		createdAt := now.Add(time.Duration(i) * time.Second)
+		owner := "platform"
+		serviceName := "pay-api"
+		environment := "prod"
+		status := domain.EnrollmentPending
+		certificateStatus := domain.CertificateValid
+		if i%2 == 1 {
+			owner = "finance"
+			serviceName = "billing-api"
+			environment = "dev"
+			status = domain.EnrollmentRejected
+			certificateStatus = domain.CertificateRevoked
+		}
+		identityID := fmt.Sprintf("identity-list-%03d", i)
+		if err := repo.CreateIdentity(ctx, domain.Identity{
+			ID:          identityID,
+			Type:        domain.IdentityService,
+			Name:        identityID,
+			Owner:       owner,
+			Team:        "edge",
+			Service:     serviceName,
+			Environment: environment,
+			Status:      domain.IdentityActive,
+			CreatedAt:   createdAt,
+			UpdatedAt:   createdAt,
+		}); err != nil {
+			t.Fatalf("CreateIdentity(%d) returned error: %v", i, err)
+		}
+		enrollmentID := fmt.Sprintf("enrollment-list-%03d", i)
+		if err := repo.CreateEnrollment(ctx, domain.Enrollment{
+			ID:                   enrollmentID,
+			IdentityID:           identityID,
+			IssuerID:             issuer.ID,
+			CertificateProfileID: profile.ID,
+			Status:               status,
+			CreatedAt:            createdAt,
+			UpdatedAt:            createdAt,
+		}); err != nil {
+			t.Fatalf("CreateEnrollment(%d) returned error: %v", i, err)
+		}
+		renewalNotifiedAt := time.Time{}
+		if i == 596 {
+			renewalNotifiedAt = createdAt
+		}
+		if err := repo.CreateCertificate(ctx, domain.Certificate{
+			ID:                   fmt.Sprintf("certificate-list-%03d", i),
+			IdentityID:           identityID,
+			IssuerID:             issuer.ID,
+			EnrollmentID:         enrollmentID,
+			CertificateProfileID: profile.ID,
+			SerialNumber:         fmt.Sprintf("serial-list-%03d", i),
+			Subject:              fmt.Sprintf("CN=service-%03d", i),
+			DNSNames:             []string{fmt.Sprintf("service-%03d.example.test", i)},
+			NotBefore:            createdAt,
+			NotAfter:             now.Add(time.Duration(i+1) * time.Hour),
+			Status:               certificateStatus,
+			RenewalNotifiedAt:    renewalNotifiedAt,
+			CreatedAt:            createdAt,
+			UpdatedAt:            createdAt,
+		}); err != nil {
+			t.Fatalf("CreateCertificate(%d) returned error: %v", i, err)
+		}
+		outboxStatus := domain.OutboxCompleted
+		if i%2 == 0 {
+			outboxStatus = domain.OutboxPending
+		}
+		if err := repo.CreateOutboxMessage(ctx, domain.OutboxMessage{
+			ID:          fmt.Sprintf("outbox-list-%03d", i),
+			Type:        "certificate.issued",
+			PayloadJSON: "{}",
+			Status:      outboxStatus,
+			AvailableAt: createdAt,
+			MaxAttempts: 3,
+			CreatedAt:   createdAt,
+			UpdatedAt:   createdAt,
+		}); err != nil {
+			t.Fatalf("CreateOutboxMessage(%d) returned error: %v", i, err)
+		}
+	}
+
+	start := time.Now()
+	identities, err := repo.ListIdentitiesQuery(ctx, IdentityQuery{Owner: "platform", Service: "pay-api", Environment: "prod", Sort: "desc", Limit: 3, Offset: 1})
+	if err != nil {
+		t.Fatalf("ListIdentitiesQuery returned error: %v", err)
+	}
+	enrollments, err := repo.ListEnrollmentsQuery(ctx, EnrollmentQuery{IssuerID: issuer.ID, ProfileID: profile.ID, Status: domain.EnrollmentPending, Sort: "desc", Limit: 3})
+	if err != nil {
+		t.Fatalf("ListEnrollmentsQuery returned error: %v", err)
+	}
+	certificates, err := repo.ListCertificatesQuery(ctx, CertificateQuery{
+		Owner:           "platform",
+		Service:         "pay-api",
+		IssuerID:        issuer.ID,
+		ProfileID:       profile.ID,
+		SAN:             "service-596.example.test",
+		RevocationState: string(domain.CertificateValid),
+		RenewalState:    "notified",
+		ExpiresAfter:    now,
+		ExpiresBefore:   now.Add(30 * 24 * time.Hour),
+		Sort:            "desc",
+		Limit:           1,
+	})
+	if err != nil {
+		t.Fatalf("ListCertificatesQuery returned error: %v", err)
+	}
+	messages, err := repo.ListOutboxMessagesQuery(ctx, OutboxMessageQuery{Status: domain.OutboxPending, Type: "certificate.issued", CreatedFrom: now.Add(590 * time.Second), Sort: "asc", Limit: 3})
+	if err != nil {
+		t.Fatalf("ListOutboxMessagesQuery returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("large list queries took %s, want <= 2s", elapsed)
+	}
+	if got := identityIDs(identities); fmt.Sprint(got) != "[identity-list-596 identity-list-594 identity-list-592]" {
+		t.Fatalf("identity IDs = %#v", got)
+	}
+	if got := enrollmentIDs(enrollments); fmt.Sprint(got) != "[enrollment-list-598 enrollment-list-596 enrollment-list-594]" {
+		t.Fatalf("enrollment IDs = %#v", got)
+	}
+	if len(certificates) != 1 || certificates[0].ID != "certificate-list-596" {
+		t.Fatalf("certificates = %#v, want certificate-list-596", certificates)
+	}
+	if got := outboxMessageIDs(messages); fmt.Sprint(got) != "[outbox-list-590 outbox-list-592 outbox-list-594]" {
+		t.Fatalf("outbox IDs = %#v", got)
+	}
+}
+
+func identityIDs(identities []domain.Identity) []string {
+	ids := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		ids = append(ids, identity.ID)
+	}
+	return ids
+}
+
+func enrollmentIDs(enrollments []domain.Enrollment) []string {
+	ids := make([]string, 0, len(enrollments))
+	for _, enrollment := range enrollments {
+		ids = append(ids, enrollment.ID)
+	}
+	return ids
+}
+
+func outboxMessageIDs(messages []domain.OutboxMessage) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
 }
 
 func TestSQLStoreRestoreDrillPreservesOperationalState(t *testing.T) {

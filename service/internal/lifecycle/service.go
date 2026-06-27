@@ -389,6 +389,22 @@ type OutboxMessageListOptions struct {
 	Offset      int
 }
 
+type identityQueryRepository interface {
+	ListIdentitiesQuery(context.Context, store.IdentityQuery) ([]domain.Identity, error)
+}
+
+type enrollmentQueryRepository interface {
+	ListEnrollmentsQuery(context.Context, store.EnrollmentQuery) ([]domain.Enrollment, error)
+}
+
+type certificateQueryRepository interface {
+	ListCertificatesQuery(context.Context, store.CertificateQuery) ([]domain.Certificate, error)
+}
+
+type outboxMessageQueryRepository interface {
+	ListOutboxMessagesQuery(context.Context, store.OutboxMessageQuery) ([]domain.OutboxMessage, error)
+}
+
 type ExpirySLO struct {
 	WindowDays     int
 	UnhandledCount int
@@ -1708,6 +1724,17 @@ func (s *Service) ListOutboxMessagesQuery(ctx context.Context, opts OutboxMessag
 	if opts.Status != "" && !isValidOutboxMessageStatus(opts.Status) {
 		return nil, domain.ErrInvalidRequest
 	}
+	if repo, ok := s.repo.(outboxMessageQueryRepository); ok {
+		return repo.ListOutboxMessagesQuery(ctx, store.OutboxMessageQuery{
+			Status:      opts.Status,
+			Type:        opts.Type,
+			CreatedFrom: opts.CreatedFrom,
+			CreatedTo:   opts.CreatedTo,
+			Sort:        opts.Sort,
+			Limit:       opts.Limit,
+			Offset:      opts.Offset,
+		})
+	}
 	messages, err := s.repo.ListOutboxMessages(ctx, opts.Status)
 	if err != nil {
 		return nil, err
@@ -2847,6 +2874,17 @@ func (s *Service) ListIdentitiesQuery(ctx context.Context, opts IdentityListOpti
 	if err := validateListOptions(opts.Sort, opts.Limit, opts.Offset); err != nil {
 		return nil, err
 	}
+	if repo, ok := s.repo.(identityQueryRepository); ok {
+		return repo.ListIdentitiesQuery(ctx, store.IdentityQuery{
+			Owner:       opts.Owner,
+			Team:        opts.Team,
+			Service:     opts.Service,
+			Environment: opts.Environment,
+			Sort:        opts.Sort,
+			Limit:       opts.Limit,
+			Offset:      opts.Offset,
+		})
+	}
 	identities, err := s.repo.ListIdentities(ctx)
 	if err != nil {
 		return nil, err
@@ -2902,6 +2940,17 @@ func (s *Service) ListEnrollmentsQuery(ctx context.Context, opts EnrollmentListO
 	if opts.Status != "" && !isValidEnrollmentStatus(opts.Status) {
 		return nil, domain.ErrInvalidRequest
 	}
+	if repo, ok := s.repo.(enrollmentQueryRepository); ok {
+		return repo.ListEnrollmentsQuery(ctx, store.EnrollmentQuery{
+			IdentityID: opts.IdentityID,
+			IssuerID:   opts.IssuerID,
+			ProfileID:  opts.ProfileID,
+			Status:     opts.Status,
+			Sort:       opts.Sort,
+			Limit:      opts.Limit,
+			Offset:     opts.Offset,
+		})
+	}
 	enrollments, err := s.repo.ListEnrollments(ctx)
 	if err != nil {
 		return nil, err
@@ -2950,6 +2999,31 @@ func (s *Service) ListCertificatesQuery(ctx context.Context, opts CertificateLis
 	}
 	if opts.ExpiresWithinDays != 0 && !isAllowedExpiryWindowDays(opts.ExpiresWithinDays) {
 		return nil, domain.ErrInvalidRequest
+	}
+	if repo, ok := s.repo.(certificateQueryRepository); ok {
+		now := s.clock.Now()
+		query := store.CertificateQuery{
+			Owner:           opts.Owner,
+			Team:            opts.Team,
+			Service:         opts.Service,
+			Environment:     opts.Environment,
+			IssuerID:        opts.IssuerID,
+			ProfileID:       opts.ProfileID,
+			SAN:             opts.SAN,
+			RevocationState: opts.RevocationState,
+			RenewalState:    opts.RenewalState,
+			Sort:            opts.Sort,
+			Limit:           opts.Limit,
+			Offset:          opts.Offset,
+		}
+		if opts.ExpiresWithinDays != 0 {
+			query.ExpiresAfter = now
+			query.ExpiresBefore = now.Add(time.Duration(opts.ExpiresWithinDays) * 24 * time.Hour)
+			if query.RevocationState == "" {
+				query.RevocationState = string(domain.CertificateValid)
+			}
+		}
+		return repo.ListCertificatesQuery(ctx, query)
 	}
 	certificates, err := s.repo.ListCertificates(ctx)
 	if err != nil {

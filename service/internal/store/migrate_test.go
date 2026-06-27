@@ -339,11 +339,16 @@ CREATE TABLE acme_accounts (
 	for _, index := range []string{
 		"idx_certificates_enrollment",
 		"idx_certificates_issuer_serial",
+		"idx_certificates_list_query",
+		"idx_certificates_renewal_query",
 		"idx_certificates_expiration_scan",
 		"idx_identities_inventory_fields",
+		"idx_identities_list_query",
+		"idx_enrollments_list_query",
 		"idx_certificate_issuance_attempts_status_lease",
 		"idx_crl_publications_issuer_distribution_number",
 		"idx_acme_accounts_key_thumbprint",
+		"idx_outbox_messages_list_query",
 	} {
 		if !testSQLiteIndexExists(t, db, index) {
 			t.Fatalf("index %s does not exist after migration", index)

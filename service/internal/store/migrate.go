@@ -371,6 +371,10 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 			ON webhook_deliveries(endpoint_id, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_identities_inventory_fields
 			ON identities(owner, team, service, environment, deployment_target, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_identities_list_query
+			ON identities(owner, team, service, environment, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_enrollments_list_query
+			ON enrollments(identity_id, issuer_id, certificate_profile_id, status, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
@@ -379,6 +383,12 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_list_query
+			ON certificates(issuer_id, certificate_profile_id, status, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_renewal_query
+			ON certificates(status, renewal_notified_at, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_list_query
+			ON outbox_messages(status, type, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS certificate_issuance_attempts (
 			enrollment_id TEXT PRIMARY KEY REFERENCES enrollments(id),
 			status TEXT NOT NULL,
@@ -692,6 +702,10 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 			ON webhook_deliveries(endpoint_id, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_identities_inventory_fields
 			ON identities(owner, team, service, environment, deployment_target, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_identities_list_query
+			ON identities(owner, team, service, environment, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_enrollments_list_query
+			ON enrollments(identity_id, issuer_id, certificate_profile_id, status, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
@@ -700,6 +714,12 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_issuer_serial
 			ON certificates(issuer_id, serial_number)
 			WHERE issuer_id <> '' AND serial_number <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_list_query
+			ON certificates(issuer_id, certificate_profile_id, status, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_renewal_query
+			ON certificates(status, renewal_notified_at, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_messages_list_query
+			ON outbox_messages(status, type, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS certificate_issuance_attempts (
 			enrollment_id TEXT PRIMARY KEY REFERENCES enrollments(id),
 			status TEXT NOT NULL,

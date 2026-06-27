@@ -63,11 +63,6 @@ before 100-day and 47-day public certificate operations become normal.
 - Add SIEM export format and detection examples for issuance, revocation, policy
   change, key-provider use, and CA operations.
 
-### API Scale
-
-- Add indexes only for exposed query patterns.
-- Add large inventory/list tests for stable ordering and response time.
-
 ## P3: Key Boundary And Core Robustness
 
 ### HSM, KMS, And PKCS#11
