@@ -200,7 +200,7 @@ func main() {
 		}
 	}
 	if acmeHTTP01VerifierCfg.BaseURL != "" {
-		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
+		logStructured(log.Printf, "acme_http01_override.enabled", map[string]any{"base_url": acmeHTTP01VerifierCfg.BaseURL})
 	}
 	if authCfg.BootstrapAPIKey != "" {
 		key, err := svc.EnsureAPIKey(rootCtx, "system", lifecycle.EnsureAPIKeyRequest{
@@ -211,7 +211,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("bootstrap api key: %v", err)
 		}
-		log.Printf("modern-pki bootstrap api key ready id=%s name=%s actor=%s", key.ID, key.Name, key.Actor)
+		logStructured(log.Printf, "bootstrap_api_key.ready", map[string]any{"id": key.ID, "name": key.Name, "actor": key.Actor})
 	}
 	acmeHTTPConfig := httpapi.ACMEConfig{}
 	if acmeDefaultsCfg.BootstrapDefaults {
@@ -219,11 +219,16 @@ func main() {
 		if err != nil {
 			log.Fatalf("bootstrap ACME defaults: %v", err)
 		}
-		log.Printf("modern-pki ACME defaults ready identity_id=%s issuer_id=%s profile_id=%s validity=%s", acmeHTTPConfig.DefaultIdentityID, acmeHTTPConfig.DefaultIssuerID, acmeHTTPConfig.DefaultCertificateProfileID, acmeHTTPConfig.DefaultValidityPeriod)
+		logStructured(log.Printf, "acme_defaults.ready", map[string]any{
+			"identity_id": acmeHTTPConfig.DefaultIdentityID,
+			"issuer_id":   acmeHTTPConfig.DefaultIssuerID,
+			"profile_id":  acmeHTTPConfig.DefaultCertificateProfileID,
+			"validity":    acmeHTTPConfig.DefaultValidityPeriod.String(),
+		})
 	}
 	if acmeNonceCfg.Store == "sql" {
 		acmeHTTPConfig.NonceStore = httpapi.NewSQLACMENonceStore(db, dbDriver)
-		log.Printf("modern-pki ACME nonce store enabled store=sql")
+		logStructured(log.Printf, "acme_nonce_store.enabled", map[string]any{"store": "sql"})
 	}
 	server := httpapi.NewWithAuthAndACME(svc, authCfg.HTTP, acmeHTTPConfig)
 	if outboxCfg.Enabled {
@@ -231,12 +236,16 @@ func main() {
 		dispatcher := lifecycle.NewOutboxDispatcher(repo, lifecycle.NewLifecycleOutboxHandlerWithWebhook(webhookHandler), lifecycle.RealClock{}, lifecycle.UUIDGenerator{})
 		worker := lifecycle.NewOutboxWorker(dispatcher, outboxCfg.Interval, outboxCfg.BatchSize, log.Printf)
 		go worker.Run(rootCtx)
-		log.Printf("modern-pki outbox worker enabled interval=%s batch=%d", outboxCfg.Interval, outboxCfg.BatchSize)
+		logStructured(log.Printf, "outbox_worker.enabled", map[string]any{"interval": outboxCfg.Interval.String(), "batch": outboxCfg.BatchSize})
 	}
 	if expirationScanCfg.Enabled {
 		worker := lifecycle.NewExpirationScanWorker(svc, expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize, log.Printf)
 		go worker.Run(rootCtx)
-		log.Printf("modern-pki expiration scan worker enabled interval=%s warning_window=%s batch=%d", expirationScanCfg.Interval, expirationScanCfg.WarningWindow, expirationScanCfg.BatchSize)
+		logStructured(log.Printf, "expiration_scan_worker.enabled", map[string]any{
+			"interval":       expirationScanCfg.Interval.String(),
+			"warning_window": expirationScanCfg.WarningWindow.String(),
+			"batch":          expirationScanCfg.BatchSize,
+		})
 	}
 	handler := newOperationalHandler(server, operationalConfig{
 		Version:   serviceVersion,
@@ -246,11 +255,38 @@ func main() {
 		Ready:     newServiceReadinessCheck(db, dbDriver, repo, coreBin),
 	})
 
-	log.Printf("modern-pki service listening on %s", addr)
+	logStructured(log.Printf, "service.listening", map[string]any{"addr": addr})
 	httpServer := newHTTPServer(addr, handler)
 	if err := runServerUntilShutdown(rootCtx, httpServer.ListenAndServe, httpServer.Shutdown, defaultShutdownTimeout, log.Printf); err != nil {
 		log.Fatalf("serve HTTP: %v", err)
 	}
+}
+
+func logStructured(logf func(string, ...any), event string, fields map[string]any) {
+	record := make(map[string]any, len(fields)+1)
+	record["event"] = event
+	for key, value := range fields {
+		if isSecretLogField(key) {
+			record[key] = "[redacted]"
+			continue
+		}
+		record[key] = value
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		logf(`{"event":"log_encode_failed"}`)
+		return
+	}
+	logf("%s", encoded)
+}
+
+func isSecretLogField(key string) bool {
+	key = strings.ToLower(key)
+	return strings.Contains(key, "secret") ||
+		strings.Contains(key, "token") ||
+		strings.Contains(key, "password") ||
+		strings.Contains(key, "pepper") ||
+		strings.Contains(key, "private_key")
 }
 
 func newServiceReadinessCheck(db *sql.DB, driver string, repo store.Repository, coreBin string) func(context.Context) error {

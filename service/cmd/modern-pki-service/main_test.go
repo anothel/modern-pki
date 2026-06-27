@@ -793,6 +793,28 @@ func TestEnsureACMESmokeIssuerMaterialWritesCAKey(t *testing.T) {
 	}
 }
 
+func TestStructuredLogRedactsSecrets(t *testing.T) {
+	var lines []string
+	logStructured(func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}, "bootstrap.ready", map[string]any{
+		"api_key_pepper": "pepper-secret",
+		"token":          "api-token",
+		"name":           "bootstrap",
+	})
+	if len(lines) != 1 {
+		t.Fatalf("log lines = %d, want 1", len(lines))
+	}
+	if strings.Contains(lines[0], "pepper-secret") || strings.Contains(lines[0], "api-token") {
+		t.Fatalf("structured log leaked secret values: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], `"api_key_pepper":"[redacted]"`) ||
+		!strings.Contains(lines[0], `"token":"[redacted]"`) ||
+		!strings.Contains(lines[0], `"name":"bootstrap"`) {
+		t.Fatalf("structured log = %s", lines[0])
+	}
+}
+
 func clearExpirationScanEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("MODERN_PKI_EXPIRATION_SCAN_ENABLED", "")

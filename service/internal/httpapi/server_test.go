@@ -2646,12 +2646,20 @@ func TestFailedRequestsCreateAuditEvents(t *testing.T) {
 
 func TestAPIKeyAuthRejectsMissingBearerToken(t *testing.T) {
 	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
+	beforeAuthFailures := metricValue("auth:failure")
+	beforeRequests := metricValue("auth:401")
 
 	var body errorResponse
 	status := api.doJSON(t, http.MethodGet, "/identities", "", nil, &body)
 	assertStatus(t, status, http.StatusUnauthorized)
 	if body.Error != domain.ErrUnauthorized.Error() {
 		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
+	}
+	if got := metricValue("auth:failure") - beforeAuthFailures; got != 1 {
+		t.Fatalf("auth failure metric increment = %d, want 1", got)
+	}
+	if got := metricValue("auth:401") - beforeRequests; got != 1 {
+		t.Fatalf("auth request metric increment = %d, want 1", got)
 	}
 }
 
@@ -2666,6 +2674,64 @@ func TestAPIKeyAuthRejectsInvalidBearerToken(t *testing.T) {
 	assertStatus(t, status, http.StatusUnauthorized)
 	if body.Error != domain.ErrUnauthorized.Error() {
 		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
+	}
+}
+
+func TestDebugVarsExposesModernPKIMetrics(t *testing.T) {
+	api := newTestAPI(t)
+
+	var identity apiIdentity
+	before := metricValue("identity:201")
+	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
+		"type": string(domain.IdentityMachine),
+		"name": "edge-01",
+	}, &identity)
+	assertStatus(t, status, http.StatusCreated)
+	if got := metricValue("identity:201") - before; got != 1 {
+		t.Fatalf("identity request metric increment = %d, want 1", got)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, api.url+"/debug/vars", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	res, err := api.client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer res.Body.Close()
+	assertStatus(t, res.StatusCode, http.StatusOK)
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode debug vars: %v", err)
+	}
+	if _, ok := body["modern_pki_http_requests_total"]; !ok {
+		t.Fatalf("debug vars missing modern_pki_http_requests_total: %#v", body)
+	}
+}
+
+func TestACMERateLimitMetrics(t *testing.T) {
+	api := newTestAPIWithACMEConfig(t, ACMEConfig{RateLimit: 1, RateLimitWindow: time.Minute})
+	before := metricValue("rate_limit:acme_account")
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	firstResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, firstResponse.StatusCode, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var problem acmeProblemResponse
+	secondResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", api.acmeSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &problem)
+	assertStatus(t, secondResponse.StatusCode, http.StatusTooManyRequests)
+
+	if got := metricValue("rate_limit:acme_account") - before; got != 1 {
+		t.Fatalf("rate limit metric increment = %d, want 1", got)
 	}
 }
 

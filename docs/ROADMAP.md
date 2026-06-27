@@ -52,11 +52,8 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### Observability And Audit
 
-- Add structured logs.
-- Add metrics for issuance, revocation, renewal, reissue, suspension, CRL, OCSP,
-  ACME, webhook, auth, DB, signer, core CLI, and expiration-scan boundaries.
-- Add auth failure metrics.
-- Add rate-limit metrics.
+- Add DB, signer, and core CLI latency/error metrics beyond HTTP boundary
+  counters.
 - Add trace/span ID propagation where useful.
 - Add audit fields: auth method, API key fingerprint, user agent, state
   transition, approval reason, policy decision reason, validation evidence ref,
@@ -65,7 +62,7 @@ before 100-day and 47-day public certificate operations become normal.
 - Add append-only or tamper-evident audit storage plan.
 - Add SIEM export format and detection examples for issuance, revocation, policy
   change, key-provider use, and CA operations.
-- Add secret redaction tests for logs and audit records.
+- Add secret redaction tests for audit records.
 
 ### API Scale
 

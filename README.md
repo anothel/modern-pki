@@ -97,6 +97,7 @@ go run ./cmd/modern-pki-service
 - [Target architecture](docs/reference/target-architecture.md): RA/API, policy, lifecycle, issuer adapter, key provider, audit, CRL, and OCSP boundaries.
 - [State transitions](docs/reference/state-transitions.md): lifecycle status transitions and invalid transition boundaries.
 - [API error codes](docs/reference/api-errors.md): public HTTP error mapping, ACME problem types, and audit error codes.
+- [Observability reference](docs/reference/observability.md): structured logs, expvar counters, request IDs, and remaining observability gaps.
 - [OpenAPI spec](docs/reference/openapi.json): lifecycle, operator, distribution, and ACME management API contract.
 - [Compliance matrix](docs/reference/compliance-matrix.md): RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR, Mozilla, and NIST coverage.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.

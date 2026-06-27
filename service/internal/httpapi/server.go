@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"math/big"
@@ -141,27 +142,35 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	metricBoundary := requestMetricBoundary(r.URL.Path)
+	rw := &statusResponseWriter{ResponseWriter: w, status: http.StatusOK}
+	defer func() {
+		recordRequestMetric(metricBoundary, rw.status)
+	}()
 	requestID := requestIDForRequest(r)
-	w.Header().Set("X-Request-ID", requestID)
+	rw.Header().Set("X-Request-ID", requestID)
 	ctx := lifecycle.WithAuditRequestMetadata(r.Context(), lifecycle.AuditRequestMetadata{
 		RequestID: requestID,
 		ClientIP:  requestClientIP(r, s.auth.TrustedProxies),
 		StartedAt: time.Now(),
 	})
 	r = r.WithContext(ctx)
-	r.Body = http.MaxBytesReader(w, r.Body, requestBodyLimit(r))
+	r.Body = http.MaxBytesReader(rw, r.Body, requestBodyLimit(r))
 	authenticated, err := s.authenticateRequest(r)
 	if err != nil {
+		metricBoundary = "auth"
+		recordEventMetric("auth:failure")
 		r = r.WithContext(context.WithValue(r.Context(), actorContextKey{}, "anonymous"))
-		s.writeError(w, r, err)
+		s.writeError(rw, r, err)
 		return
 	}
 	r = r.WithContext(authenticated)
 	if err := s.checkACMERateLimit(r); err != nil {
-		s.writeError(w, r, err)
+		metricBoundary = "rate_limit"
+		s.writeError(rw, r, err)
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	s.mux.ServeHTTP(rw, r)
 }
 
 func requestBodyLimit(r *http.Request) int64 {
@@ -184,6 +193,8 @@ func requestIDForRequest(r *http.Request) string {
 }
 
 func (s *Server) registerRoutes() {
+	s.mux.Handle("GET /debug/vars", expvar.Handler())
+
 	s.mux.HandleFunc("POST /identities", s.createIdentity)
 	s.mux.HandleFunc("GET /identities", s.listIdentities)
 	s.mux.HandleFunc("GET /identities/{id}", s.getIdentity)
@@ -2127,6 +2138,7 @@ func (s *Server) checkACMERateLimit(r *http.Request) error {
 	}
 	if bucket.Count >= s.acme.RateLimit {
 		s.rates[key] = bucket
+		recordEventMetric("rate_limit:acme_" + acmeRateLimitClass(r.URL.Path))
 		return domain.ErrRateLimited
 	}
 	bucket.Count++
