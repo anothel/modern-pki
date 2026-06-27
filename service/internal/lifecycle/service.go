@@ -239,6 +239,17 @@ type CertificateExpirationScanResult struct {
 	ExpirationWarnings []domain.Certificate
 }
 
+type ReplayDeadLetterOutboxRequest struct {
+	EventType   string
+	CreatedFrom time.Time
+	CreatedTo   time.Time
+	Limit       int
+}
+
+type ReplayDeadLetterOutboxResult struct {
+	ReplayedMessages []domain.OutboxMessage
+}
+
 type CertificateInventoryEntry struct {
 	CertificateID        string
 	Owner                string
@@ -1486,15 +1497,7 @@ func (s *Service) RetryOutboxMessage(ctx context.Context, actor string, id strin
 	if currentStatus != domain.OutboxDeadLetter && currentStatus != domain.OutboxFailed {
 		return domain.OutboxMessage{}, domain.ErrInvalidTransition
 	}
-	message.Status = domain.OutboxPending
-	message.AvailableAt = now
-	message.ProcessingDeadlineAt = time.Time{}
-	message.AttemptCount = 0
-	if message.MaxAttempts <= 0 {
-		message.MaxAttempts = defaultOutboxMaxAttempts
-	}
-	message.LastError = ""
-	message.UpdatedAt = now
+	message = outboxMessageForReplay(message, now)
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
 		if err := repo.UpdateOutboxMessageStatusIfStatus(ctx, message, currentStatus); err != nil {
@@ -1508,6 +1511,57 @@ func (s *Service) RetryOutboxMessage(ctx context.Context, actor string, id strin
 		return domain.OutboxMessage{}, err
 	}
 	return message, nil
+}
+
+func (s *Service) ReplayDeadLetterOutboxMessages(ctx context.Context, actor string, req ReplayDeadLetterOutboxRequest) (ReplayDeadLetterOutboxResult, error) {
+	if isBlank(req.EventType) || req.CreatedFrom.IsZero() || req.CreatedTo.IsZero() || req.CreatedTo.Before(req.CreatedFrom) || req.Limit <= 0 {
+		return ReplayDeadLetterOutboxResult{}, domain.ErrInvalidRequest
+	}
+
+	now := s.clock.Now()
+	replayed := make([]domain.OutboxMessage, 0, req.Limit)
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		messages, err := repo.ListOutboxMessages(ctx, domain.OutboxDeadLetter)
+		if err != nil {
+			return err
+		}
+		for _, message := range messages {
+			if len(replayed) >= req.Limit {
+				break
+			}
+			if message.Type != req.EventType || message.CreatedAt.Before(req.CreatedFrom) || message.CreatedAt.After(req.CreatedTo) {
+				continue
+			}
+			updated := outboxMessageForReplay(message, now)
+			if err := repo.UpdateOutboxMessageStatusIfStatus(ctx, updated, domain.OutboxDeadLetter); err != nil {
+				return err
+			}
+			replayed = append(replayed, updated)
+		}
+		return s.createAuditEvent(ctx, repo, actor, "outbox.bulk_replay_requested", "outbox_messages", s.idgen.NewID(), now, auditFields(
+			"outbox_message_type", req.EventType,
+			"created_from", req.CreatedFrom.Format(time.RFC3339Nano),
+			"created_to", req.CreatedTo.Format(time.RFC3339Nano),
+			"limit", fmt.Sprintf("%d", req.Limit),
+			"replayed_count", fmt.Sprintf("%d", len(replayed)),
+		))
+	}); err != nil {
+		return ReplayDeadLetterOutboxResult{}, err
+	}
+	return ReplayDeadLetterOutboxResult{ReplayedMessages: replayed}, nil
+}
+
+func outboxMessageForReplay(message domain.OutboxMessage, now time.Time) domain.OutboxMessage {
+	message.Status = domain.OutboxPending
+	message.AvailableAt = now
+	message.ProcessingDeadlineAt = time.Time{}
+	message.AttemptCount = 0
+	if message.MaxAttempts <= 0 {
+		message.MaxAttempts = defaultOutboxMaxAttempts
+	}
+	message.LastError = ""
+	message.UpdatedAt = now
+	return message
 }
 
 func (s *Service) DisableNotificationEndpoint(ctx context.Context, actor string, id string) (domain.NotificationEndpoint, error) {

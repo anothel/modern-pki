@@ -43,7 +43,6 @@ before 100-day and 47-day public certificate operations become normal.
 ### Webhook And Outbox Safety
 
 - Add generated webhook receiver examples for common operator languages.
-- Add bulk dead-letter replay tooling with event-type and time-window guards.
 
 ### Public TLS Readiness
 

@@ -158,6 +158,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /notification-endpoints/{id}/disable", s.disableNotificationEndpoint)
 
 	s.mux.HandleFunc("GET /outbox/messages", s.listOutboxMessages)
+	s.mux.HandleFunc("POST /outbox/messages/dead-letter/replay", s.replayDeadLetterOutboxMessages)
 	s.mux.HandleFunc("POST /outbox/messages/{id}/retry", s.retryOutboxMessage)
 
 	s.mux.HandleFunc("GET /operator/certificate-inventory", s.listCertificateInventory)
@@ -414,6 +415,25 @@ func (s *Server) retryOutboxMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toOutboxMessageResponse(message))
+}
+
+func (s *Server) replayDeadLetterOutboxMessages(w http.ResponseWriter, r *http.Request) {
+	var req replayDeadLetterOutboxRequest
+	if err := decodeJSON(r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	result, err := s.service.ReplayDeadLetterOutboxMessages(r.Context(), requestActor(r), lifecycle.ReplayDeadLetterOutboxRequest{
+		EventType:   req.EventType,
+		CreatedFrom: req.CreatedFrom,
+		CreatedTo:   req.CreatedTo,
+		Limit:       req.Limit,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toReplayDeadLetterOutboxResponse(result))
 }
 
 func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -2172,6 +2192,13 @@ type createNotificationEndpointRequest struct {
 	EventTypes []string `json:"event_types"`
 }
 
+type replayDeadLetterOutboxRequest struct {
+	EventType   string    `json:"event_type"`
+	CreatedFrom time.Time `json:"created_from"`
+	CreatedTo   time.Time `json:"created_to"`
+	Limit       int       `json:"limit"`
+}
+
 type createCertificateProfileRequest struct {
 	Name                   string                           `json:"name"`
 	Description            string                           `json:"description"`
@@ -2380,6 +2407,11 @@ type outboxMessageResponse struct {
 	LastError    string                     `json:"last_error"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
+}
+
+type replayDeadLetterOutboxResponse struct {
+	ReplayedCount int      `json:"replayed_count"`
+	MessageIDs    []string `json:"message_ids"`
 }
 
 type certificateInventoryEntryResponse struct {
@@ -2713,6 +2745,17 @@ func toOutboxMessageResponses(messages []domain.OutboxMessage) []outboxMessageRe
 		responses = append(responses, toOutboxMessageResponse(message))
 	}
 	return responses
+}
+
+func toReplayDeadLetterOutboxResponse(result lifecycle.ReplayDeadLetterOutboxResult) replayDeadLetterOutboxResponse {
+	ids := make([]string, 0, len(result.ReplayedMessages))
+	for _, message := range result.ReplayedMessages {
+		ids = append(ids, message.ID)
+	}
+	return replayDeadLetterOutboxResponse{
+		ReplayedCount: len(ids),
+		MessageIDs:    ids,
+	}
 }
 
 func toCertificateInventoryResponse(entry lifecycle.CertificateInventoryEntry) certificateInventoryEntryResponse {

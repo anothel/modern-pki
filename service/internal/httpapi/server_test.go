@@ -1683,6 +1683,66 @@ func TestListOutboxMessagesByStatusAndRetry(t *testing.T) {
 	}
 }
 
+func TestReplayDeadLetterOutboxMessagesRequiresGuards(t *testing.T) {
+	api := newTestAPI(t)
+
+	var body errorResponse
+	status := api.doJSON(t, http.MethodPost, "/outbox/messages/dead-letter/replay", "operator", map[string]any{
+		"event_type": "certificate.issued",
+		"limit":      10,
+	}, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+	if body.Error != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrInvalidRequest.Error())
+	}
+}
+
+func TestReplayDeadLetterOutboxMessagesFiltersByEventTypeAndTimeWindow(t *testing.T) {
+	api := newTestAPI(t)
+	messages := []domain.OutboxMessage{
+		testOutboxMessage("outbox-match-1", "certificate.issued", domain.OutboxDeadLetter, testNow.Add(-2*time.Hour)),
+		testOutboxMessage("outbox-match-2", "certificate.issued", domain.OutboxDeadLetter, testNow.Add(-time.Hour)),
+		testOutboxMessage("outbox-too-old", "certificate.issued", domain.OutboxDeadLetter, testNow.Add(-24*time.Hour)),
+		testOutboxMessage("outbox-other-type", "certificate.revoked", domain.OutboxDeadLetter, testNow.Add(-time.Hour)),
+		testOutboxMessage("outbox-failed", "certificate.issued", domain.OutboxFailed, testNow.Add(-time.Hour)),
+	}
+	originals := messagesByID(messages)
+	for _, message := range messages {
+		if err := api.repo.CreateOutboxMessage(api.ctx, message); err != nil {
+			t.Fatalf("CreateOutboxMessage(%s) returned error: %v", message.ID, err)
+		}
+	}
+
+	var replayed apiOutboxBulkReplay
+	status := api.doJSON(t, http.MethodPost, "/outbox/messages/dead-letter/replay", "operator", map[string]any{
+		"event_type":   "certificate.issued",
+		"created_from": testNow.Add(-3 * time.Hour),
+		"created_to":   testNow,
+		"limit":        1,
+	}, &replayed)
+	assertStatus(t, status, http.StatusOK)
+	if replayed.ReplayedCount != 1 || !reflect.DeepEqual(replayed.MessageIDs, []string{"outbox-match-1"}) {
+		t.Fatalf("bulk replay response = %#v", replayed)
+	}
+
+	match, err := api.repo.GetOutboxMessage(api.ctx, "outbox-match-1")
+	if err != nil {
+		t.Fatalf("GetOutboxMessage match returned error: %v", err)
+	}
+	if match.Status != domain.OutboxPending || match.AttemptCount != 0 || match.LastError != "" || !match.AvailableAt.Equal(testNow) {
+		t.Fatalf("replayed message = %#v", match)
+	}
+	for _, id := range []string{"outbox-match-2", "outbox-too-old", "outbox-other-type", "outbox-failed"} {
+		message, err := api.repo.GetOutboxMessage(api.ctx, id)
+		if err != nil {
+			t.Fatalf("GetOutboxMessage(%s) returned error: %v", id, err)
+		}
+		if message.Status != originals[id].Status {
+			t.Fatalf("message %s status = %q, want unchanged %q", id, message.Status, originals[id].Status)
+		}
+	}
+}
+
 func TestCreateCertificateProfile(t *testing.T) {
 	api := newTestAPI(t)
 	issuer := api.createIssuer(t)
@@ -3417,6 +3477,29 @@ func testCertificateWithStatus(id string, notAfter time.Time, status domain.Cert
 	}
 }
 
+func testOutboxMessage(id string, eventType string, status domain.OutboxMessageStatus, createdAt time.Time) domain.OutboxMessage {
+	return domain.OutboxMessage{
+		ID:           id,
+		Type:         eventType,
+		PayloadJSON:  `{"id":"` + id + `"}`,
+		Status:       status,
+		AvailableAt:  testNow.Add(time.Hour),
+		AttemptCount: 5,
+		MaxAttempts:  5,
+		LastError:    "webhook failed",
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+	}
+}
+
+func messagesByID(messages []domain.OutboxMessage) map[string]domain.OutboxMessage {
+	byID := make(map[string]domain.OutboxMessage, len(messages))
+	for _, message := range messages {
+		byID[message.ID] = message
+	}
+	return byID
+}
+
 func certificateIDs(certificates []apiCertificate) []string {
 	ids := make([]string, 0, len(certificates))
 	for _, certificate := range certificates {
@@ -3755,6 +3838,11 @@ type apiOutboxMessage struct {
 	LastError    string                     `json:"last_error"`
 	CreatedAt    time.Time                  `json:"created_at"`
 	UpdatedAt    time.Time                  `json:"updated_at"`
+}
+
+type apiOutboxBulkReplay struct {
+	ReplayedCount int      `json:"replayed_count"`
+	MessageIDs    []string `json:"message_ids"`
 }
 
 type apiCertificateInventoryEntry struct {

@@ -107,8 +107,9 @@ Outbox operations expose delivery state for operators:
 - `GET /outbox/messages`
 - `GET /outbox/messages?status=dead_letter`
 - `POST /outbox/messages/{id}/retry`
+- `POST /outbox/messages/dead-letter/replay`
 
-Webhook delivery uses bounded retry with capped backoff: 1 minute, 5 minutes, 15 minutes, then 1 hour. Messages move to `dead_letter` after the configured max attempts. Manual retry resets a failed or dead-letter message to `pending`.
+Webhook delivery uses bounded retry with capped backoff: 1 minute, 5 minutes, 15 minutes, then 1 hour. Messages move to `dead_letter` after the configured max attempts. Manual retry resets a failed or dead-letter message to `pending`. Bulk dead-letter replay requires `event_type`, `created_from`, `created_to`, and `limit`, and only replays matching dead-letter messages inside that time window.
 
 OCSP responders can be registered with `POST /issuers/{id}/ocsp-responders`, listed with `GET /issuers/{id}/ocsp-responders`, disabled with `POST /issuers/{id}/ocsp-responders/{responderID}/disable`, and atomically rotated with `POST /issuers/{id}/ocsp-responders/rotate`.
 
