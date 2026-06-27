@@ -235,6 +235,11 @@ func (s *Server) createIdentity(w http.ResponseWriter, r *http.Request) {
 		Name:               req.Name,
 		ExternalID:         req.ExternalID,
 		Owner:              req.Owner,
+		Team:               req.Team,
+		Service:            req.Service,
+		Environment:        req.Environment,
+		DeploymentTarget:   req.DeploymentTarget,
+		LastSeenAt:         req.LastSeenAt,
 		MetadataJSON:       req.MetadataJSON,
 		AllowedDNSNames:    req.AllowedDNSNames,
 		AllowedIPAddresses: req.AllowedIPAddresses,
@@ -1105,12 +1110,45 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCertificateInventory(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.service.ListCertificateInventory(r.Context())
+	opts, err := certificateInventoryOptionsFromQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	entries, err := s.service.ListCertificateInventory(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toCertificateInventoryResponses(entries))
+}
+
+func certificateInventoryOptionsFromQuery(r *http.Request) (lifecycle.CertificateInventoryOptions, error) {
+	query := r.URL.Query()
+	opts := lifecycle.CertificateInventoryOptions{
+		Owner:           query.Get("owner"),
+		Team:            query.Get("team"),
+		Service:         query.Get("service"),
+		Environment:     query.Get("environment"),
+		IssuerID:        query.Get("issuer_id"),
+		ProfileID:       query.Get("profile_id"),
+		RevocationState: query.Get("revocation_state"),
+	}
+	if rawLimit := query.Get("limit"); rawLimit != "" {
+		limit, err := strconv.Atoi(rawLimit)
+		if err != nil || limit < 1 {
+			return lifecycle.CertificateInventoryOptions{}, domain.ErrInvalidRequest
+		}
+		opts.Limit = limit
+	}
+	if rawOffset := query.Get("offset"); rawOffset != "" {
+		offset, err := strconv.Atoi(rawOffset)
+		if err != nil || offset < 0 {
+			return lifecycle.CertificateInventoryOptions{}, domain.ErrInvalidRequest
+		}
+		opts.Offset = offset
+	}
+	return opts, nil
 }
 
 func (s *Server) getExpirySLO(w http.ResponseWriter, r *http.Request) {
@@ -2079,6 +2117,11 @@ type createIdentityRequest struct {
 	Name               string              `json:"name"`
 	ExternalID         string              `json:"external_id"`
 	Owner              string              `json:"owner"`
+	Team               string              `json:"team"`
+	Service            string              `json:"service"`
+	Environment        string              `json:"environment"`
+	DeploymentTarget   string              `json:"deployment_target"`
+	LastSeenAt         time.Time           `json:"last_seen_at"`
 	MetadataJSON       string              `json:"metadata_json"`
 	AllowedDNSNames    []string            `json:"allowed_dns_names"`
 	AllowedIPAddresses []string            `json:"allowed_ip_addresses"`
@@ -2255,6 +2298,11 @@ type identityResponse struct {
 	Name               string                `json:"name"`
 	ExternalID         string                `json:"external_id"`
 	Owner              string                `json:"owner"`
+	Team               string                `json:"team"`
+	Service            string                `json:"service"`
+	Environment        string                `json:"environment"`
+	DeploymentTarget   string                `json:"deployment_target"`
+	LastSeenAt         time.Time             `json:"last_seen_at"`
 	MetadataJSON       string                `json:"metadata_json"`
 	AllowedDNSNames    []string              `json:"allowed_dns_names"`
 	AllowedIPAddresses []string              `json:"allowed_ip_addresses"`
@@ -2316,6 +2364,7 @@ type outboxMessageResponse struct {
 type certificateInventoryEntryResponse struct {
 	CertificateID        string    `json:"certificate_id"`
 	Owner                string    `json:"owner"`
+	Team                 string    `json:"team"`
 	Service              string    `json:"service"`
 	Environment          string    `json:"environment"`
 	DeploymentTarget     string    `json:"deployment_target"`
@@ -2533,6 +2582,11 @@ func toIdentityResponse(identity domain.Identity) identityResponse {
 		Name:               identity.Name,
 		ExternalID:         identity.ExternalID,
 		Owner:              identity.Owner,
+		Team:               identity.Team,
+		Service:            identity.Service,
+		Environment:        identity.Environment,
+		DeploymentTarget:   identity.DeploymentTarget,
+		LastSeenAt:         identity.LastSeenAt,
 		MetadataJSON:       identity.MetadataJSON,
 		AllowedDNSNames:    identity.AllowedDNSNames,
 		AllowedIPAddresses: identity.AllowedIPAddresses,
@@ -2644,6 +2698,7 @@ func toCertificateInventoryResponse(entry lifecycle.CertificateInventoryEntry) c
 	return certificateInventoryEntryResponse{
 		CertificateID:        entry.CertificateID,
 		Owner:                entry.Owner,
+		Team:                 entry.Team,
 		Service:              entry.Service,
 		Environment:          entry.Environment,
 		DeploymentTarget:     entry.DeploymentTarget,

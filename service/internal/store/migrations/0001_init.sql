@@ -4,6 +4,11 @@ CREATE TABLE IF NOT EXISTS identities (
     name TEXT NOT NULL,
     external_id TEXT NOT NULL,
     owner TEXT NOT NULL,
+    team TEXT NOT NULL,
+    service TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    deployment_target TEXT NOT NULL,
+    last_seen_at TIMESTAMPTZ,
     metadata_json TEXT NOT NULL,
     allowed_dns_names TEXT NOT NULL,
     allowed_ip_addresses TEXT NOT NULL,
@@ -11,6 +16,9 @@ CREATE TABLE IF NOT EXISTS identities (
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_identities_inventory_fields
+    ON identities(owner, team, service, environment, deployment_target, id);
 
 CREATE TABLE IF NOT EXISTS issuers (
     id TEXT PRIMARY KEY,

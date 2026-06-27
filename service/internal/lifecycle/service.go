@@ -114,6 +114,11 @@ type CreateIdentityRequest struct {
 	Name               string
 	ExternalID         string
 	Owner              string
+	Team               string
+	Service            string
+	Environment        string
+	DeploymentTarget   string
+	LastSeenAt         time.Time
 	MetadataJSON       string
 	AllowedDNSNames    []string
 	AllowedIPAddresses []string
@@ -237,6 +242,7 @@ type CertificateExpirationScanResult struct {
 type CertificateInventoryEntry struct {
 	CertificateID        string
 	Owner                string
+	Team                 string
 	Service              string
 	Environment          string
 	DeploymentTarget     string
@@ -246,6 +252,18 @@ type CertificateInventoryEntry struct {
 	RevocationState      string
 	LastSeenAt           time.Time
 	CompletenessWarnings []string
+}
+
+type CertificateInventoryOptions struct {
+	Owner           string
+	Team            string
+	Service         string
+	Environment     string
+	IssuerID        string
+	ProfileID       string
+	RevocationState string
+	Limit           int
+	Offset          int
 }
 
 type ExpirySLO struct {
@@ -764,6 +782,11 @@ func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateId
 		Name:               req.Name,
 		ExternalID:         req.ExternalID,
 		Owner:              req.Owner,
+		Team:               req.Team,
+		Service:            req.Service,
+		Environment:        req.Environment,
+		DeploymentTarget:   req.DeploymentTarget,
+		LastSeenAt:         req.LastSeenAt,
 		MetadataJSON:       req.MetadataJSON,
 		AllowedDNSNames:    copyStringSlice(req.AllowedDNSNames),
 		AllowedIPAddresses: copyStringSlice(req.AllowedIPAddresses),
@@ -779,6 +802,9 @@ func (s *Service) CreateIdentity(ctx context.Context, actor string, req CreateId
 		return s.createAuditEvent(ctx, repo, actor, "identity.created", "identity", identity.ID, now, auditFields(
 			"identity_id", identity.ID,
 			"owner", identity.Owner,
+			"team", identity.Team,
+			"service", identity.Service,
+			"environment", identity.Environment,
 			"allowed_dns_names", fmt.Sprintf("%d", len(identity.AllowedDNSNames)),
 			"allowed_ip_addresses", fmt.Sprintf("%d", len(identity.AllowedIPAddresses)),
 		))
@@ -2544,7 +2570,10 @@ func (s *Service) ListCertificatesExpiringWithin(ctx context.Context, days int) 
 	return filtered, nil
 }
 
-func (s *Service) ListCertificateInventory(ctx context.Context) ([]CertificateInventoryEntry, error) {
+func (s *Service) ListCertificateInventory(ctx context.Context, opts CertificateInventoryOptions) ([]CertificateInventoryEntry, error) {
+	if opts.Limit < 0 || opts.Offset < 0 {
+		return nil, domain.ErrInvalidRequest
+	}
 	certificates, err := s.repo.ListCertificates(ctx)
 	if err != nil {
 		return nil, err
@@ -2574,18 +2603,22 @@ func (s *Service) ListCertificateInventory(ctx context.Context) ([]CertificateIn
 		entries = append(entries, CertificateInventoryEntry{
 			CertificateID:        certificate.ID,
 			Owner:                identity.Owner,
-			Service:              identityMetadataString(identity.MetadataJSON, "service"),
-			Environment:          identityMetadataString(identity.MetadataJSON, "environment"),
-			DeploymentTarget:     identityMetadataString(identity.MetadataJSON, "deployment_target"),
+			Team:                 identity.Team,
+			Service:              identity.Service,
+			Environment:          identity.Environment,
+			DeploymentTarget:     identity.DeploymentTarget,
 			IssuerID:             certificate.IssuerID,
 			ProfileID:            certificate.CertificateProfileID,
 			IssuerKeyRef:         issuer.KeyRef,
 			RevocationState:      string(certificate.Status),
-			LastSeenAt:           identityMetadataTime(identity.MetadataJSON, "last_seen_at"),
+			LastSeenAt:           identity.LastSeenAt,
 			CompletenessWarnings: identityCompletenessWarnings(identity),
 		})
 	}
-	return entries, nil
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CertificateID < entries[j].CertificateID
+	})
+	return filterCertificateInventory(entries, opts), nil
 }
 
 func (s *Service) ExpirySLO(ctx context.Context) (ExpirySLO, error) {
@@ -2610,6 +2643,42 @@ func (s *Service) ExpirySLO(ctx context.Context) (ExpirySLO, error) {
 		UnhandledIDs:   ids,
 		OK:             len(ids) == 0,
 	}, nil
+}
+
+func filterCertificateInventory(entries []CertificateInventoryEntry, opts CertificateInventoryOptions) []CertificateInventoryEntry {
+	filtered := make([]CertificateInventoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if opts.Owner != "" && entry.Owner != opts.Owner {
+			continue
+		}
+		if opts.Team != "" && entry.Team != opts.Team {
+			continue
+		}
+		if opts.Service != "" && entry.Service != opts.Service {
+			continue
+		}
+		if opts.Environment != "" && entry.Environment != opts.Environment {
+			continue
+		}
+		if opts.IssuerID != "" && entry.IssuerID != opts.IssuerID {
+			continue
+		}
+		if opts.ProfileID != "" && entry.ProfileID != opts.ProfileID {
+			continue
+		}
+		if opts.RevocationState != "" && entry.RevocationState != opts.RevocationState {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if opts.Offset >= len(filtered) {
+		return []CertificateInventoryEntry{}
+	}
+	filtered = filtered[opts.Offset:]
+	if opts.Limit > 0 && opts.Limit < len(filtered) {
+		filtered = filtered[:opts.Limit]
+	}
+	return filtered
 }
 
 func (s *Service) GetCertificate(ctx context.Context, id string) (domain.Certificate, error) {
@@ -3282,7 +3351,7 @@ func validateCreateIdentityRequest(req CreateIdentityRequest, productionPolicy b
 		return domain.ErrInvalidRequest
 	}
 	if productionPolicy {
-		identity := domain.Identity{Owner: req.Owner, MetadataJSON: req.MetadataJSON}
+		identity := domain.Identity{Owner: req.Owner, Team: req.Team, Service: req.Service}
 		if len(identityCompletenessWarnings(identity)) > 0 {
 			return domain.ErrInvalidRequest
 		}
@@ -3632,34 +3701,13 @@ func identityCompletenessWarnings(identity domain.Identity) []string {
 	if isBlank(identity.Owner) {
 		warnings = append(warnings, "missing_owner")
 	}
-	if isBlank(identityMetadataString(identity.MetadataJSON, "team")) {
+	if isBlank(identity.Team) {
 		warnings = append(warnings, "missing_team")
 	}
-	if isBlank(identityMetadataString(identity.MetadataJSON, "service")) {
+	if isBlank(identity.Service) {
 		warnings = append(warnings, "missing_service")
 	}
 	return warnings
-}
-
-func identityMetadataString(metadataJSON string, key string) string {
-	var metadata map[string]any
-	if strings.TrimSpace(metadataJSON) == "" || json.Unmarshal([]byte(metadataJSON), &metadata) != nil {
-		return ""
-	}
-	value, _ := metadata[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func identityMetadataTime(metadataJSON string, key string) time.Time {
-	raw := identityMetadataString(metadataJSON, key)
-	if raw == "" {
-		return time.Time{}
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}
-	}
-	return parsed
 }
 
 func mapIssueError(err error) error {

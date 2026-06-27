@@ -4,7 +4,7 @@ Go API service for the manual enrollment lifecycle MVP. It exposes HTTP endpoint
 
 Enrollment creation inspects the CSR and stores CSR SANs separately from requested SANs. The current policy requires requested DNS/IP SANs to exactly match CSR DNS/IP SANs, ignoring order.
 
-Identities support machine lifecycle metadata through `owner`, `metadata_json`, `allowed_dns_names`, and `allowed_ip_addresses`. When an identity allow-list is non-empty, enrollment, renewal/reissue enrollment creation, and final signing reject requested SANs outside that identity policy. Empty allow-lists preserve the existing unrestricted identity behavior.
+Identities support machine lifecycle metadata through `owner`, `team`, `service`, `environment`, `deployment_target`, `last_seen_at`, `metadata_json`, `allowed_dns_names`, and `allowed_ip_addresses`. When an identity allow-list is non-empty, enrollment, renewal/reissue enrollment creation, and final signing reject requested SANs outside that identity policy. Empty allow-lists preserve the existing unrestricted identity behavior.
 
 The HTTP service applies operational request safety limits. The process uses explicit server timeouts and a 1 MiB default request body limit. OCSP requests are capped at 16 KiB.
 
@@ -78,6 +78,7 @@ Certificate inventory and expiry views are available for operators:
 - `GET /certificates?expires_within_days=3`
 - `GET /certificates?expires_within_days=1`
 - `GET /operator/certificate-inventory`
+- `GET /operator/certificate-inventory?owner=platform&service=payments&environment=prod&limit=50&offset=0`
 - `GET /operator/expiry-slo`
 
 Issuance uses a DB-backed enrollment claim to prevent duplicate signing across service nodes. If signing succeeds but DB finalization fails, retry finalizes from stored signed material without calling the signer again. If `certificate.issued` audit repair is needed after finalized state is stored, operators can call:
@@ -90,7 +91,7 @@ Reissue creates a new pending enrollment from a valid certificate with a new CSR
 Expiration scans mark `valid` and `suspended` certificates as `expired` when `not_after` is in the past. They emit one renewal warning for each `valid` certificate inside the requested warning window, tracked by `renewal_notified_at`.
 The expiration scan worker is disabled by default. Set `MODERN_PKI_EXPIRATION_SCAN_ENABLED=true` to run scans automatically on startup and then at the configured interval.
 The operator expiry SLO reports zero success only when no valid or suspended certificates inside the 14-day window are still missing a renewal notification.
-The inventory view joins certificate, identity, issuer, and profile references. It exposes owner, service, environment, deployment target, issuer, profile, issuer key reference, revocation state, last seen timestamp from identity metadata, and ownership completeness warnings.
+The inventory view joins certificate, identity, issuer, and profile references. It exposes owner, team, service, environment, deployment target, issuer, profile, issuer key reference, revocation state, last seen timestamp, and ownership completeness warnings. It supports exact filters for owner, team, service, environment, issuer, profile, and revocation state, plus limit/offset pagination.
 
 Notification endpoints deliver lifecycle outbox events to operator webhooks:
 

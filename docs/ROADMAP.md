@@ -34,9 +34,9 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### Inventory, Ownership, And Expiry Control
 
-- Persist first-class `service`, `team`, `environment`, `deployment_target`, and
-  `last_seen_at` fields instead of reading them from identity metadata.
-- Add pagination and indexed filters for the operator inventory and expiry APIs.
+- Add pagination and indexed filters for the expiry APIs.
+- Move operator inventory filters from service-side filtering into SQL when large
+  inventory tests show response time risk.
 - Keep discovery/import scoped to the first real source requested by operators;
   defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
   until one integration proves the model.

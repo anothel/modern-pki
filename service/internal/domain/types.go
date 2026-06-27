@@ -177,6 +177,11 @@ type Identity struct {
 	Name               string
 	ExternalID         string
 	Owner              string
+	Team               string
+	Service            string
+	Environment        string
+	DeploymentTarget   string
+	LastSeenAt         time.Time
 	MetadataJSON       string
 	AllowedDNSNames    []string
 	AllowedIPAddresses []string

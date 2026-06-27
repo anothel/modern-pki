@@ -40,11 +40,17 @@ func TestCreateIdentity(t *testing.T) {
 	api := newTestAPI(t)
 
 	var created apiIdentity
+	lastSeenAt := testNow.Add(-time.Hour)
 	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
 		"type":                 string(domain.IdentityMachine),
 		"name":                 "edge-01",
 		"external_id":          "asset-123",
 		"owner":                "platform",
+		"team":                 "edge-team",
+		"service":              "edge-proxy",
+		"environment":          "prod",
+		"deployment_target":    "lb-1",
+		"last_seen_at":         lastSeenAt,
 		"metadata_json":        `{"rack":"r1"}`,
 		"allowed_dns_names":    []string{"edge-01.example.test"},
 		"allowed_ip_addresses": []string{},
@@ -63,6 +69,11 @@ func TestCreateIdentity(t *testing.T) {
 		t.Fatalf("created identity status = %q, want %q", created.Status, domain.IdentityActive)
 	}
 	if created.Owner != "platform" ||
+		created.Team != "edge-team" ||
+		created.Service != "edge-proxy" ||
+		created.Environment != "prod" ||
+		created.DeploymentTarget != "lb-1" ||
+		!created.LastSeenAt.Equal(lastSeenAt) ||
 		created.MetadataJSON != `{"rack":"r1"}` ||
 		!reflect.DeepEqual(created.AllowedDNSNames, []string{"edge-01.example.test"}) ||
 		!reflect.DeepEqual(created.AllowedIPAddresses, []string{}) {
@@ -86,6 +97,11 @@ func TestCreateIdentity(t *testing.T) {
 		t.Fatalf("got identity ID = %q, want %q", got.ID, created.ID)
 	}
 	if got.Owner != created.Owner ||
+		got.Team != created.Team ||
+		got.Service != created.Service ||
+		got.Environment != created.Environment ||
+		got.DeploymentTarget != created.DeploymentTarget ||
+		!got.LastSeenAt.Equal(created.LastSeenAt) ||
 		got.MetadataJSON != created.MetadataJSON ||
 		!reflect.DeepEqual(got.AllowedDNSNames, created.AllowedDNSNames) ||
 		!reflect.DeepEqual(got.AllowedIPAddresses, created.AllowedIPAddresses) {
@@ -1865,6 +1881,37 @@ func TestOperatorCertificateInventoryAndExpirySLO(t *testing.T) {
 	}
 }
 
+func TestOperatorCertificateInventoryFiltersAndPaginates(t *testing.T) {
+	api := newTestAPI(t)
+	alpha := api.createCertificateForIdentity(t, "alpha", "platform", "payments", "pay-api", "prod", "k8s/pay-api")
+	api.createCertificateForIdentity(t, "beta", "security", "identity", "id-api", "stage", "k8s/id-api")
+
+	var inventory []apiCertificateInventoryEntry
+	status := api.doJSON(t, http.MethodGet, "/operator/certificate-inventory?owner=platform&service=pay-api&environment=prod&limit=1&offset=0", "", nil, &inventory)
+	assertStatus(t, status, http.StatusOK)
+	if len(inventory) != 1 || inventory[0].CertificateID != alpha.ID {
+		t.Fatalf("filtered inventory = %#v, want alpha certificate %q", inventory, alpha.ID)
+	}
+	if inventory[0].Owner != "platform" || inventory[0].Team != "payments" || inventory[0].Service != "pay-api" ||
+		inventory[0].Environment != "prod" || inventory[0].DeploymentTarget != "k8s/pay-api" {
+		t.Fatalf("filtered inventory metadata = %#v", inventory[0])
+	}
+
+	var first []apiCertificateInventoryEntry
+	status = api.doJSON(t, http.MethodGet, "/operator/certificate-inventory?limit=1&offset=0", "", nil, &first)
+	assertStatus(t, status, http.StatusOK)
+	var second []apiCertificateInventoryEntry
+	status = api.doJSON(t, http.MethodGet, "/operator/certificate-inventory?limit=1&offset=1", "", nil, &second)
+	assertStatus(t, status, http.StatusOK)
+	if len(first) != 1 || len(second) != 1 || second[0].CertificateID == first[0].CertificateID {
+		t.Fatalf("paginated inventory page0=%#v page1=%#v, want different certificates", first, second)
+	}
+
+	var body errorResponse
+	status = api.doJSON(t, http.MethodGet, "/operator/certificate-inventory?limit=0", "", nil, &body)
+	assertStatus(t, status, http.StatusBadRequest)
+}
+
 func TestScanCertificateExpirations(t *testing.T) {
 	api := newTestAPI(t)
 	certificate := api.createCertificate(t)
@@ -3312,6 +3359,47 @@ func (api *testAPI) createCertificate(t *testing.T) domain.Certificate {
 	return certificate
 }
 
+func (api *testAPI) createCertificateForIdentity(t *testing.T, name string, owner string, team string, serviceName string, environment string, deploymentTarget string) domain.Certificate {
+	t.Helper()
+
+	identity, err := api.service.CreateIdentity(api.ctx, "admin", lifecycle.CreateIdentityRequest{
+		Type:             domain.IdentityMachine,
+		Name:             name,
+		ExternalID:       "asset-" + name,
+		Owner:            owner,
+		Team:             team,
+		Service:          serviceName,
+		Environment:      environment,
+		DeploymentTarget: deploymentTarget,
+		LastSeenAt:       testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer := api.createIssuer(t)
+	enrollment, err := api.service.CreateEnrollment(api.ctx, "operator", lifecycle.CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=" + name,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    testNow.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	approved, err := api.service.ApproveEnrollment(api.ctx, "approver", enrollment.ID)
+	if err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+	certificate, err := api.service.IssueCertificate(api.ctx, "issuer", approved.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	return certificate
+}
+
 func assertStatus(t *testing.T, got int, want int) {
 	t.Helper()
 
@@ -3446,6 +3534,11 @@ type apiIdentity struct {
 	Name               string                `json:"name"`
 	ExternalID         string                `json:"external_id"`
 	Owner              string                `json:"owner"`
+	Team               string                `json:"team"`
+	Service            string                `json:"service"`
+	Environment        string                `json:"environment"`
+	DeploymentTarget   string                `json:"deployment_target"`
+	LastSeenAt         time.Time             `json:"last_seen_at"`
 	MetadataJSON       string                `json:"metadata_json"`
 	AllowedDNSNames    []string              `json:"allowed_dns_names"`
 	AllowedIPAddresses []string              `json:"allowed_ip_addresses"`
@@ -3601,6 +3694,7 @@ type apiOutboxMessage struct {
 type apiCertificateInventoryEntry struct {
 	CertificateID        string    `json:"certificate_id"`
 	Owner                string    `json:"owner"`
+	Team                 string    `json:"team"`
 	Service              string    `json:"service"`
 	Environment          string    `json:"environment"`
 	DeploymentTarget     string    `json:"deployment_target"`

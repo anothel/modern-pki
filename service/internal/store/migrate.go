@@ -282,6 +282,11 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		definition string
 	}{
 		{table: "identities", name: "owner", definition: "owner TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "team", definition: "team TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "service", definition: "service TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "environment", definition: "environment TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "deployment_target", definition: "deployment_target TEXT NOT NULL DEFAULT ''"},
+		{table: "identities", name: "last_seen_at", definition: "last_seen_at TEXT"},
 		{table: "identities", name: "metadata_json", definition: "metadata_json TEXT NOT NULL DEFAULT ''"},
 		{table: "identities", name: "allowed_dns_names", definition: "allowed_dns_names TEXT NOT NULL DEFAULT '[]'"},
 		{table: "identities", name: "allowed_ip_addresses", definition: "allowed_ip_addresses TEXT NOT NULL DEFAULT '[]'"},
@@ -363,6 +368,8 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint
 			ON webhook_deliveries(endpoint_id, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_identities_inventory_fields
+			ON identities(owner, team, service, environment, deployment_target, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment
@@ -597,6 +604,11 @@ func sqliteColumnExists(ctx context.Context, db sqlExecutor, table string, name 
 func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) error {
 	statements := []string{
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS deployment_target TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS metadata_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS allowed_dns_names TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE identities ADD COLUMN IF NOT EXISTS allowed_ip_addresses TEXT NOT NULL DEFAULT '[]'",
@@ -668,6 +680,8 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint
 			ON webhook_deliveries(endpoint_id, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_identities_inventory_fields
+			ON identities(owner, team, service, environment, deployment_target, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_expiration_scan
 			ON certificates(status, not_after, renewal_notified_at, id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_enrollment

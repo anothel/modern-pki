@@ -82,6 +82,11 @@ func testIdentityPolicyFieldsRoundTrip(t *testing.T, repo Repository) {
 		Name:               "payments-api",
 		ExternalID:         "k8s:prod:payments:payments-api",
 		Owner:              "platform",
+		Team:               "payments",
+		Service:            "payments-api",
+		Environment:        "prod",
+		DeploymentTarget:   "k8s/payments-api",
+		LastSeenAt:         now.Add(-time.Hour),
 		MetadataJSON:       `{"namespace":"prod"}`,
 		AllowedDNSNames:    []string{"payments.prod.svc.cluster.local"},
 		AllowedIPAddresses: []string{"192.0.2.42"},
@@ -101,6 +106,11 @@ func testIdentityPolicyFieldsRoundTrip(t *testing.T, repo Repository) {
 		t.Fatalf("GetIdentity returned error: %v", err)
 	}
 	if stored.Owner != "platform" ||
+		stored.Team != "payments" ||
+		stored.Service != "payments-api" ||
+		stored.Environment != "prod" ||
+		stored.DeploymentTarget != "k8s/payments-api" ||
+		!stored.LastSeenAt.Equal(now.Add(-time.Hour)) ||
 		stored.MetadataJSON != `{"namespace":"prod"}` ||
 		!reflect.DeepEqual(stored.AllowedDNSNames, []string{"payments.prod.svc.cluster.local"}) ||
 		!reflect.DeepEqual(stored.AllowedIPAddresses, []string{"192.0.2.42"}) {
