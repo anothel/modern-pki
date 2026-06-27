@@ -153,6 +153,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestID:   requestID,
 		Traceparent: strings.TrimSpace(r.Header.Get("Traceparent")),
 		ClientIP:    requestClientIP(r, s.auth.TrustedProxies),
+		UserAgent:   strings.TrimSpace(r.UserAgent()),
+		AuthMethod:  string(s.auth.Mode),
 		StartedAt:   time.Now(),
 	})
 	r = r.WithContext(ctx)
@@ -2057,17 +2059,21 @@ func (s *Server) authenticateRequest(r *http.Request) (context.Context, error) {
 		if !apiKeyAllowsScope(key, requiredScopeForRequest(r.Method, r.URL.Path)) {
 			ctx := context.WithValue(r.Context(), actorContextKey{}, key.Actor)
 			ctx = lifecycle.WithAPIKeyAuditMetadata(ctx, lifecycle.APIKeyAuditMetadata{
-				ID:     key.ID,
-				Name:   key.Name,
-				Scopes: key.Scopes,
+				ID:          key.ID,
+				Name:        key.Name,
+				Actor:       key.Actor,
+				Fingerprint: lifecycle.APIKeyTokenFingerprint(key.TokenHash),
+				Scopes:      key.Scopes,
 			})
 			return ctx, domain.ErrForbidden
 		}
 		ctx := context.WithValue(r.Context(), actorContextKey{}, key.Actor)
 		return lifecycle.WithAPIKeyAuditMetadata(ctx, lifecycle.APIKeyAuditMetadata{
-			ID:     key.ID,
-			Name:   key.Name,
-			Scopes: key.Scopes,
+			ID:          key.ID,
+			Name:        key.Name,
+			Actor:       key.Actor,
+			Fingerprint: lifecycle.APIKeyTokenFingerprint(key.TokenHash),
+			Scopes:      key.Scopes,
 		}), nil
 	default:
 		return r.Context(), domain.ErrUnauthorized

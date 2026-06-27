@@ -20,7 +20,7 @@ or audit attestation.
 | NIST SP 800-57 | Cryptoperiod and rotation | Partial | Certificate profiles enforce validity; OCSP responder rotation exists; API key rotation exists. | Add issuer/intermediate rollover operating model and key-strength profile policy. |
 | NIST SP 1800-16 | Machine identity inventory | Partial | Identity ownership metadata, certificate inventory, expiry SLO, renewal/reissue, expiration scan, webhook notifications. | Discovery/import intentionally scoped to first real operator-selected source. |
 | NIST SP 1800-16 | Automated certificate lifecycle | Partial | Enrollment, approval, issuance, renewal, reissue, revocation, outbox, and ACME HTTP-01 flows exist. | Add deployment adapters and broader inventory integrations after one real source proves the model. |
-| NIST SP 1800-16 | Monitoring and response | Partial | Audit metadata with request and trace correlation, structured startup logs, HTTP boundary metrics, DB/signer/core CLI operation metrics, recovery runbook, incident response runbook, webhook/outbox safety runbook. | Metrics exporter, distributed span backend, SIEM export, and audit retention policy remain roadmap items. |
+| NIST SP 1800-16 | Monitoring and response | Partial | Audit metadata with request, trace, auth, API key fingerprint, state transition, and redacted secret handling; structured startup logs, HTTP boundary metrics, DB/signer/core CLI operation metrics, recovery runbook, incident response runbook, webhook/outbox safety runbook. | Metrics exporter, distributed span backend, SIEM export, and audit retention policy remain roadmap items. |
 
 ## Status Meanings
 

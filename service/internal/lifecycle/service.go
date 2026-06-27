@@ -126,13 +126,17 @@ type AuditRequestMetadata struct {
 	RequestID   string
 	Traceparent string
 	ClientIP    string
+	UserAgent   string
+	AuthMethod  string
 	StartedAt   time.Time
 }
 
 type APIKeyAuditMetadata struct {
-	ID     string
-	Name   string
-	Scopes []domain.APIKeyScope
+	ID          string
+	Name        string
+	Actor       string
+	Fingerprint string
+	Scopes      []domain.APIKeyScope
 }
 
 type APIFailureAuditRequest struct {
@@ -840,7 +844,8 @@ func (s *Service) DisableAPIKey(ctx context.Context, actor string, id string) (d
 		if err := repo.UpdateAPIKeyIfStatus(ctx, key, domain.APIKeyActive); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "api_key.disabled", "api_key", key.ID, now, apiKeyAuditFields(key))
+		fields := addStatusTransition(apiKeyAuditFields(key), domain.APIKeyActive, key.Status)
+		return s.createAuditEvent(ctx, repo, actor, "api_key.disabled", "api_key", key.ID, now, fields)
 	}); err != nil {
 		return domain.APIKey{}, err
 	}
@@ -865,6 +870,7 @@ func (s *Service) RotateAPIKey(ctx context.Context, actor string, id string) (Cr
 		if oldKey.Status != domain.APIKeyActive || (!oldKey.ExpiresAt.IsZero() && !oldKey.ExpiresAt.After(now)) {
 			return domain.ErrInvalidTransition
 		}
+		oldStatus := oldKey.Status
 		oldKey.Status = domain.APIKeyDisabled
 		oldKey.UpdatedAt = now
 		if err := repo.UpdateAPIKeyIfStatus(ctx, oldKey, domain.APIKeyActive); err != nil {
@@ -885,7 +891,7 @@ func (s *Service) RotateAPIKey(ctx context.Context, actor string, id string) (Cr
 		if err := repo.CreateAPIKey(ctx, newKey); err != nil {
 			return err
 		}
-		fields := apiKeyAuditFields(newKey)
+		fields := addStatusTransition(apiKeyAuditFields(newKey), oldStatus, newKey.Status)
 		fields["rotated_from_api_key_id"] = oldKey.ID
 		return s.createAuditEvent(ctx, repo, actor, "api_key.rotated", "api_key", newKey.ID, now, fields)
 	}); err != nil {
@@ -2103,12 +2109,13 @@ func (s *Service) ApproveEnrollment(ctx context.Context, actor string, id string
 		if err := repo.UpdateEnrollmentIfStatus(ctx, enrollment, domain.EnrollmentPending); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "enrollment.approved", "enrollment", enrollment.ID, now, auditFields(
+		fields := addStatusTransition(auditFields(
 			"identity_id", enrollment.IdentityID,
 			"issuer_id", enrollment.IssuerID,
 			"enrollment_id", enrollment.ID,
 			"profile_id", enrollment.CertificateProfileID,
-		))
+		), domain.EnrollmentPending, enrollment.Status)
+		return s.createAuditEvent(ctx, repo, actor, "enrollment.approved", "enrollment", enrollment.ID, now, fields)
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -2138,12 +2145,13 @@ func (s *Service) RejectEnrollment(ctx context.Context, actor string, id string)
 		if err := repo.UpdateEnrollmentIfStatus(ctx, enrollment, domain.EnrollmentPending); err != nil {
 			return err
 		}
-		return s.createAuditEvent(ctx, repo, actor, "enrollment.rejected", "enrollment", enrollment.ID, now, auditFields(
+		fields := addStatusTransition(auditFields(
 			"identity_id", enrollment.IdentityID,
 			"issuer_id", enrollment.IssuerID,
 			"enrollment_id", enrollment.ID,
 			"profile_id", enrollment.CertificateProfileID,
-		))
+		), domain.EnrollmentPending, enrollment.Status)
+		return s.createAuditEvent(ctx, repo, actor, "enrollment.rejected", "enrollment", enrollment.ID, now, fields)
 	}); err != nil {
 		return domain.Enrollment{}, err
 	}
@@ -2533,7 +2541,9 @@ func (s *Service) revokeCertificate(ctx context.Context, actor string, certifica
 			"certificate_id", certificate.ID,
 			"serial_number", certificate.SerialNumber,
 			"profile_id", certificate.CertificateProfileID,
+			"revocation_reason", string(reason),
 		)
+		addStatusTransition(fields, currentStatus, certificate.Status)
 		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
 			return err
 		}
@@ -2569,6 +2579,7 @@ func (s *Service) transitionCertificateStatus(ctx context.Context, actor string,
 			"serial_number", certificate.SerialNumber,
 			"profile_id", certificate.CertificateProfileID,
 		)
+		addStatusTransition(fields, currentStatus, nextStatus)
 		if err := s.createAuditEvent(ctx, repo, actor, action, "certificate", certificate.ID, now, fields); err != nil {
 			return err
 		}
@@ -3326,6 +3337,12 @@ func apiKeyAuditFields(key domain.APIKey) map[string]any {
 	return fields
 }
 
+func addStatusTransition(fields map[string]any, previous any, next any) map[string]any {
+	fields["previous_status"] = fmt.Sprint(previous)
+	fields["new_status"] = fmt.Sprint(next)
+	return fields
+}
+
 func certificateExpirationAuditFields(certificate domain.Certificate, warningWindow time.Duration) map[string]any {
 	fields := auditFields(
 		"identity_id", certificate.IdentityID,
@@ -3354,7 +3371,7 @@ func certificateNeedsRenewalWarning(certificate domain.Certificate, now time.Tim
 func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode string, errorCode string) string {
 	metadata := make(map[string]any, len(fields)+4)
 	for key, value := range fields {
-		metadata[key] = value
+		metadata[key] = auditMetadataValue(key, value)
 	}
 	metadata["result_code"] = resultCode
 	if errorCode != "" {
@@ -3370,6 +3387,12 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode st
 		if requestMetadata.ClientIP != "" {
 			metadata["client_ip"] = requestMetadata.ClientIP
 		}
+		if requestMetadata.UserAgent != "" {
+			metadata["user_agent"] = requestMetadata.UserAgent
+		}
+		if requestMetadata.AuthMethod != "" {
+			metadata["auth_method"] = requestMetadata.AuthMethod
+		}
 		if !requestMetadata.StartedAt.IsZero() {
 			metadata["elapsed_ms"] = time.Since(requestMetadata.StartedAt).Milliseconds()
 		}
@@ -3381,6 +3404,12 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode st
 		if keyMetadata.Name != "" {
 			metadata["api_key_name"] = keyMetadata.Name
 		}
+		if keyMetadata.Actor != "" {
+			metadata["api_key_actor"] = keyMetadata.Actor
+		}
+		if keyMetadata.Fingerprint != "" {
+			metadata["api_key_fingerprint"] = keyMetadata.Fingerprint
+		}
 		if len(keyMetadata.Scopes) > 0 {
 			metadata["api_key_scopes"] = apiKeyScopesToStrings(keyMetadata.Scopes)
 		}
@@ -3390,6 +3419,21 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode st
 		return "{}"
 	}
 	return string(encoded)
+}
+
+func auditMetadataValue(key string, value any) any {
+	if auditMetadataKeySensitive(key) {
+		return "[redacted]"
+	}
+	return value
+}
+
+func auditMetadataKeySensitive(key string) bool {
+	key = strings.ToLower(key)
+	return strings.Contains(key, "secret") ||
+		strings.Contains(key, "token") ||
+		strings.Contains(key, "password") ||
+		strings.Contains(key, "private_key")
 }
 
 func auditErrorCode(err error) string {

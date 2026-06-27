@@ -257,6 +257,36 @@ func TestAuditErrorCodeMapsPublicErrors(t *testing.T) {
 	}
 }
 
+func TestAuditMetadataRedactsSensitiveFields(t *testing.T) {
+	metadataJSON := auditMetadataJSON(context.Background(), map[string]any{
+		"webhook_secret":      "secret-value",
+		"api_token":           "token-value",
+		"password":            "password-value",
+		"private_key_pem":     "private-key-value",
+		"api_key_fingerprint": "sha256:1234567890abcdef",
+		"identity_id":         "identity-1",
+	}, "ok", "")
+
+	for _, leaked := range []string{"secret-value", "token-value", "password-value", "private-key-value"} {
+		if strings.Contains(metadataJSON, leaked) {
+			t.Fatalf("audit metadata leaked sensitive value %q: %s", leaked, metadataJSON)
+		}
+	}
+
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		t.Fatalf("unmarshal audit metadata: %v", err)
+	}
+	for _, key := range []string{"webhook_secret", "api_token", "password", "private_key_pem"} {
+		if metadata[key] != "[redacted]" {
+			t.Fatalf("metadata[%s] = %#v, want [redacted]; metadata=%#v", key, metadata[key], metadata)
+		}
+	}
+	if metadata["api_key_fingerprint"] != "sha256:1234567890abcdef" || metadata["identity_id"] != "identity-1" {
+		t.Fatalf("audit metadata redacted non-secret fields: %#v", metadata)
+	}
+}
+
 func TestIssueRequiresApprovedEnrollment(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -2776,9 +2806,19 @@ func TestSuspendResumeAndForceRevokeCertificate(t *testing.T) {
 		t.Fatalf("audit event count = %d", len(events))
 	}
 	for i, want := range wantTail {
-		got := events[len(events)-len(wantTail)+i].Action
+		event := events[len(events)-len(wantTail)+i]
+		got := event.Action
 		if got != want {
 			t.Fatalf("audit event tail %d action = %q, want %q", i, got, want)
+		}
+		metadata := map[string]any{}
+		if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+			t.Fatalf("unmarshal audit metadata: %v", err)
+		}
+		previousStatus, previousOK := metadata["previous_status"].(string)
+		newStatus, newOK := metadata["new_status"].(string)
+		if !previousOK || previousStatus == "" || !newOK || newStatus == "" {
+			t.Fatalf("transition audit metadata missing state fields for %s: %#v", event.Action, metadata)
 		}
 	}
 }

@@ -2547,6 +2547,7 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 		"X-Request-ID":    "req-123",
 		"X-Forwarded-For": "203.0.113.10, 10.0.0.1",
 		"Traceparent":     "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"User-Agent":      "modern-pki-test/1.0",
 	}, &identity)
 	assertStatus(t, status, http.StatusCreated)
 
@@ -2560,6 +2561,8 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	if metadata["request_id"] != "req-123" ||
 		metadata["traceparent"] != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" ||
 		metadata["client_ip"] != "203.0.113.10" ||
+		metadata["user_agent"] != "modern-pki-test/1.0" ||
+		metadata["auth_method"] != string(AuthModeDev) ||
 		metadata["identity_id"] != identity.ID ||
 		metadata["result_code"] != "ok" {
 		t.Fatalf("audit metadata = %#v", metadata)
@@ -2892,6 +2895,11 @@ func TestAPIKeyScopeAllowsWriteAndRejectsOperatorRoutes(t *testing.T) {
 	}
 	if metadata["api_key_id"] != "write-key" || metadata["api_key_name"] != "write-key" {
 		t.Fatalf("audit metadata missing api key identity: %#v", metadata)
+	}
+	if metadata["api_key_actor"] != "writer" ||
+		metadata["api_key_fingerprint"] != lifecycle.APIKeyTokenFingerprint(lifecycle.HashAPIKeyToken("write-token")) ||
+		metadata["auth_method"] != string(AuthModeAPIKey) {
+		t.Fatalf("audit metadata missing api key auth details: %#v", metadata)
 	}
 	scopes, ok := metadata["api_key_scopes"].([]any)
 	if !ok || len(scopes) != 1 || scopes[0] != string(domain.APIKeyScopeWrite) {

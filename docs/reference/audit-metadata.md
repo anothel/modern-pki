@@ -32,12 +32,46 @@ When the request context carries them, metadata also includes:
 request_id
 traceparent
 client_ip
+user_agent
+auth_method
 elapsed_ms
 ```
 
 `traceparent` preserves the inbound W3C trace context header when present. The
 service records it as correlation metadata only; it does not create or export
 spans.
+
+API key authenticated requests also include:
+
+```text
+api_key_id
+api_key_name
+api_key_actor
+api_key_fingerprint
+api_key_scopes
+```
+
+Lifecycle status changes include:
+
+```text
+previous_status
+new_status
+```
+
+Revocation events also include:
+
+```text
+revocation_reason
+```
+
+Metadata values are redacted when the field name contains:
+
+```text
+secret
+token
+password
+private_key
+```
 
 ## Lifecycle Identity Fields
 

@@ -117,8 +117,8 @@ API tokens, webhook secrets, database passwords, or private keys to logs.
 
 HTTP responses include `X-Request-ID`. If the request supplies `X-Request-ID`,
 the service preserves it. Otherwise the service generates one. Audit metadata
-records `request_id`, `traceparent`, `client_ip`, and `elapsed_ms` when request
-context is available.
+records `request_id`, `traceparent`, `client_ip`, `user_agent`, `auth_method`,
+and `elapsed_ms` when request context is available.
 
 `X-Forwarded-For` is trusted only when the direct peer matches
 `MODERN_PKI_TRUSTED_PROXIES`.
