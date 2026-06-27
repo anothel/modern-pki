@@ -235,6 +235,11 @@ type UpdateACMEAccountRequest struct {
 	Deactivate     bool
 }
 
+type UpdateACMEAccountKeyRequest struct {
+	KeyThumbprint string
+	KeyJWKJSON    string
+}
+
 type CreateACMEOrderRequest struct {
 	AccountID            string
 	IdentityID           string
@@ -1290,6 +1295,39 @@ func (s *Service) UpdateACMEAccount(ctx context.Context, actor string, accountID
 			action = "acme.account.deactivated"
 		}
 		return s.createAuditEvent(ctx, repo, actor, action, "acme_account", account.ID, now, auditFields(
+			"acme_account_id", account.ID,
+		))
+	}); err != nil {
+		return domain.ACMEAccount{}, err
+	}
+	return updated, nil
+}
+
+func (s *Service) UpdateACMEAccountKey(ctx context.Context, actor string, accountID string, req UpdateACMEAccountKeyRequest) (domain.ACMEAccount, error) {
+	if isBlank(accountID) || isBlank(req.KeyThumbprint) || isBlank(req.KeyJWKJSON) {
+		return domain.ACMEAccount{}, domain.ErrInvalidRequest
+	}
+	now := s.clock.Now()
+	var updated domain.ACMEAccount
+	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+		account, err := repo.GetACMEAccount(ctx, accountID)
+		if err != nil {
+			return err
+		}
+		if account.Status == domain.ACMEAccountDeactivated {
+			return domain.ErrACMEAccountDeactivated
+		}
+		if account.Status != domain.ACMEAccountValid {
+			return domain.ErrInvalidTransition
+		}
+		account.KeyThumbprint = strings.TrimSpace(req.KeyThumbprint)
+		account.KeyJWKJSON = strings.TrimSpace(req.KeyJWKJSON)
+		account.UpdatedAt = now
+		if err := repo.UpdateACMEAccountIfStatus(ctx, account, domain.ACMEAccountValid); err != nil {
+			return err
+		}
+		updated = account
+		return s.createAuditEvent(ctx, repo, actor, "acme.account.key_updated", "acme_account", account.ID, now, auditFields(
 			"acme_account_id", account.ID,
 		))
 	}); err != nil {

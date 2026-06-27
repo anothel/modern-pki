@@ -226,6 +226,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /acme/new-account", s.acmeNewAccount)
 	s.mux.HandleFunc("POST /acme/account/{id}", s.acmeUpdateAccount)
 	s.mux.HandleFunc("POST /acme/new-order", s.acmeNewOrder)
+	s.mux.HandleFunc("POST /acme/key-change", s.acmeKeyChange)
 	s.mux.HandleFunc("GET /acme/order/{id}", s.acmeGetOrder)
 	s.mux.HandleFunc("POST /acme/order/{id}", s.acmePostAsGetOrder)
 	s.mux.HandleFunc("GET /acme/authz/{id}", s.acmeGetAuthorization)
@@ -633,6 +634,7 @@ func (s *Server) acmeDirectory(w http.ResponseWriter, r *http.Request) {
 		"newNonce":   baseURL + "/acme/new-nonce",
 		"newAccount": baseURL + "/acme/new-account",
 		"newOrder":   baseURL + "/acme/new-order",
+		"keyChange":  baseURL + "/acme/key-change",
 		"revokeCert": baseURL + "/acme/revoke-cert",
 		"meta": map[string]any{
 			"externalAccountRequired": false,
@@ -716,6 +718,50 @@ func (s *Server) acmeUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeACMEJSON(w, r, http.StatusOK, s.toACMEProtocolAccount(r, account))
+}
+
+func (s *Server) acmeKeyChange(w http.ResponseWriter, r *http.Request) {
+	jws, err := s.decodeACMEJWS(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if jws.AccountID == "" {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	account, err := s.service.GetACMEAccount(r.Context(), jws.AccountID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if account.KeyJWKJSON == "" {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	inner, err := s.decodeACMEKeyChangeJWS(r, jws.Payload)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if inner.Account != requestBaseURL(r)+"/acme/account/"+account.ID {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	oldKeyJSON, err := canonicalACMEJWKJSON(inner.OldKey)
+	if err != nil || oldKeyJSON != account.KeyJWKJSON {
+		s.writeError(w, r, domain.ErrInvalidRequest)
+		return
+	}
+	updated, err := s.service.UpdateACMEAccountKey(r.Context(), requestActor(r), account.ID, lifecycle.UpdateACMEAccountKeyRequest{
+		KeyThumbprint: inner.NewKeyThumbprint,
+		KeyJWKJSON:    inner.NewKeyJWKJSON,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	s.writeACMEJSON(w, r, http.StatusOK, s.toACMEProtocolAccount(r, updated))
 }
 
 func (s *Server) acmeNewOrder(w http.ResponseWriter, r *http.Request) {
@@ -1544,6 +1590,59 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	return result, nil
 }
 
+func (s *Server) decodeACMEKeyChangeJWS(r *http.Request, payload []byte) (acmeKeyChangeJWSResult, error) {
+	var req acmeJWSRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	if req.Protected == "" || req.Payload == "" || req.Signature == "" {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	protectedBytes, err := base64.RawURLEncoding.DecodeString(req.Protected)
+	if err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	var protected acmeProtectedHeader
+	if err := json.Unmarshal(protectedBytes, &protected); err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	if !isSupportedACMEJWSAlg(protected.Alg) || protected.URL != requestBaseURL(r)+"/acme/key-change" || protected.KID != "" || protected.JWK == nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	jwk, err := acmeJWKFromProtected(protected.JWK)
+	if err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	if err := verifyACMEJWS(protected.Alg, jwk, req.Protected+"."+req.Payload, req.Signature); err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	innerPayload, err := base64.RawURLEncoding.DecodeString(req.Payload)
+	if err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	var change acmeKeyChangeRequest
+	if err := json.Unmarshal(innerPayload, &change); err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	if change.Account == "" {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	keyJSON, err := canonicalACMEJWKJSON(jwk)
+	if err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	thumbprint, err := acmeJWKThumbprint(jwk)
+	if err != nil {
+		return acmeKeyChangeJWSResult{}, domain.ErrInvalidRequest
+	}
+	return acmeKeyChangeJWSResult{
+		Account:          change.Account,
+		OldKey:           change.OldKey,
+		NewKeyThumbprint: thumbprint,
+		NewKeyJWKJSON:    keyJSON,
+	}, nil
+}
+
 func isSupportedACMEJWSAlg(alg string) bool {
 	return alg == "ES256" || alg == "RS256" || alg == "EdDSA"
 }
@@ -1996,7 +2095,7 @@ func isPublicACMEProtocolEndpoint(method string, path string) bool {
 	if (method == http.MethodHead || method == http.MethodGet) && path == "/acme/new-nonce" {
 		return true
 	}
-	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order" || path == "/acme/revoke-cert") {
+	if method == http.MethodPost && (path == "/acme/new-account" || path == "/acme/new-order" || path == "/acme/key-change" || path == "/acme/revoke-cert") {
 		return true
 	}
 	if method == http.MethodPost && strings.HasPrefix(path, "/acme/account/") {
@@ -2041,6 +2140,7 @@ func isRateLimitedACMEProtocolEndpoint(method string, path string) bool {
 	}
 	return path == "/acme/new-account" ||
 		path == "/acme/new-order" ||
+		path == "/acme/key-change" ||
 		strings.HasPrefix(path, "/acme/challenge/") ||
 		(strings.HasPrefix(path, "/acme/order/") && strings.HasSuffix(path, "/finalize"))
 }
@@ -2051,6 +2151,8 @@ func acmeRateLimitClass(path string) string {
 		return "account"
 	case path == "/acme/new-order":
 		return "order"
+	case path == "/acme/key-change":
+		return "account"
 	case strings.HasPrefix(path, "/acme/challenge/"):
 		return "challenge"
 	case strings.HasPrefix(path, "/acme/order/") && strings.HasSuffix(path, "/finalize"):
@@ -2448,6 +2550,13 @@ type acmeJWSResult struct {
 	KeyJWKJSON    string
 }
 
+type acmeKeyChangeJWSResult struct {
+	Account          string
+	OldKey           acmeJWK
+	NewKeyThumbprint string
+	NewKeyJWKJSON    string
+}
+
 type acmeProtectedHeader struct {
 	Alg   string `json:"alg"`
 	Nonce string `json:"nonce"`
@@ -2473,6 +2582,11 @@ type acmeNewAccountRequest struct {
 type acmeUpdateAccountRequest struct {
 	Contact *[]string `json:"contact,omitempty"`
 	Status  string    `json:"status,omitempty"`
+}
+
+type acmeKeyChangeRequest struct {
+	Account string  `json:"account"`
+	OldKey  acmeJWK `json:"oldKey"`
 }
 
 type acmeNewOrderRequest struct {

@@ -251,7 +251,7 @@ func TestACMEProtocolDirectoryAndNonce(t *testing.T) {
 	var directory map[string]any
 	status := api.doJSON(t, http.MethodGet, "/acme/directory", "", nil, &directory)
 	assertStatus(t, status, http.StatusOK)
-	for _, key := range []string{"newNonce", "newAccount", "newOrder", "revokeCert"} {
+	for _, key := range []string{"newNonce", "newAccount", "newOrder", "keyChange", "revokeCert"} {
 		value, ok := directory[key].(string)
 		if !ok || value == "" {
 			t.Fatalf("directory[%s] = %#v", key, directory[key])
@@ -997,6 +997,55 @@ func TestACMEProtocolAccountManagementReusesUpdatesAndDeactivatesAccount(t *test
 	assertStatus(t, orderResponse.StatusCode, http.StatusUnauthorized)
 	if orderProblem.Type != "urn:ietf:params:acme:error:unauthorized" {
 		t.Fatalf("order problem = %#v", orderProblem)
+	}
+}
+
+func TestACMEProtocolAccountKeyRollover(t *testing.T) {
+	api := newTestAPI(t)
+	oldSigner := api.acmeSigner
+	newSigner := newACMERSATestSigner(t)
+
+	_, _, nonce := api.doACMENonce(t)
+	var account apiACMEProtocolAccount
+	accountResponse := api.doACMEJWSWithResponse(t, "/acme/new-account", nonce, "", oldSigner, map[string]any{
+		"contact":              []string{"mailto:ops@example.test"},
+		"termsOfServiceAgreed": true,
+	}, &account)
+	assertStatus(t, accountResponse.StatusCode, http.StatusCreated)
+
+	innerPayload := acmeRawPayloadB64(t, map[string]any{
+		"account": account.Location,
+		"oldKey":  oldSigner.jwk(),
+	})
+	inner := api.makeRawACMEJWS(t, map[string]any{
+		"alg": newSigner.alg(),
+		"url": api.url + "/acme/key-change",
+		"jwk": newSigner.jwk(),
+	}, innerPayload, newSigner)
+
+	_, _, nonce = api.doACMENonce(t)
+	var changed apiACMEProtocolAccount
+	changeResponse := api.doACMEJWSWithResponse(t, "/acme/key-change", nonce, account.Location, oldSigner, inner, &changed)
+	assertStatus(t, changeResponse.StatusCode, http.StatusOK)
+	if changed.ID != account.ID || changed.Status != string(domain.ACMEAccountValid) {
+		t.Fatalf("changed account = %#v", changed)
+	}
+	stored, err := api.repo.GetACMEAccount(api.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetACMEAccount returned error: %v", err)
+	}
+	if !strings.Contains(stored.KeyJWKJSON, `"kty":"RSA"`) || stored.KeyThumbprint == "" {
+		t.Fatalf("stored account after rollover = %#v", stored)
+	}
+
+	_, _, nonce = api.doACMENonce(t)
+	var updated apiACMEProtocolAccount
+	updateResponse := api.doACMEJWSWithResponse(t, api.pathFromURL(t, account.Location), nonce, account.Location, newSigner, map[string]any{
+		"contact": []string{"mailto:new-key@example.test"},
+	}, &updated)
+	assertStatus(t, updateResponse.StatusCode, http.StatusOK)
+	if len(updated.Contact) != 1 || updated.Contact[0] != "mailto:new-key@example.test" {
+		t.Fatalf("updated account after rollover = %#v", updated)
 	}
 }
 

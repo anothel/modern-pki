@@ -1058,6 +1058,9 @@ func updateACMEAccountIfStatus(accounts map[string]domain.ACMEAccount, account d
 	if current.Status != currentStatus {
 		return domain.ErrInvalidTransition
 	}
+	if err := ensureACMEAccountThumbprintAvailable(accounts, account); err != nil {
+		return err
+	}
 	accounts[account.ID] = copyACMEAccount(account)
 	return nil
 }

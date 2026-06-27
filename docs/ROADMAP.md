@@ -33,11 +33,9 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### ACME Completeness
 
-- Add account key rollover support.
 - Add External Account Binding if a real subscriber/account integration requires
   it.
 - Add DNS-01 only when an operator-owned DNS provider integration is selected.
-- Add RFC 8555 conformance matrix.
 
 ## P2: Operator Surface
 
