@@ -49,9 +49,6 @@ before 100-day and 47-day public certificate operations become normal.
 ### Documentation And Release Readiness
 
 - Get owner decision for `LICENSE`.
-- Write OpenAPI spec for lifecycle/operator APIs.
-- Add compliance matrix for RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR,
-  Mozilla root-store expectations, NIST SP 800-57, and NIST SP 1800-16.
 
 ### Observability And Audit
 
