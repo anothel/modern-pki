@@ -28,9 +28,13 @@ Renewal must fail closed when validation evidence age exceeds the active era lim
 
 Where public TLS issuance is enabled:
 
+- Configure `MODERN_PKI_PUBLIC_TLS_CAA_ISSUER_DOMAIN` and
+  `MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER` before enabling public TLS profiles.
 - Query CAA for DNS identifiers before issuance.
-- Treat DNSSEC bogus/indeterminate answers as policy failures unless an explicit operator exception exists.
-- Support RFC 8657 `accounturi` and `validationmethods` parameters before enabling ACME public issuance.
+- Treat DNSSEC bogus/indeterminate answers as policy failures unless
+  `MODERN_PKI_PUBLIC_TLS_CAA_ALLOW_DNSSEC_INDETERMINATE=true` is explicitly set.
+- Enforce RFC 8657 `accounturi` and `validationmethods` parameters when records
+  include them.
 - Store validation evidence references in audit metadata.
 
 ## Mass-Revocation Tabletop

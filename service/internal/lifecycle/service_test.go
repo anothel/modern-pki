@@ -3367,6 +3367,20 @@ func TestFinalizeACMEOrderRejectsExpiredPublicTLSValidationEvidence(t *testing.T
 	}}
 	now := time.Date(2029, time.March, 15, 1, 2, 3, 0, time.UTC)
 	service := New(repo, coreClient, fixedClock{now: now}, &fakeIDGenerator{})
+	if err := service.SetPublicTLSCAAPolicy(PublicTLSCAAPolicy{
+		IssuerDomain:     "ca.example",
+		AccountURI:       "https://ca.example/acct/1",
+		ValidationMethod: "http-01",
+		Lookup: &fakeCAALookup{result: CAALookupResult{
+			Records: []CAARecord{{
+				Tag:   "issue",
+				Value: "ca.example",
+			}},
+			DNSSECStatus: CAADNSSECSecure,
+		}},
+	}); err != nil {
+		t.Fatalf("SetPublicTLSCAAPolicy returned error: %v", err)
+	}
 
 	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
 		Contacts:             []string{"mailto:ops@example.test"},
@@ -3466,6 +3480,116 @@ func TestCreateACMEOrderEnforcesIdentitySANPolicyBeforeAuthorization(t *testing.
 		IssuerID:             issuer.ID,
 		RequestedDNSNames:    []string{"other.prod.svc.cluster.local"},
 		RequestedIPAddresses: []string{"192.0.2.42"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CreateACMEOrder error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestCreateACMEOrderEnforcesPublicTLSCAAPolicy(t *testing.T) {
+	ctx := context.Background()
+	clock := fixedClock{now: time.Date(2026, time.March, 15, 1, 2, 3, 0, time.UTC)}
+	lookup := &fakeCAALookup{
+		result: CAALookupResult{
+			Records: []CAARecord{{
+				Flag:  0,
+				Tag:   "issue",
+				Value: `ca.example; accounturi=https://ca.example/acct/1; validationmethods=http-01,dns-01`,
+			}},
+			DNSSECStatus: CAADNSSECSecure,
+		},
+	}
+	service := New(store.NewMemoryStore(), &fakeIssuer{}, clock, &fakeIDGenerator{})
+	if err := service.SetPublicTLSCAAPolicy(PublicTLSCAAPolicy{
+		IssuerDomain:     "ca.example",
+		AccountURI:       "https://ca.example/acct/1",
+		ValidationMethod: "http-01",
+		Lookup:           lookup,
+	}); err != nil {
+		t.Fatalf("SetPublicTLSCAAPolicy returned error: %v", err)
+	}
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	publicProfile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "public-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		PublicTLS:             true,
+		AllowedDNSPatterns:    profile.AllowedDNSPatterns,
+		AllowedIPRanges:       profile.AllowedIPRanges,
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile public returned error: %v", err)
+	}
+
+	order, err := service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: publicProfile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEOrder returned error: %v", err)
+	}
+	if order.ID == "" || len(lookup.domains) != 1 || lookup.domains[0] != "edge-01.example.test" {
+		t.Fatalf("order = %#v, CAA lookup domains = %#v", order, lookup.domains)
+	}
+}
+
+func TestCreateACMEOrderRejectsPublicTLSCAAFailure(t *testing.T) {
+	ctx := context.Background()
+	clock := fixedClock{now: time.Date(2026, time.March, 15, 1, 2, 3, 0, time.UTC)}
+	service := New(store.NewMemoryStore(), &fakeIssuer{}, clock, &fakeIDGenerator{})
+	if err := service.SetPublicTLSCAAPolicy(PublicTLSCAAPolicy{
+		IssuerDomain:     "ca.example",
+		AccountURI:       "https://ca.example/acct/1",
+		ValidationMethod: "http-01",
+		Lookup: &fakeCAALookup{result: CAALookupResult{
+			Records: []CAARecord{{
+				Flag:  0,
+				Tag:   "issue",
+				Value: `ca.example; accounturi=https://other.example/acct/2; validationmethods=http-01`,
+			}},
+			DNSSECStatus: CAADNSSECSecure,
+		}},
+	}); err != nil {
+		t.Fatalf("SetPublicTLSCAAPolicy returned error: %v", err)
+	}
+	account, err := service.CreateACMEAccount(ctx, "acme-client", CreateACMEAccountRequest{
+		Contacts:             []string{"mailto:ops@example.test"},
+		TermsOfServiceAgreed: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateACMEAccount returned error: %v", err)
+	}
+	identity, issuer, profile := createProfilePolicyFixture(t, ctx, service)
+	publicProfile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "public-server",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+		PublicTLS:             true,
+		AllowedDNSPatterns:    profile.AllowedDNSPatterns,
+		AllowedIPRanges:       profile.AllowedIPRanges,
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificateProfile public returned error: %v", err)
+	}
+
+	_, err = service.CreateACMEOrder(ctx, "acme-client", CreateACMEOrderRequest{
+		AccountID:            account.ID,
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CertificateProfileID: publicProfile.ID,
+		RequestedDNSNames:    []string{"edge-01.example.test"},
 		RequestedNotAfter:    clock.now.Add(12 * time.Hour),
 	})
 	if !errors.Is(err, domain.ErrInvalidRequest) {
@@ -4785,6 +4909,20 @@ func (f *fakeACMEHTTP01Verifier) VerifyHTTP01(ctx context.Context, identifier st
 		KeyAuthorization: keyAuthorization,
 	})
 	return f.err
+}
+
+type fakeCAALookup struct {
+	domains []string
+	result  CAALookupResult
+	err     error
+}
+
+func (f *fakeCAALookup) LookupCAA(ctx context.Context, domain string) (CAALookupResult, error) {
+	f.domains = append(f.domains, domain)
+	if f.err != nil {
+		return CAALookupResult{}, f.err
+	}
+	return f.result, nil
 }
 
 type fixedClock struct {

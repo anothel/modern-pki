@@ -54,6 +54,38 @@ func (f ACMEHTTP01VerifierFunc) VerifyHTTP01(ctx context.Context, identifier str
 	return f(ctx, identifier, token, keyAuthorization)
 }
 
+type CAADNSSECStatus string
+
+const (
+	CAADNSSECSecure        CAADNSSECStatus = "secure"
+	CAADNSSECInsecure      CAADNSSECStatus = "insecure"
+	CAADNSSECBogus         CAADNSSECStatus = "bogus"
+	CAADNSSECIndeterminate CAADNSSECStatus = "indeterminate"
+)
+
+type CAARecord struct {
+	Flag  uint8
+	Tag   string
+	Value string
+}
+
+type CAALookupResult struct {
+	Records      []CAARecord
+	DNSSECStatus CAADNSSECStatus
+}
+
+type CAALookup interface {
+	LookupCAA(ctx context.Context, domain string) (CAALookupResult, error)
+}
+
+type PublicTLSCAAPolicy struct {
+	IssuerDomain             string
+	AccountURI               string
+	ValidationMethod         string
+	AllowDNSSECIndeterminate bool
+	Lookup                   CAALookup
+}
+
 var acmeHTTP01BlockedSpecialPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("192.0.0.0/24"),
@@ -85,6 +117,7 @@ type Service struct {
 	apiKeyPepper                 string
 	productionPolicy             bool
 	publicTLSMaxValidityOverride time.Duration
+	publicTLSCAAPolicy           *PublicTLSCAAPolicy
 	issueMu                      sync.Mutex
 }
 
@@ -375,6 +408,17 @@ func (s *Service) SetPublicTLSMaxValidity(maxValidity time.Duration) error {
 		return domain.ErrInvalidRequest
 	}
 	s.publicTLSMaxValidityOverride = maxValidity
+	return nil
+}
+
+func (s *Service) SetPublicTLSCAAPolicy(policy PublicTLSCAAPolicy) error {
+	if isBlank(policy.IssuerDomain) || isBlank(policy.ValidationMethod) {
+		return domain.ErrInvalidRequest
+	}
+	if policy.Lookup == nil {
+		policy.Lookup = rejectingCAALookup{}
+	}
+	s.publicTLSCAAPolicy = &policy
 	return nil
 }
 
@@ -1231,6 +1275,17 @@ func (s *Service) CreateACMEOrder(ctx context.Context, actor string, req CreateA
 	now := s.clock.Now()
 	if err := validateCreateACMEOrderRequest(req, now); err != nil {
 		return domain.ACMEOrder{}, err
+	}
+	if req.CertificateProfileID != "" {
+		profile, err := s.repo.GetCertificateProfile(ctx, req.CertificateProfileID)
+		if err != nil {
+			return domain.ACMEOrder{}, err
+		}
+		if profile.PublicTLS {
+			if err := s.validatePublicTLSCAA(ctx, req.RequestedDNSNames); err != nil {
+				return domain.ACMEOrder{}, err
+			}
+		}
 	}
 	order := domain.ACMEOrder{
 		ID:                   s.idgen.NewID(),
@@ -3056,6 +3111,109 @@ func (s *Service) validateACMEPublicTLSValidationEvidence(ctx context.Context, o
 		}
 	}
 	return nil
+}
+
+func (s *Service) validatePublicTLSCAA(ctx context.Context, dnsNames []string) error {
+	if len(dnsNames) == 0 {
+		return nil
+	}
+	if s.publicTLSCAAPolicy == nil {
+		return domain.ErrInvalidRequest
+	}
+	for _, dnsName := range dnsNames {
+		if err := s.publicTLSCAAPolicy.check(ctx, dnsName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p PublicTLSCAAPolicy) check(ctx context.Context, dnsName string) error {
+	result, err := p.Lookup.LookupCAA(ctx, dnsName)
+	if err != nil {
+		return err
+	}
+	switch result.DNSSECStatus {
+	case CAADNSSECBogus:
+		return domain.ErrInvalidRequest
+	case CAADNSSECIndeterminate:
+		if !p.AllowDNSSECIndeterminate {
+			return domain.ErrInvalidRequest
+		}
+	}
+
+	tag := "issue"
+	if strings.HasPrefix(dnsName, "*.") && hasCAATag(result.Records, "issuewild") {
+		tag = "issuewild"
+	}
+	records := make([]CAARecord, 0)
+	for _, record := range result.Records {
+		recordTag := strings.ToLower(strings.TrimSpace(record.Tag))
+		if record.Flag&128 != 0 && recordTag != "issue" && recordTag != "issuewild" && recordTag != "iodef" {
+			return domain.ErrInvalidRequest
+		}
+		if recordTag == tag {
+			records = append(records, record)
+		}
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	for _, record := range records {
+		if caaRecordAllowsIssue(record.Value, p.IssuerDomain, p.AccountURI, p.ValidationMethod) {
+			return nil
+		}
+	}
+	return domain.ErrInvalidRequest
+}
+
+func hasCAATag(records []CAARecord, tag string) bool {
+	for _, record := range records {
+		if strings.EqualFold(strings.TrimSpace(record.Tag), tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func caaRecordAllowsIssue(value string, issuerDomain string, accountURI string, validationMethod string) bool {
+	parts := strings.Split(value, ";")
+	issuer := strings.TrimSpace(parts[0])
+	if issuer == "" || !strings.EqualFold(issuer, issuerDomain) {
+		return false
+	}
+	for _, rawParam := range parts[1:] {
+		name, paramValue, ok := strings.Cut(strings.TrimSpace(rawParam), "=")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "accounturi":
+			if strings.TrimSpace(paramValue) != accountURI {
+				return false
+			}
+		case "validationmethods":
+			if !caaValidationMethodsAllow(paramValue, validationMethod) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func caaValidationMethodsAllow(value string, validationMethod string) bool {
+	for _, method := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(method), validationMethod) {
+			return true
+		}
+	}
+	return false
+}
+
+type rejectingCAALookup struct{}
+
+func (rejectingCAALookup) LookupCAA(context.Context, string) (CAALookupResult, error) {
+	return CAALookupResult{}, domain.ErrInvalidRequest
 }
 
 func auditFields(pairs ...string) map[string]any {

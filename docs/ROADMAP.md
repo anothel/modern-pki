@@ -26,25 +26,12 @@ before 100-day and 47-day public certificate operations become normal.
 
 ## P1: ACME Security And Compatibility
 
-### Public TLS Readiness
-
-- Add executable CAA DNSSEC handling and RFC 8657 CAA parameter policy checks
-  where public TLS issuance is enabled.
-
 ### Real Client Coverage
 
 - Run certbot smoke from Linux or elevated Windows.
-- Run lego smoke as a local regression command.
 - Convert certbot/lego differences into protocol fixture tests.
 - Build compatibility matrix for client, OS, account key type, challenge type,
   and smoke result.
-
-### Multi-Node Nonce Safety
-
-- Decide SQL-backed nonce store vs signed stateless nonce.
-- Implement the chosen shared nonce strategy.
-- Limit memory nonce behavior to local/single-node mode if shared nonce is added.
-- Add replay tests that simulate multiple service nodes.
 
 ### HTTP-01 Egress Policy
 
@@ -57,9 +44,6 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### ACME Completeness
 
-- Add account key coverage for RSA, ECDSA P-256, and Ed25519 where clients expose
-  them.
-- Bind KID/account URL validation to configured ACME base URL.
 - Add account key rollover support.
 - Add ACME revocation endpoint.
 - Add External Account Binding if a real subscriber/account integration requires

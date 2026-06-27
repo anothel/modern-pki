@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,8 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/lifecycle"
 	"github.com/modern-pki/modern-pki/service/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 var testNow = time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
@@ -489,80 +492,124 @@ func TestACMEProtocolBadNonceRetry(t *testing.T) {
 
 func TestACMENonceExpiresAndIsRemoved(t *testing.T) {
 	server := New(nil)
+	store := server.nonces.(*acmeMemoryNonceStore)
 	nonce := "expired"
-	server.nonces[nonce] = time.Now().Add(-defaultACMENonceTTL - time.Second)
+	store.nonces[nonce] = acmeStoredNonce{
+		IssuedAt:  time.Now().Add(-defaultACMENonceTTL - time.Second),
+		ExpiresAt: time.Now().Add(-time.Second),
+	}
 
-	if server.consumeACMENonce(nonce) {
+	if server.consumeACMENonce(context.Background(), nonce) {
 		t.Fatal("consumeACMENonce accepted expired nonce")
 	}
-	if _, ok := server.nonces[nonce]; ok {
+	if _, ok := store.nonces[nonce]; ok {
 		t.Fatal("expired nonce was not removed")
 	}
 }
 
 func TestACMENonceIssueCleansExpiredEntries(t *testing.T) {
 	server := New(nil)
+	store := server.nonces.(*acmeMemoryNonceStore)
 	expired := "expired"
 	valid := "valid"
-	server.nonces[expired] = time.Now().Add(-defaultACMENonceTTL - time.Second)
-	server.nonces[valid] = time.Now()
+	store.nonces[expired] = acmeStoredNonce{IssuedAt: time.Now().Add(-defaultACMENonceTTL - time.Second), ExpiresAt: time.Now().Add(-time.Second)}
+	store.nonces[valid] = acmeStoredNonce{IssuedAt: time.Now(), ExpiresAt: time.Now().Add(defaultACMENonceTTL)}
 
-	issued, err := server.issueACMENonce()
+	issued, err := server.issueACMENonce(context.Background())
 	if err != nil {
 		t.Fatalf("issueACMENonce returned error: %v", err)
 	}
-	if _, ok := server.nonces[expired]; ok {
+	if _, ok := store.nonces[expired]; ok {
 		t.Fatal("expired nonce was not removed")
 	}
-	if _, ok := server.nonces[valid]; !ok {
+	if _, ok := store.nonces[valid]; !ok {
 		t.Fatal("valid nonce was removed")
 	}
-	if _, ok := server.nonces[issued]; !ok {
+	if _, ok := store.nonces[issued]; !ok {
 		t.Fatal("issued nonce was not stored")
 	}
 }
 
 func TestACMENonceIssueEnforcesCacheLimit(t *testing.T) {
 	server := New(nil)
+	store := server.nonces.(*acmeMemoryNonceStore)
 	now := time.Now().Add(-time.Minute)
 	for i := 0; i < defaultACMENonceCacheSize; i++ {
-		server.nonces[fmt.Sprintf("nonce-%04d", i)] = now.Add(time.Duration(i) * time.Second)
+		issuedAt := now.Add(time.Duration(i) * time.Second)
+		store.nonces[fmt.Sprintf("nonce-%04d", i)] = acmeStoredNonce{IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(defaultACMENonceTTL)}
 	}
 
-	issued, err := server.issueACMENonce()
+	issued, err := server.issueACMENonce(context.Background())
 	if err != nil {
 		t.Fatalf("issueACMENonce returned error: %v", err)
 	}
-	if len(server.nonces) != defaultACMENonceCacheSize {
-		t.Fatalf("nonce cache size = %d, want %d", len(server.nonces), defaultACMENonceCacheSize)
+	if len(store.nonces) != defaultACMENonceCacheSize {
+		t.Fatalf("nonce cache size = %d, want %d", len(store.nonces), defaultACMENonceCacheSize)
 	}
-	if _, ok := server.nonces["nonce-0000"]; ok {
+	if _, ok := store.nonces["nonce-0000"]; ok {
 		t.Fatal("oldest nonce was not evicted")
 	}
-	if _, ok := server.nonces[fmt.Sprintf("nonce-%04d", defaultACMENonceCacheSize-1)]; !ok {
+	if _, ok := store.nonces[fmt.Sprintf("nonce-%04d", defaultACMENonceCacheSize-1)]; !ok {
 		t.Fatal("newest existing nonce was evicted")
 	}
-	if _, ok := server.nonces[issued]; !ok {
+	if _, ok := store.nonces[issued]; !ok {
 		t.Fatal("issued nonce was not retained")
 	}
 }
 
 func TestACMENonceIssueKeepsReturnedNonceWhenExistingEntriesAreNewer(t *testing.T) {
 	server := New(nil)
+	store := server.nonces.(*acmeMemoryNonceStore)
 	future := time.Now().Add(time.Hour)
 	for i := 0; i < defaultACMENonceCacheSize; i++ {
-		server.nonces[fmt.Sprintf("nonce-%04d", i)] = future.Add(time.Duration(i) * time.Second)
+		issuedAt := future.Add(time.Duration(i) * time.Second)
+		store.nonces[fmt.Sprintf("nonce-%04d", i)] = acmeStoredNonce{IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(defaultACMENonceTTL)}
 	}
 
-	issued, err := server.issueACMENonce()
+	issued, err := server.issueACMENonce(context.Background())
 	if err != nil {
 		t.Fatalf("issueACMENonce returned error: %v", err)
 	}
-	if len(server.nonces) != defaultACMENonceCacheSize {
-		t.Fatalf("nonce cache size = %d, want %d", len(server.nonces), defaultACMENonceCacheSize)
+	if len(store.nonces) != defaultACMENonceCacheSize {
+		t.Fatalf("nonce cache size = %d, want %d", len(store.nonces), defaultACMENonceCacheSize)
 	}
-	if _, ok := server.nonces[issued]; !ok {
+	if _, ok := store.nonces[issued]; !ok {
 		t.Fatal("issued nonce was evicted")
+	}
+}
+
+func TestACMESQLNonceStoreRejectsCrossNodeReplay(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+	nonceStore := NewSQLACMENonceStore(db, "sqlite")
+	firstNode := NewWithAuthAndACME(nil, AuthConfig{Mode: AuthModeDev}, ACMEConfig{NonceStore: nonceStore})
+	secondNode := NewWithAuthAndACME(nil, AuthConfig{Mode: AuthModeDev}, ACMEConfig{NonceStore: nonceStore})
+
+	nonce, err := firstNode.issueACMENonce(ctx)
+	if err != nil {
+		t.Fatalf("issueACMENonce returned error: %v", err)
+	}
+	if !secondNode.consumeACMENonce(ctx, nonce) {
+		t.Fatal("second node rejected first use of shared nonce")
+	}
+	if firstNode.consumeACMENonce(ctx, nonce) {
+		t.Fatal("first node accepted replayed shared nonce")
+	}
+}
+
+func TestACMESQLNonceStoreUsesPostgresPlaceholders(t *testing.T) {
+	store := NewSQLACMENonceStore(nil, "pgx")
+	got := store.query("DELETE FROM acme_nonces WHERE nonce = ? AND expires_at > ?")
+	want := "DELETE FROM acme_nonces WHERE nonce = $1 AND expires_at > $2"
+	if got != want {
+		t.Fatalf("query = %q, want %q", got, want)
 	}
 }
 
@@ -1157,6 +1204,23 @@ func TestACMEProtocolOrderChallengeAndFinalize(t *testing.T) {
 		"termsOfServiceAgreed": true,
 	}, &otherAccount)
 	assertStatus(t, status, http.StatusCreated)
+
+	_, _, nonce = api.doACMENonce(t)
+	var wrongBaseKIDBody acmeProblemResponse
+	status = api.doACMEJWSWithSigner(t, "/acme/new-order", nonce, "https://evil.example/acme/account/"+account.ID, accountSigner, map[string]any{
+		"account_id":  account.ID,
+		"identity_id": identity.ID,
+		"issuer_id":   issuer.ID,
+		"profile_id":  profile.ID,
+		"identifiers": []map[string]any{
+			{"type": "dns", "value": "edge-01.example.test"},
+		},
+		"notAfter": testNow.Add(12 * time.Hour).Format(time.RFC3339),
+	}, &wrongBaseKIDBody)
+	assertStatus(t, status, http.StatusBadRequest)
+	if wrongBaseKIDBody.Detail != domain.ErrInvalidRequest.Error() {
+		t.Fatalf("wrong-base kid error detail = %q, want %q", wrongBaseKIDBody.Detail, domain.ErrInvalidRequest.Error())
+	}
 
 	_, _, nonce = api.doACMENonce(t)
 	var invalidSignatureBody acmeProblemResponse

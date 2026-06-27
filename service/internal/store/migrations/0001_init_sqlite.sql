@@ -248,6 +248,15 @@ CREATE TABLE IF NOT EXISTS acme_accounts (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS acme_nonces (
+    nonce TEXT PRIMARY KEY,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires
+    ON acme_nonces(expires_at);
+
 CREATE TABLE IF NOT EXISTS acme_orders (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES acme_accounts(id),

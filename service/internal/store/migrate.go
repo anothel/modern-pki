@@ -424,6 +424,13 @@ func applySQLiteCompatibilityMigrations(ctx context.Context, db sqlExecutor) err
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS acme_nonces (
+			nonce TEXT PRIMARY KEY,
+			issued_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires
+			ON acme_nonces(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS acme_orders (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL REFERENCES acme_accounts(id),
@@ -746,6 +753,13 @@ func applyPostgresCompatibilityMigrations(ctx context.Context, db sqlExecutor) e
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_acme_accounts_key_thumbprint
 			ON acme_accounts(key_thumbprint)
 			WHERE key_thumbprint <> ''`,
+		`CREATE TABLE IF NOT EXISTS acme_nonces (
+			nonce TEXT PRIMARY KEY,
+			issued_at TIMESTAMPTZ NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires
+			ON acme_nonces(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS acme_orders (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL REFERENCES acme_accounts(id),

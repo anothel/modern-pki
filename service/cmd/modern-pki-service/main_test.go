@@ -46,12 +46,26 @@ func TestLoadPublicTLSConfig(t *testing.T) {
 	}
 
 	t.Setenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY", "720h")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_ISSUER_DOMAIN", "ca.example")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_ACCOUNT_URI", "https://ca.example/acct/1")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_VALIDATION_METHOD", "http-01")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER", "127.0.0.1:53")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_LOOKUP_TIMEOUT", "2s")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_ALLOW_DNSSEC_INDETERMINATE", "true")
 	cfg, err = loadPublicTLSConfig()
 	if err != nil {
 		t.Fatalf("loadPublicTLSConfig override returned error: %v", err)
 	}
 	if cfg.MaxValidity != 720*time.Hour {
 		t.Fatalf("public TLS max validity = %s, want 720h", cfg.MaxValidity)
+	}
+	if cfg.CAAIssuerDomain != "ca.example" ||
+		cfg.CAAAccountURI != "https://ca.example/acct/1" ||
+		cfg.CAAValidationMethod != "http-01" ||
+		cfg.CAAResolver != "127.0.0.1:53" ||
+		cfg.CAALookupTimeout != 2*time.Second ||
+		!cfg.AllowDNSSECIndeterminate {
+		t.Fatalf("public TLS CAA config = %#v", cfg)
 	}
 }
 
@@ -64,6 +78,16 @@ func TestLoadPublicTLSConfigRejectsInvalidMaxValidity(t *testing.T) {
 				t.Fatalf("loadPublicTLSConfig error = %v, want env name", err)
 			}
 		})
+	}
+}
+
+func TestLoadPublicTLSConfigRequiresCAAResolverWhenIssuerIsSet(t *testing.T) {
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_ISSUER_DOMAIN", "ca.example")
+	t.Setenv("MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER", "")
+
+	_, err := loadPublicTLSConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER") {
+		t.Fatalf("loadPublicTLSConfig error = %v, want resolver env name", err)
 	}
 }
 
@@ -686,6 +710,52 @@ func TestLoadACMEDefaultsConfigIncludesIssuerKeyRef(t *testing.T) {
 	}
 	if !cfg.BootstrapDefaults || cfg.ValidityPeriod != 12*time.Hour || cfg.IssuerKeyRef != "issuer.key" {
 		t.Fatalf("ACME defaults config = %#v", cfg)
+	}
+}
+
+func TestLoadACMENonceConfigDefaultsToMemory(t *testing.T) {
+	t.Setenv("MODERN_PKI_ENV", "")
+	t.Setenv("MODERN_PKI_ACME_NONCE_STORE", "")
+
+	cfg, err := loadACMENonceConfig()
+	if err != nil {
+		t.Fatalf("loadACMENonceConfig returned error: %v", err)
+	}
+	if cfg.Store != "memory" {
+		t.Fatalf("nonce store = %q, want memory", cfg.Store)
+	}
+}
+
+func TestLoadACMENonceConfigAllowsSQL(t *testing.T) {
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_ACME_NONCE_STORE", "sql")
+
+	cfg, err := loadACMENonceConfig()
+	if err != nil {
+		t.Fatalf("loadACMENonceConfig returned error: %v", err)
+	}
+	if cfg.Store != "sql" {
+		t.Fatalf("nonce store = %q, want sql", cfg.Store)
+	}
+}
+
+func TestLoadACMENonceConfigRejectsInvalidStore(t *testing.T) {
+	t.Setenv("MODERN_PKI_ENV", "")
+	t.Setenv("MODERN_PKI_ACME_NONCE_STORE", "redis")
+
+	_, err := loadACMENonceConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_ACME_NONCE_STORE") {
+		t.Fatalf("loadACMENonceConfig error = %v, want nonce store error", err)
+	}
+}
+
+func TestLoadACMENonceConfigRejectsMemoryInProduction(t *testing.T) {
+	t.Setenv("MODERN_PKI_ENV", "production")
+	t.Setenv("MODERN_PKI_ACME_NONCE_STORE", "")
+
+	_, err := loadACMENonceConfig()
+	if err == nil || !strings.Contains(err.Error(), "MODERN_PKI_ACME_NONCE_STORE") {
+		t.Fatalf("loadACMENonceConfig error = %v, want production nonce store error", err)
 	}
 }
 

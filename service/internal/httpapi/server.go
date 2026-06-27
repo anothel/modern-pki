@@ -35,8 +35,7 @@ type Server struct {
 	mux     *http.ServeMux
 	auth    AuthConfig
 	acme    ACMEConfig
-	nonceMu sync.Mutex
-	nonces  map[string]time.Time
+	nonces  ACMENonceStore
 }
 
 var errACMEBadNonce = errors.New("acme bad nonce")
@@ -67,6 +66,23 @@ type ACMEConfig struct {
 	DefaultIssuerID             string
 	DefaultCertificateProfileID string
 	DefaultValidityPeriod       time.Duration
+	NonceStore                  ACMENonceStore
+}
+
+type ACMENonceStore interface {
+	Issue(ctx context.Context, nonce string, issuedAt time.Time, expiresAt time.Time) error
+	Consume(ctx context.Context, nonce string, now time.Time) (bool, error)
+}
+
+type acmeMemoryNonceStore struct {
+	mu      sync.Mutex
+	nonces  map[string]acmeStoredNonce
+	maxSize int
+}
+
+type acmeStoredNonce struct {
+	IssuedAt  time.Time
+	ExpiresAt time.Time
 }
 
 type requiredScope string
@@ -91,12 +107,16 @@ func NewWithAuthAndACME(service *lifecycle.Service, auth AuthConfig, acme ACMECo
 	if auth.Mode == "" {
 		auth.Mode = AuthModeDev
 	}
+	nonceStore := acme.NonceStore
+	if nonceStore == nil {
+		nonceStore = newACMEMemoryNonceStore(defaultACMENonceCacheSize)
+	}
 	s := &Server{
 		service: service,
 		mux:     http.NewServeMux(),
 		auth:    auth,
 		acme:    acme,
-		nonces:  make(map[string]time.Time),
+		nonces:  nonceStore,
 	}
 	s.registerRoutes()
 	return s
@@ -597,7 +617,7 @@ func (s *Server) acmeDirectory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) acmeNewNonce(w http.ResponseWriter, r *http.Request) {
-	nonce, err := s.issueACMENonce()
+	nonce, err := s.issueACMENonce(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -947,7 +967,7 @@ func (s *Server) acmePostAsGetCertificate(w http.ResponseWriter, r *http.Request
 		s.writeError(w, r, err)
 		return
 	}
-	nonce, err := s.issueACMENonce()
+	nonce, err := s.issueACMENonce(r.Context())
 	if err == nil {
 		w.Header().Set("Replay-Nonce", nonce)
 	}
@@ -1421,7 +1441,7 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	if (protected.KID == "") == (protected.JWK == nil) {
 		return acmeJWSResult{}, domain.ErrInvalidRequest
 	}
-	if !s.consumeACMENonce(protected.Nonce) {
+	if !s.consumeACMENonce(r.Context(), protected.Nonce) {
 		return acmeJWSResult{}, errACMEBadNonce
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(req.Payload)
@@ -1431,6 +1451,9 @@ func (s *Server) decodeACMEJWS(r *http.Request) (acmeJWSResult, error) {
 	result := acmeJWSResult{Payload: payload}
 	var jwk acmeJWK
 	if protected.KID != "" {
+		if !strings.HasPrefix(protected.KID, requestBaseURL(r)+"/acme/account/") {
+			return acmeJWSResult{}, domain.ErrInvalidRequest
+		}
 		accountID, err := acmeAccountIDFromKID(protected.KID)
 		if err != nil {
 			return acmeJWSResult{}, domain.ErrInvalidRequest
@@ -1475,49 +1498,73 @@ func isSupportedACMEJWSAlg(alg string) bool {
 	return alg == "ES256" || alg == "RS256" || alg == "EdDSA"
 }
 
-func (s *Server) issueACMENonce() (string, error) {
+func (s *Server) issueACMENonce(ctx context.Context) (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(raw[:])
 	now := time.Now()
-	s.nonceMu.Lock()
-	defer s.nonceMu.Unlock()
-	s.removeExpiredACMENoncesLocked(now)
-	s.evictOldestACMENoncesLocked(defaultACMENonceCacheSize - 1)
-	s.nonces[nonce] = now
+	if err := s.nonces.Issue(ctx, nonce, now, now.Add(defaultACMENonceTTL)); err != nil {
+		return "", err
+	}
 	return nonce, nil
 }
 
-func (s *Server) consumeACMENonce(nonce string) bool {
-	now := time.Now()
-	s.nonceMu.Lock()
-	defer s.nonceMu.Unlock()
-	s.removeExpiredACMENoncesLocked(now)
-	if _, ok := s.nonces[nonce]; !ok {
-		return false
-	}
-	delete(s.nonces, nonce)
-	return true
+func (s *Server) consumeACMENonce(ctx context.Context, nonce string) bool {
+	ok, err := s.nonces.Consume(ctx, nonce, time.Now())
+	return err == nil && ok
 }
 
-func (s *Server) removeExpiredACMENoncesLocked(now time.Time) {
-	for nonce, issuedAt := range s.nonces {
-		if acmeNonceExpired(issuedAt, now) {
+func newACMEMemoryNonceStore(maxSize int) *acmeMemoryNonceStore {
+	return &acmeMemoryNonceStore{
+		nonces:  make(map[string]acmeStoredNonce),
+		maxSize: maxSize,
+	}
+}
+
+func (s *acmeMemoryNonceStore) Issue(ctx context.Context, nonce string, issuedAt time.Time, expiresAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeExpiredLocked(issuedAt)
+	s.evictOldestLocked(s.maxSize - 1)
+	s.nonces[nonce] = acmeStoredNonce{IssuedAt: issuedAt, ExpiresAt: expiresAt}
+	return nil
+}
+
+func (s *acmeMemoryNonceStore) Consume(ctx context.Context, nonce string, now time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeExpiredLocked(now)
+	if _, ok := s.nonces[nonce]; !ok {
+		return false, nil
+	}
+	delete(s.nonces, nonce)
+	return true, nil
+}
+
+func (s *acmeMemoryNonceStore) removeExpiredLocked(now time.Time) {
+	for nonce, stored := range s.nonces {
+		if !stored.ExpiresAt.After(now) {
 			delete(s.nonces, nonce)
 		}
 	}
 }
 
-func (s *Server) evictOldestACMENoncesLocked(maxSize int) {
+func (s *acmeMemoryNonceStore) evictOldestLocked(maxSize int) {
 	for len(s.nonces) > maxSize {
 		var oldestNonce string
 		var oldestIssuedAt time.Time
 		for nonce, issuedAt := range s.nonces {
-			if oldestNonce == "" || issuedAt.Before(oldestIssuedAt) {
+			if oldestNonce == "" || issuedAt.IssuedAt.Before(oldestIssuedAt) {
 				oldestNonce = nonce
-				oldestIssuedAt = issuedAt
+				oldestIssuedAt = issuedAt.IssuedAt
 			}
 		}
 		delete(s.nonces, oldestNonce)
@@ -1529,7 +1576,7 @@ func acmeNonceExpired(issuedAt time.Time, now time.Time) bool {
 }
 
 func (s *Server) writeACMEJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
-	nonce, err := s.issueACMENonce()
+	nonce, err := s.issueACMENonce(r.Context())
 	if err == nil {
 		w.Header().Set("Replay-Nonce", nonce)
 	}
@@ -2006,7 +2053,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (s *Server) writeACMEProblem(w http.ResponseWriter, r *http.Request, status int, err error) {
-	nonce, nonceErr := s.issueACMENonce()
+	nonce, nonceErr := s.issueACMENonce(r.Context())
 	if nonceErr == nil {
 		w.Header().Set("Replay-Nonce", nonce)
 	}

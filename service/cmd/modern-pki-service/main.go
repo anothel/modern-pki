@@ -92,8 +92,18 @@ type acmeDefaultsConfig struct {
 	IssuerKeyRef      string
 }
 
+type acmeNonceConfig struct {
+	Store string
+}
+
 type publicTLSConfig struct {
-	MaxValidity time.Duration
+	MaxValidity              time.Duration
+	CAAIssuerDomain          string
+	CAAAccountURI            string
+	CAAValidationMethod      string
+	CAAResolver              string
+	CAALookupTimeout         time.Duration
+	AllowDNSSECIndeterminate bool
 }
 
 type authConfig struct {
@@ -141,6 +151,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load ACME defaults config: %v", err)
 	}
+	acmeNonceCfg, err := loadACMENonceConfig()
+	if err != nil {
+		log.Fatalf("load ACME nonce config: %v", err)
+	}
 	publicTLSCfg, err := loadPublicTLSConfig()
 	if err != nil {
 		log.Fatalf("load public TLS config: %v", err)
@@ -170,6 +184,21 @@ func main() {
 			log.Fatalf("set public TLS max validity: %v", err)
 		}
 	}
+	if publicTLSCfg.CAAIssuerDomain != "" {
+		lookup, err := lifecycle.NewDNSCAALookup(publicTLSCfg.CAAResolver, publicTLSCfg.CAALookupTimeout)
+		if err != nil {
+			log.Fatalf("create public TLS CAA lookup: %v", err)
+		}
+		if err := svc.SetPublicTLSCAAPolicy(lifecycle.PublicTLSCAAPolicy{
+			IssuerDomain:             publicTLSCfg.CAAIssuerDomain,
+			AccountURI:               publicTLSCfg.CAAAccountURI,
+			ValidationMethod:         publicTLSCfg.CAAValidationMethod,
+			AllowDNSSECIndeterminate: publicTLSCfg.AllowDNSSECIndeterminate,
+			Lookup:                   lookup,
+		}); err != nil {
+			log.Fatalf("set public TLS CAA policy: %v", err)
+		}
+	}
 	if acmeHTTP01VerifierCfg.BaseURL != "" {
 		log.Printf("modern-pki ACME HTTP-01 verifier override enabled base_url=%s", acmeHTTP01VerifierCfg.BaseURL)
 	}
@@ -191,6 +220,10 @@ func main() {
 			log.Fatalf("bootstrap ACME defaults: %v", err)
 		}
 		log.Printf("modern-pki ACME defaults ready identity_id=%s issuer_id=%s profile_id=%s validity=%s", acmeHTTPConfig.DefaultIdentityID, acmeHTTPConfig.DefaultIssuerID, acmeHTTPConfig.DefaultCertificateProfileID, acmeHTTPConfig.DefaultValidityPeriod)
+	}
+	if acmeNonceCfg.Store == "sql" {
+		acmeHTTPConfig.NonceStore = httpapi.NewSQLACMENonceStore(db, dbDriver)
+		log.Printf("modern-pki ACME nonce store enabled store=sql")
 	}
 	server := httpapi.NewWithAuthAndACME(svc, authCfg.HTTP, acmeHTTPConfig)
 	if outboxCfg.Enabled {
@@ -569,18 +602,44 @@ func loadExpirationScanConfig() (expirationScanConfig, error) {
 }
 
 func loadPublicTLSConfig() (publicTLSConfig, error) {
+	cfg := publicTLSConfig{
+		CAAIssuerDomain:     strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_CAA_ISSUER_DOMAIN")),
+		CAAAccountURI:       strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_CAA_ACCOUNT_URI")),
+		CAAValidationMethod: strings.TrimSpace(envOrDefault("MODERN_PKI_PUBLIC_TLS_CAA_VALIDATION_METHOD", string(domain.ACMEChallengeHTTP01))),
+		CAAResolver:         strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER")),
+		CAALookupTimeout:    5 * time.Second,
+	}
 	value := strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY"))
-	if value == "" {
-		return publicTLSConfig{}, nil
+	if value != "" {
+		maxValidity, err := time.ParseDuration(value)
+		if err != nil {
+			return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY: %w", err)
+		}
+		if maxValidity <= 0 {
+			return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY must be positive")
+		}
+		cfg.MaxValidity = maxValidity
 	}
-	maxValidity, err := time.ParseDuration(value)
+	timeoutValue := strings.TrimSpace(os.Getenv("MODERN_PKI_PUBLIC_TLS_CAA_LOOKUP_TIMEOUT"))
+	if timeoutValue != "" {
+		timeout, err := time.ParseDuration(timeoutValue)
+		if err != nil {
+			return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_CAA_LOOKUP_TIMEOUT: %w", err)
+		}
+		if timeout <= 0 {
+			return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_CAA_LOOKUP_TIMEOUT must be positive")
+		}
+		cfg.CAALookupTimeout = timeout
+	}
+	allowIndeterminate, err := parseBoolEnv("MODERN_PKI_PUBLIC_TLS_CAA_ALLOW_DNSSEC_INDETERMINATE", false)
 	if err != nil {
-		return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY: %w", err)
+		return publicTLSConfig{}, err
 	}
-	if maxValidity <= 0 {
-		return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_MAX_VALIDITY must be positive")
+	cfg.AllowDNSSECIndeterminate = allowIndeterminate
+	if cfg.CAAIssuerDomain != "" && (cfg.CAAResolver == "" || cfg.CAAValidationMethod == "") {
+		return publicTLSConfig{}, fmt.Errorf("MODERN_PKI_PUBLIC_TLS_CAA_RESOLVER and MODERN_PKI_PUBLIC_TLS_CAA_VALIDATION_METHOD are required when MODERN_PKI_PUBLIC_TLS_CAA_ISSUER_DOMAIN is set")
 	}
-	return publicTLSConfig{MaxValidity: maxValidity}, nil
+	return cfg, nil
 }
 
 func loadACMEHTTP01VerifierConfig() (acmeHTTP01VerifierConfig, error) {
@@ -607,6 +666,19 @@ func loadACMEDefaultsConfig() (acmeDefaultsConfig, error) {
 		ValidityPeriod:    validity,
 		IssuerKeyRef:      envOrDefault("MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF", defaultACMESmokeIssuerKeyRef),
 	}, nil
+}
+
+func loadACMENonceConfig() (acmeNonceConfig, error) {
+	store := strings.TrimSpace(envOrDefault("MODERN_PKI_ACME_NONCE_STORE", "memory"))
+	switch store {
+	case "memory", "sql":
+	default:
+		return acmeNonceConfig{}, fmt.Errorf("MODERN_PKI_ACME_NONCE_STORE must be memory or sql")
+	}
+	if isProductionEnv(os.Getenv("MODERN_PKI_ENV")) && store != "sql" {
+		return acmeNonceConfig{}, fmt.Errorf("MODERN_PKI_ACME_NONCE_STORE must be sql when MODERN_PKI_ENV=production")
+	}
+	return acmeNonceConfig{Store: store}, nil
 }
 
 func bootstrapACMEDefaults(ctx context.Context, svc *lifecycle.Service, validity time.Duration, issuerKeyRef string) (httpapi.ACMEConfig, error) {
