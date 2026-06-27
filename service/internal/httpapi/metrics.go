@@ -1,15 +1,10 @@
 package httpapi
 
 import (
-	"expvar"
 	"net/http"
-	"strconv"
 	"strings"
-)
 
-var (
-	httpRequestMetrics = expvar.NewMap("modern_pki_http_requests_total")
-	httpEventMetrics   = expvar.NewMap("modern_pki_http_events_total")
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 )
 
 type statusResponseWriter struct {
@@ -23,26 +18,11 @@ func (w *statusResponseWriter) WriteHeader(status int) {
 }
 
 func recordRequestMetric(boundary string, status int) {
-	if boundary == "" {
-		boundary = "unknown"
-	}
-	httpRequestMetrics.Add(boundary+":"+strconv.Itoa(status), 1)
+	observability.RecordHTTPRequest(boundary, status)
 }
 
 func recordEventMetric(key string) {
-	httpEventMetrics.Add(key, 1)
-}
-
-func metricValue(key string) int64 {
-	value := httpRequestMetrics.Get(key)
-	if value == nil {
-		value = httpEventMetrics.Get(key)
-	}
-	if value == nil {
-		return 0
-	}
-	parsed, _ := strconv.ParseInt(value.String(), 10, 64)
-	return parsed
+	observability.RecordEvent(key)
 }
 
 func requestMetricBoundary(path string) string {

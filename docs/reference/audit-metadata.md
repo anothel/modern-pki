@@ -30,9 +30,14 @@ When the request context carries them, metadata also includes:
 
 ```text
 request_id
+traceparent
 client_ip
 elapsed_ms
 ```
+
+`traceparent` preserves the inbound W3C trace context header when present. The
+service records it as correlation metadata only; it does not create or export
+spans.
 
 ## Lifecycle Identity Fields
 

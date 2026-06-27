@@ -150,9 +150,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := requestIDForRequest(r)
 	rw.Header().Set("X-Request-ID", requestID)
 	ctx := lifecycle.WithAuditRequestMetadata(r.Context(), lifecycle.AuditRequestMetadata{
-		RequestID: requestID,
-		ClientIP:  requestClientIP(r, s.auth.TrustedProxies),
-		StartedAt: time.Now(),
+		RequestID:   requestID,
+		Traceparent: strings.TrimSpace(r.Header.Get("Traceparent")),
+		ClientIP:    requestClientIP(r, s.auth.TrustedProxies),
+		StartedAt:   time.Now(),
 	})
 	r = r.WithContext(ctx)
 	r.Body = http.MaxBytesReader(rw, r.Body, requestBodyLimit(r))

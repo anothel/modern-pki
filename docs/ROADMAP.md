@@ -52,9 +52,10 @@ before 100-day and 47-day public certificate operations become normal.
 
 ### Observability And Audit
 
-- Add DB, signer, and core CLI latency/error metrics beyond HTTP boundary
-  counters.
-- Add trace/span ID propagation where useful.
+- Add metrics exporter integration if expvar scraping is insufficient for the
+  selected deployment platform.
+- Add distributed span creation/propagation if an OpenTelemetry backend is
+  selected.
 - Add audit fields: auth method, API key fingerprint, user agent, state
   transition, approval reason, policy decision reason, validation evidence ref,
   old/new serial on renewal, and deployment target when available.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
 	"github.com/modern-pki/modern-pki/service/internal/domain"
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
@@ -187,6 +188,51 @@ func TestManualEnrollmentLifecycle(t *testing.T) {
 		certificateMetadata["certificate_id"] != certificate.ID ||
 		certificateMetadata["serial_number"] != certificate.SerialNumber {
 		t.Fatalf("certificate audit metadata = %#v", certificateMetadata)
+	}
+}
+
+func TestIssueCertificateRecordsSignerMetrics(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	service := New(repo, issuerClient, clock, &fakeIDGenerator{})
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{Type: domain.IdentityMachine, Name: "edge-01"})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "issuer",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert",
+		KeyRef:         "issuer-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identity.ID,
+		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    clock.now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", enrollment.ID); err != nil {
+		t.Fatalf("ApproveEnrollment returned error: %v", err)
+	}
+
+	before := observability.OperationMetricValue("signer:issue:success")
+	if _, err := service.IssueCertificate(ctx, "issuer", enrollment.ID); err != nil {
+		t.Fatalf("IssueCertificate returned error: %v", err)
+	}
+	if got := observability.OperationMetricValue("signer:issue:success") - before; got != 1 {
+		t.Fatalf("signer issue metric increment = %d, want 1", got)
 	}
 }
 

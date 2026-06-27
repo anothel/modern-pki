@@ -32,6 +32,7 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/lifecycle"
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 
 	_ "modernc.org/sqlite"
@@ -2545,6 +2546,7 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	}, map[string]string{
 		"X-Request-ID":    "req-123",
 		"X-Forwarded-For": "203.0.113.10, 10.0.0.1",
+		"Traceparent":     "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 	}, &identity)
 	assertStatus(t, status, http.StatusCreated)
 
@@ -2556,6 +2558,7 @@ func TestAuditEventsIncludeRequestMetadata(t *testing.T) {
 	}
 	metadata := apiAuditMetadata(t, events[0])
 	if metadata["request_id"] != "req-123" ||
+		metadata["traceparent"] != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" ||
 		metadata["client_ip"] != "203.0.113.10" ||
 		metadata["identity_id"] != identity.ID ||
 		metadata["result_code"] != "ok" {
@@ -2646,8 +2649,8 @@ func TestFailedRequestsCreateAuditEvents(t *testing.T) {
 
 func TestAPIKeyAuthRejectsMissingBearerToken(t *testing.T) {
 	api := newTestAPIWithAuth(t, AuthConfig{Mode: AuthModeAPIKey})
-	beforeAuthFailures := metricValue("auth:failure")
-	beforeRequests := metricValue("auth:401")
+	beforeAuthFailures := observability.EventMetricValue("auth:failure")
+	beforeRequests := observability.HTTPRequestMetricValue("auth:401")
 
 	var body errorResponse
 	status := api.doJSON(t, http.MethodGet, "/identities", "", nil, &body)
@@ -2655,10 +2658,10 @@ func TestAPIKeyAuthRejectsMissingBearerToken(t *testing.T) {
 	if body.Error != domain.ErrUnauthorized.Error() {
 		t.Fatalf("error body = %q, want %q", body.Error, domain.ErrUnauthorized.Error())
 	}
-	if got := metricValue("auth:failure") - beforeAuthFailures; got != 1 {
+	if got := observability.EventMetricValue("auth:failure") - beforeAuthFailures; got != 1 {
 		t.Fatalf("auth failure metric increment = %d, want 1", got)
 	}
-	if got := metricValue("auth:401") - beforeRequests; got != 1 {
+	if got := observability.HTTPRequestMetricValue("auth:401") - beforeRequests; got != 1 {
 		t.Fatalf("auth request metric increment = %d, want 1", got)
 	}
 }
@@ -2681,13 +2684,13 @@ func TestDebugVarsExposesModernPKIMetrics(t *testing.T) {
 	api := newTestAPI(t)
 
 	var identity apiIdentity
-	before := metricValue("identity:201")
+	before := observability.HTTPRequestMetricValue("identity:201")
 	status := api.doJSON(t, http.MethodPost, "/identities", "admin", map[string]any{
 		"type": string(domain.IdentityMachine),
 		"name": "edge-01",
 	}, &identity)
 	assertStatus(t, status, http.StatusCreated)
-	if got := metricValue("identity:201") - before; got != 1 {
+	if got := observability.HTTPRequestMetricValue("identity:201") - before; got != 1 {
 		t.Fatalf("identity request metric increment = %d, want 1", got)
 	}
 
@@ -2712,7 +2715,7 @@ func TestDebugVarsExposesModernPKIMetrics(t *testing.T) {
 
 func TestACMERateLimitMetrics(t *testing.T) {
 	api := newTestAPIWithACMEConfig(t, ACMEConfig{RateLimit: 1, RateLimitWindow: time.Minute})
-	before := metricValue("rate_limit:acme_account")
+	before := observability.EventMetricValue("rate_limit:acme_account")
 
 	_, _, nonce := api.doACMENonce(t)
 	var account apiACMEProtocolAccount
@@ -2730,7 +2733,7 @@ func TestACMERateLimitMetrics(t *testing.T) {
 	}, &problem)
 	assertStatus(t, secondResponse.StatusCode, http.StatusTooManyRequests)
 
-	if got := metricValue("rate_limit:acme_account") - before; got != 1 {
+	if got := observability.EventMetricValue("rate_limit:acme_account") - before; got != 1 {
 		t.Fatalf("rate limit metric increment = %d, want 1", got)
 	}
 }

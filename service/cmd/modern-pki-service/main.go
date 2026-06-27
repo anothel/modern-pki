@@ -28,6 +28,7 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/httpapi"
 	"github.com/modern-pki/modern-pki/service/internal/lifecycle"
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -166,7 +167,9 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := store.ApplyInitialMigration(rootCtx, db, dbDriver); err != nil {
+	if err := observeOperation("db", "migration", func() error {
+		return store.ApplyInitialMigration(rootCtx, db, dbDriver)
+	}); err != nil {
 		log.Fatalf("apply database migration: %v", err)
 	}
 
@@ -303,16 +306,31 @@ func newServiceReadinessCheck(db *sql.DB, driver string, repo store.Repository, 
 
 func newDatabaseReadinessCheck(db *sql.DB, driver string) func(context.Context) error {
 	return func(ctx context.Context) error {
-		readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if err := db.PingContext(readyCtx); err != nil {
-			return err
-		}
-		return store.CheckInitialMigration(readyCtx, db, driver)
+		return observeOperation("db", "readiness", func() error {
+			readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			if err := db.PingContext(readyCtx); err != nil {
+				return err
+			}
+			return store.CheckInitialMigration(readyCtx, db, driver)
+		})
 	}
 }
 
 func checkCoreCLI(bin string) error {
+	return observeOperation("core_cli", "readiness", func() error {
+		return checkCoreCLIAvailable(bin)
+	})
+}
+
+func observeOperation(boundary string, operation string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	observability.ObserveOperation(boundary, operation, start, err)
+	return err
+}
+
+func checkCoreCLIAvailable(bin string) error {
 	if strings.TrimSpace(bin) == "" {
 		bin = defaultCoreBin
 	}

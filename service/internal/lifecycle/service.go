@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/modern-pki/modern-pki/service/internal/corecli"
 	"github.com/modern-pki/modern-pki/service/internal/domain"
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
@@ -122,9 +123,10 @@ type Service struct {
 }
 
 type AuditRequestMetadata struct {
-	RequestID string
-	ClientIP  string
-	StartedAt time.Time
+	RequestID   string
+	Traceparent string
+	ClientIP    string
+	StartedAt   time.Time
 }
 
 type APIKeyAuditMetadata struct {
@@ -402,6 +404,13 @@ func NewWithACMEHTTP01VerifierAndAPIKeyPepper(repo store.Repository, issuer Cert
 		acmeHTTP01Verifier: verifier,
 		apiKeyPepper:       strings.TrimSpace(pepper),
 	}
+}
+
+func observeSigner[T any](operation string, fn func() (T, error)) (T, error) {
+	start := time.Now()
+	result, err := fn()
+	observability.ObserveOperation("signer", operation, start, err)
+	return result, err
 }
 
 func (s *Service) EnableProductionPolicy() {
@@ -984,7 +993,9 @@ func (s *Service) CreateOCSPResponder(ctx context.Context, actor string, req Cre
 	} else if !errors.Is(err, domain.ErrOCSPResponderNotFound) {
 		return domain.OCSPResponder{}, err
 	}
-	validation, err := s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	validation, err := observeSigner("validate_ocsp_responder", func() (corecli.ValidateOCSPResponderResult, error) {
+		return s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	})
 	if err != nil {
 		return domain.OCSPResponder{}, mapOCSPResponseError(err)
 	}
@@ -1080,7 +1091,9 @@ func (s *Service) RotateOCSPResponder(ctx context.Context, actor string, req Rot
 	} else if err != nil {
 		return domain.OCSPResponder{}, err
 	}
-	validation, err := s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	validation, err := observeSigner("validate_ocsp_responder", func() (corecli.ValidateOCSPResponderResult, error) {
+		return s.issuer.ValidateOCSPResponder(ctx, issuer.CertificatePEM, req.CertificatePEM)
+	})
 	if err != nil {
 		return domain.OCSPResponder{}, mapOCSPResponseError(err)
 	}
@@ -1812,7 +1825,9 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 		}
 	}
 
-	csrInfo, err := s.issuer.InspectCSR(ctx, req.CSRPEM)
+	csrInfo, err := observeSigner("inspect_csr", func() (corecli.CSRInfo, error) {
+		return s.issuer.InspectCSR(ctx, req.CSRPEM)
+	})
 	if err != nil {
 		return domain.Enrollment{}, mapCSRInspectError(err)
 	}
@@ -1971,7 +1986,9 @@ func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, ac
 		return domain.Enrollment{}, err
 	}
 
-	csrInfo, err := s.issuer.InspectCSR(ctx, createReq.CSRPEM)
+	csrInfo, err := observeSigner("inspect_csr", func() (corecli.CSRInfo, error) {
+		return s.issuer.InspectCSR(ctx, createReq.CSRPEM)
+	})
 	if err != nil {
 		return domain.Enrollment{}, mapCSRInspectError(err)
 	}
@@ -2195,26 +2212,28 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 		return domain.Certificate{}, err
 	}
 	if shouldSign {
-		result, err := s.issuer.Issue(ctx, corecli.IssueRequest{
-			CSRPEM:                     enrollment.CSRPEM,
-			IssuerCertificatePEM:       issuer.CertificatePEM,
-			IssuerKeyRef:               issuer.KeyRef,
-			Subject:                    enrollment.RequestedSubject,
-			DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
-			IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
-			NotBefore:                  now,
-			NotAfter:                   enrollment.RequestedNotAfter,
-			SignatureAlgorithm:         "ecdsa_with_sha256",
-			ProfileID:                  profile.ID,
-			BasicConstraintsCritical:   profile.BasicConstraints.Critical,
-			BasicConstraintsCA:         profile.BasicConstraints.CA,
-			BasicConstraintsMaxPathLen: profile.BasicConstraints.MaxPathLen,
-			KeyUsageCritical:           profile.KeyUsage.Critical,
-			KeyUsage:                   append([]string(nil), profile.KeyUsage.Values...),
-			ExtendedKeyUsageCritical:   profile.ExtendedKeyUsage.Critical,
-			ExtendedKeyUsage:           append([]string(nil), profile.ExtendedKeyUsage.Values...),
-			SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
-			AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
+		result, err := observeSigner("issue", func() (corecli.IssueResult, error) {
+			return s.issuer.Issue(ctx, corecli.IssueRequest{
+				CSRPEM:                     enrollment.CSRPEM,
+				IssuerCertificatePEM:       issuer.CertificatePEM,
+				IssuerKeyRef:               issuer.KeyRef,
+				Subject:                    enrollment.RequestedSubject,
+				DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
+				IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
+				NotBefore:                  now,
+				NotAfter:                   enrollment.RequestedNotAfter,
+				SignatureAlgorithm:         "ecdsa_with_sha256",
+				ProfileID:                  profile.ID,
+				BasicConstraintsCritical:   profile.BasicConstraints.Critical,
+				BasicConstraintsCA:         profile.BasicConstraints.CA,
+				BasicConstraintsMaxPathLen: profile.BasicConstraints.MaxPathLen,
+				KeyUsageCritical:           profile.KeyUsage.Critical,
+				KeyUsage:                   append([]string(nil), profile.KeyUsage.Values...),
+				ExtendedKeyUsageCritical:   profile.ExtendedKeyUsage.Critical,
+				ExtendedKeyUsage:           append([]string(nil), profile.ExtendedKeyUsage.Values...),
+				SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
+				AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
+			})
 		})
 		if err != nil {
 			return domain.Certificate{}, mapIssueError(err)
@@ -2595,13 +2614,15 @@ func (s *Service) PublishCRL(ctx context.Context, actor string, req PublishCRLRe
 			Reason:       string(entry.Reason),
 		})
 	}
-	result, err := s.issuer.GenerateCRL(ctx, corecli.GenerateCRLRequest{
-		IssuerCertificatePEM: issuer.CertificatePEM,
-		IssuerKeyRef:         issuer.KeyRef,
-		CRLNumber:            crlNumber,
-		ThisUpdate:           now,
-		NextUpdate:           req.NextUpdate,
-		RevokedCertificates:  revokedCertificates,
+	result, err := observeSigner("generate_crl", func() (corecli.GenerateCRLResult, error) {
+		return s.issuer.GenerateCRL(ctx, corecli.GenerateCRLRequest{
+			IssuerCertificatePEM: issuer.CertificatePEM,
+			IssuerKeyRef:         issuer.KeyRef,
+			CRLNumber:            crlNumber,
+			ThisUpdate:           now,
+			NextUpdate:           req.NextUpdate,
+			RevokedCertificates:  revokedCertificates,
+		})
 	})
 	if err != nil {
 		return domain.CRLPublication{}, mapCRLError(err)
@@ -2644,7 +2665,9 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 		return OCSPResponse{}, domain.ErrInvalidRequest
 	}
 	now := s.clock.Now()
-	info, err := s.issuer.InspectOCSP(ctx, requestDER)
+	info, err := observeSigner("inspect_ocsp", func() (corecli.OCSPRequestInfo, error) {
+		return s.issuer.InspectOCSP(ctx, requestDER)
+	})
 	if err != nil {
 		return OCSPResponse{}, mapOCSPDecodeError(err)
 	}
@@ -2668,13 +2691,15 @@ func (s *Service) RespondOCSP(ctx context.Context, actor string, requestDER []by
 		return OCSPResponse{}, err
 	}
 
-	result, err := s.issuer.GenerateOCSPResponse(ctx, corecli.GenerateOCSPResponseRequest{
-		RequestDER:           append([]byte(nil), requestDER...),
-		IssuerCertificatePEM: signer.CertificatePEM,
-		IssuerKeyRef:         signer.KeyRef,
-		ThisUpdate:           now,
-		NextUpdate:           now.Add(time.Hour),
-		Certificates:         statuses,
+	result, err := observeSigner("generate_ocsp_response", func() (corecli.GenerateOCSPResponseResult, error) {
+		return s.issuer.GenerateOCSPResponse(ctx, corecli.GenerateOCSPResponseRequest{
+			RequestDER:           append([]byte(nil), requestDER...),
+			IssuerCertificatePEM: signer.CertificatePEM,
+			IssuerKeyRef:         signer.KeyRef,
+			ThisUpdate:           now,
+			NextUpdate:           now.Add(time.Hour),
+			Certificates:         statuses,
+		})
 	})
 	if err != nil {
 		return OCSPResponse{}, mapOCSPResponseError(err)
@@ -3339,6 +3364,9 @@ func auditMetadataJSON(ctx context.Context, fields map[string]any, resultCode st
 		if requestMetadata.RequestID != "" {
 			metadata["request_id"] = requestMetadata.RequestID
 		}
+		if requestMetadata.Traceparent != "" {
+			metadata["traceparent"] = requestMetadata.Traceparent
+		}
 		if requestMetadata.ClientIP != "" {
 			metadata["client_ip"] = requestMetadata.ClientIP
 		}
@@ -3531,7 +3559,9 @@ func (s *Service) ocspIssuersByHash(ctx context.Context, ids []corecli.OCSPCerti
 			continue
 		}
 		for _, hashAlgorithm := range hashAlgorithms {
-			info, err := s.issuer.InspectOCSPIssuer(ctx, issuer.CertificatePEM, hashAlgorithm)
+			info, err := observeSigner("inspect_ocsp_issuer", func() (corecli.OCSPIssuerInfo, error) {
+				return s.issuer.InspectOCSPIssuer(ctx, issuer.CertificatePEM, hashAlgorithm)
+			})
 			if err != nil {
 				return nil, mapOCSPDecodeError(err)
 			}

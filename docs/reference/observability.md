@@ -57,6 +57,36 @@ rate_limit:acme_challenge
 rate_limit:acme_finalize
 ```
 
+`modern_pki_operations_total` records non-HTTP operation counters keyed by:
+
+```text
+<boundary>:<operation>:<status>
+```
+
+`modern_pki_operation_latency_ms_total` records the matching cumulative
+operation latency in milliseconds. Current boundary and operation values
+include:
+
+```text
+db:migration
+db:readiness
+core_cli:readiness
+signer:validate_ocsp_responder
+signer:inspect_csr
+signer:issue
+signer:generate_crl
+signer:inspect_ocsp
+signer:generate_ocsp_response
+signer:inspect_ocsp_issuer
+```
+
+Status values are:
+
+```text
+success
+error
+```
+
 These counters are process-local. Use the deployment platform or metrics
 collector to scrape every service node.
 
@@ -87,16 +117,17 @@ API tokens, webhook secrets, database passwords, or private keys to logs.
 
 HTTP responses include `X-Request-ID`. If the request supplies `X-Request-ID`,
 the service preserves it. Otherwise the service generates one. Audit metadata
-records `request_id`, `client_ip`, and `elapsed_ms` when request context is
-available.
+records `request_id`, `traceparent`, `client_ip`, and `elapsed_ms` when request
+context is available.
 
 `X-Forwarded-For` is trusted only when the direct peer matches
 `MODERN_PKI_TRUSTED_PROXIES`.
 
 ## Remaining Gaps
 
-- DB, signer, and core CLI latency/error histograms are not implemented yet.
-- Distributed trace/span propagation is not implemented beyond request ID
-  correlation.
+- Metrics are process-local expvar maps, not exported Prometheus/OpenTelemetry
+  histograms.
+- Distributed trace/span propagation is limited to preserving inbound
+  `traceparent` in audit metadata.
 - Audit retention policy, tamper-evident storage, and SIEM export examples are
   separate roadmap items.

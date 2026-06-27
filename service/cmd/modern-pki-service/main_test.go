@@ -18,6 +18,7 @@ import (
 
 	"github.com/modern-pki/modern-pki/service/internal/domain"
 	"github.com/modern-pki/modern-pki/service/internal/httpapi"
+	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 )
 
@@ -535,6 +536,40 @@ func TestServiceReadinessCheckAcceptsActiveIssuerAndResponderKeyRefs(t *testing.
 
 	if err := newServiceReadinessCheck(db, "sqlite", repo, coreBin)(ctx); err != nil {
 		t.Fatalf("readiness returned error: %v", err)
+	}
+}
+
+func TestDatabaseReadinessCheckRecordsMetrics(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if err := store.ApplyInitialMigration(ctx, db, "sqlite"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	before := observability.OperationMetricValue("db:readiness:success")
+	if err := newDatabaseReadinessCheck(db, "sqlite")(ctx); err != nil {
+		t.Fatalf("readiness returned error: %v", err)
+	}
+	if got := observability.OperationMetricValue("db:readiness:success") - before; got != 1 {
+		t.Fatalf("db readiness metric increment = %d, want 1", got)
+	}
+}
+
+func TestCoreCLIReadinessRecordsMetrics(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Executable returned error: %v", err)
+	}
+	before := observability.OperationMetricValue("core_cli:readiness:success")
+	if err := checkCoreCLI(exe); err != nil {
+		t.Fatalf("checkCoreCLI returned error: %v", err)
+	}
+	if got := observability.OperationMetricValue("core_cli:readiness:success") - before; got != 1 {
+		t.Fatalf("core cli readiness metric increment = %d, want 1", got)
 	}
 }
 
