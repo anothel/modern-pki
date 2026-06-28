@@ -50,6 +50,7 @@ type CSRInfo struct {
 	PublicKeyAlgorithm string   `json:"public_key_algorithm"`
 	PublicKeySizeBits  int      `json:"public_key_size_bits"`
 	SignatureAlgorithm string   `json:"signature_algorithm"`
+	ExtensionOIDs      []string `json:"extension_oids"`
 }
 
 type RevokedCertificate struct {

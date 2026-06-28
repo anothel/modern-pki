@@ -56,7 +56,7 @@ if(BUILD_TESTING)
     add_executable(modern_pki_core_cli_contract_test
         tests/core_cli_contract_test.cpp
     )
-    target_link_libraries(modern_pki_core_cli_contract_test PRIVATE modern_pki::core)
+    target_link_libraries(modern_pki_core_cli_contract_test PRIVATE modern_pki::core OpenSSL::Crypto)
     add_dependencies(modern_pki_core_cli_contract_test modern-pki-core)
     add_test(
         NAME modern_pki.core_cli_contract

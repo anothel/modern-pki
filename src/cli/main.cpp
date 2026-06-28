@@ -575,7 +575,8 @@ std::string csr_info_to_json(const modern_pki::core::CsrInfo &info)
 	return "{\"subject\":" + json_string(info.subject) + ",\"dns_names\":" + json_string_array(info.dns_names) + ",\"ip_addresses\":" + json_string_array(info.ip_addresses) +
 	       ",\"public_key_algorithm\":" + json_string(info.public_key_algorithm) +
 	       ",\"public_key_size_bits\":" + std::to_string(info.public_key_size_bits) +
-	       ",\"signature_algorithm\":" + json_string(info.signature_algorithm) + "}";
+	       ",\"signature_algorithm\":" + json_string(info.signature_algorithm) +
+	       ",\"extension_oids\":" + json_string_array(info.extension_oids) + "}";
 }
 
 std::string issue_result_to_json(const modern_pki::core::IssueResult &result)

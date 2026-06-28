@@ -13,6 +13,10 @@ signing happens.
 - Subject Alternative Name DNS/IP patterns.
 - CSR public key algorithm allow-list and minimum key size.
 - Selected signing algorithm allow-list.
+- CSR linting rejects CN-only/missing SAN requests, forbidden CSR-requested Key
+  Usage, Extended Key Usage, and Basic Constraints extensions, wildcards without
+  an explicit wildcard profile pattern, public TLS IP SANs without an explicit
+  profile range, and SAN lists over 100 entries.
 - Subject Key Identifier and Authority Key Identifier settings.
 - Public TLS CAA DNSSEC and RFC 8657 parameter checks.
 - Issued DER assertions for SAN, KU, EKU, Basic Constraints, AIA, CRL
@@ -29,5 +33,5 @@ signing happens.
 
 ## Gaps
 
-- Remaining CSR linting for malformed PEM, forbidden extensions, CN/SAN edge
-  cases, wildcards, IP SANs, and oversized SAN lists.
+- Remaining certificate correctness negatives for expired chains, name
+  constraints, and public TLS lint integration if public issuance is enabled.

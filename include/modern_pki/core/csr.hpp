@@ -14,6 +14,7 @@ struct CsrInfo
 	std::string public_key_algorithm;
 	int public_key_size_bits = 0;
 	std::string signature_algorithm;
+	std::vector<std::string> extension_oids;
 };
 
 [[nodiscard]] CsrInfo inspect_csr_pem(const std::string &csr_pem);

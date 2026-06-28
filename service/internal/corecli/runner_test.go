@@ -114,6 +114,9 @@ func TestRunnerMapsCSRInfoJSON(t *testing.T) {
 	if info.PublicKeyAlgorithm != "rsa" || info.PublicKeySizeBits != 2048 || info.SignatureAlgorithm != "sha256" {
 		t.Fatalf("CSR key metadata = algorithm:%q size:%d signature:%q", info.PublicKeyAlgorithm, info.PublicKeySizeBits, info.SignatureAlgorithm)
 	}
+	if len(info.ExtensionOIDs) != 2 || info.ExtensionOIDs[0] != "2.5.29.17" || info.ExtensionOIDs[1] != "2.5.29.15" {
+		t.Fatalf("ExtensionOIDs = %#v", info.ExtensionOIDs)
+	}
 }
 
 func TestRunnerMapsCSRInspectFailure(t *testing.T) {
@@ -818,7 +821,7 @@ func windowsInspectScript(success bool) string {
 
 	return strings.Join([]string{
 		"@echo off",
-		"echo {^\"subject^\":^\"CN=leaf^\",^\"dns_names^\": [^\"leaf.example.test^\", ^\"alt.example.test^\"],^\"ip_addresses^\": [^\"127.0.0.1^\"],^\"public_key_algorithm^\":^\"rsa^\",^\"public_key_size_bits^\":2048,^\"signature_algorithm^\":^\"sha256^\"}",
+		"echo {^\"subject^\":^\"CN=leaf^\",^\"dns_names^\": [^\"leaf.example.test^\", ^\"alt.example.test^\"],^\"ip_addresses^\": [^\"127.0.0.1^\"],^\"public_key_algorithm^\":^\"rsa^\",^\"public_key_size_bits^\":2048,^\"signature_algorithm^\":^\"sha256^\",^\"extension_oids^\": [^\"2.5.29.17^\", ^\"2.5.29.15^\"]}",
 		"exit /b 0",
 		"",
 	}, "\r\n")
@@ -1069,7 +1072,7 @@ exit 7
 	}
 
 	return `#!/bin/sh
-printf '%s\n' '{"subject":"CN=leaf","dns_names":["leaf.example.test","alt.example.test"],"ip_addresses":["127.0.0.1"],"public_key_algorithm":"rsa","public_key_size_bits":2048,"signature_algorithm":"sha256"}'
+printf '%s\n' '{"subject":"CN=leaf","dns_names":["leaf.example.test","alt.example.test"],"ip_addresses":["127.0.0.1"],"public_key_algorithm":"rsa","public_key_size_bits":2048,"signature_algorithm":"sha256","extension_oids":["2.5.29.17","2.5.29.15"]}'
 exit 0
 `
 }

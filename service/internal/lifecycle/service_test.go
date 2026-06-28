@@ -2656,6 +2656,100 @@ func TestCreateEnrollmentEnforcesCertificateProfilePolicy(t *testing.T) {
 	}
 }
 
+func TestCreateEnrollmentRejectsCSRPolicyViolations(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	oversizedDNS := make([]string, 101)
+	for i := range oversizedDNS {
+		oversizedDNS[i] = fmt.Sprintf("host-%03d.example.test", i)
+	}
+
+	for _, tt := range []struct {
+		name          string
+		csrInfo       corecli.CSRInfo
+		mutateRequest func(*CreateEnrollmentRequest)
+		mutateProfile func(*CreateCertificateProfileRequest)
+	}{
+		{
+			name:    "missing san",
+			csrInfo: corecli.CSRInfo{Subject: "CN=edge-01"},
+			mutateRequest: func(req *CreateEnrollmentRequest) {
+				req.RequestedDNSNames = nil
+				req.RequestedIPAddresses = nil
+			},
+		},
+		{
+			name: "forbidden extension",
+			csrInfo: corecli.CSRInfo{
+				Subject:       "CN=edge-01",
+				DNSNames:      []string{"edge-01.example.test"},
+				IPAddresses:   []string{"192.0.2.10"},
+				ExtensionOIDs: []string{"2.5.29.15"},
+			},
+		},
+		{
+			name: "wildcard without wildcard profile",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"*.example.test"},
+				IPAddresses: []string{"192.0.2.10"},
+			},
+			mutateRequest: func(req *CreateEnrollmentRequest) {
+				req.RequestedDNSNames = []string{"*.example.test"}
+			},
+			mutateProfile: func(profileReq *CreateCertificateProfileRequest) {
+				profileReq.AllowedDNSPatterns = nil
+			},
+		},
+		{
+			name: "ip san without profile range",
+			csrInfo: corecli.CSRInfo{
+				Subject:     "CN=edge-01",
+				DNSNames:    []string{"edge-01.example.test"},
+				IPAddresses: []string{"192.0.2.10"},
+			},
+			mutateProfile: func(profileReq *CreateCertificateProfileRequest) {
+				profileReq.PublicTLS = true
+				profileReq.AllowedIPRanges = nil
+			},
+		},
+		{
+			name: "oversized san list",
+			csrInfo: corecli.CSRInfo{
+				Subject:  "CN=edge-01",
+				DNSNames: oversizedDNS,
+			},
+			mutateRequest: func(req *CreateEnrollmentRequest) {
+				req.RequestedDNSNames = oversizedDNS
+				req.RequestedIPAddresses = nil
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := New(store.NewMemoryStore(), &fakeIssuer{csrInfo: tt.csrInfo}, fixedClock{now: now}, &fakeIDGenerator{})
+			identity, issuer, profile := createProfilePolicyFixtureWithProfileMutation(t, ctx, service, tt.mutateProfile)
+			req := CreateEnrollmentRequest{
+				IdentityID:           identity.ID,
+				IssuerID:             issuer.ID,
+				CertificateProfileID: profile.ID,
+				CSRPEM:               "csr-pem",
+				RequestedSubject:     "CN=edge-01",
+				RequestedDNSNames:    []string{"edge-01.example.test"},
+				RequestedIPAddresses: []string{"192.0.2.10"},
+				RequestedNotAfter:    now.Add(24 * time.Hour),
+			}
+			if tt.mutateRequest != nil {
+				tt.mutateRequest(&req)
+			}
+
+			_, err := service.CreateEnrollment(ctx, "operator", req)
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("CreateEnrollment error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
 func TestIssueCertificateEnforcesProfilePolicyBeforeSigning(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)

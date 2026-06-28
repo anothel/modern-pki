@@ -269,6 +269,7 @@ type FinalizeACMEOrderRequest struct {
 const (
 	defaultACMEAuthorizationLifetime = 24 * time.Hour
 	defaultIssuanceSigningLease      = 5 * time.Minute
+	maxCSRSANs                       = 100
 )
 
 var publicTLSValidityCeilingSchedule = []struct {
@@ -2322,7 +2323,7 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 
 	now := s.clock.Now()
 	var csrInfo corecli.CSRInfo
-	if profileRequiresCSRAlgorithmPolicy(profile) {
+	if profileRequiresCSRPolicy(profile) {
 		csrInfo, err = observeSigner("inspect_csr", func() (corecli.CSRInfo, error) {
 			return s.issuer.InspectCSR(ctx, enrollment.CSRPEM)
 		})
@@ -4237,6 +4238,9 @@ func validateCreateACMEOrderRequest(req CreateACMEOrderRequest, now time.Time) e
 }
 
 func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain.CertificateProfile, csrInfo corecli.CSRInfo, now time.Time) error {
+	if err := validateCSRPolicy(req, profile, csrInfo); err != nil {
+		return err
+	}
 	if profile.ID == "" {
 		return nil
 	}
@@ -4268,8 +4272,41 @@ func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain
 	return nil
 }
 
-func profileRequiresCSRAlgorithmPolicy(profile domain.CertificateProfile) bool {
-	return len(profile.AllowedKeyAlgorithms) != 0 || profile.MinKeySizeBits > 0
+func validateCSRPolicy(req CreateEnrollmentRequest, profile domain.CertificateProfile, csrInfo corecli.CSRInfo) error {
+	totalSANs := len(req.RequestedDNSNames) + len(req.RequestedIPAddresses)
+	if totalSANs == 0 || totalSANs > maxCSRSANs {
+		return domain.ErrInvalidRequest
+	}
+	for _, oid := range csrInfo.ExtensionOIDs {
+		switch strings.TrimSpace(oid) {
+		case "2.5.29.15", "2.5.29.19", "2.5.29.37":
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, dnsName := range req.RequestedDNSNames {
+		if strings.HasPrefix(strings.TrimSpace(dnsName), "*.") && !wildcardAllowedByProfile(dnsName, profile.AllowedDNSPatterns) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	if profile.PublicTLS && len(req.RequestedIPAddresses) != 0 && len(profile.AllowedIPRanges) == 0 {
+		return domain.ErrInvalidRequest
+	}
+	return nil
+}
+
+func wildcardAllowedByProfile(name string, patterns []string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if strings.HasPrefix(pattern, "*.") && dnsAllowedByProfile(name, []string{pattern}) {
+			return true
+		}
+	}
+	return false
+}
+
+func profileRequiresCSRPolicy(profile domain.CertificateProfile) bool {
+	return profile.ID != "" || len(profile.AllowedKeyAlgorithms) != 0 || profile.MinKeySizeBits > 0
 }
 
 func profileSignatureAlgorithm(profile domain.CertificateProfile) string {

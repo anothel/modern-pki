@@ -480,6 +480,7 @@ int main(int argc, char *argv[])
 	assert(request.key_usage_critical);
 	const std::vector<std::string> expected_key_usage{"digital_signature", "key_encipherment"};
 	const std::vector<std::string> expected_extended_key_usage{"server_auth"};
+	const std::vector<std::string> expected_extension_oids{"2.5.29.17", "2.5.29.15"};
 	assert(request.key_usage == expected_key_usage);
 	assert(request.extended_key_usage == expected_extended_key_usage);
 	assert(request.subject_key_identifier);
@@ -505,6 +506,7 @@ int main(int argc, char *argv[])
 	csr_info.public_key_algorithm = "rsa";
 	csr_info.public_key_size_bits = 2048;
 	csr_info.signature_algorithm = "sha256";
+	csr_info.extension_oids = {"2.5.29.17", "2.5.29.15"};
 
 	assert(csr_info.subject == "CN=leaf");
 	assert(csr_info.dns_names == std::vector<std::string>{"leaf.example.test"});
@@ -512,6 +514,7 @@ int main(int argc, char *argv[])
 	assert(csr_info.public_key_algorithm == "rsa");
 	assert(csr_info.public_key_size_bits == 2048);
 	assert(csr_info.signature_algorithm == "sha256");
+	assert(csr_info.extension_oids == expected_extension_oids);
 
 	return 0;
 }

@@ -1,3 +1,4 @@
+#include "modern_pki/core/csr.hpp"
 #include "modern_pki/core/issue.hpp"
 
 #include <openssl/asn1.h>
@@ -138,6 +139,17 @@ void add_extension(X509 *certificate, X509 *issuer, int nid, const char *value)
 	X509_EXTENSION_free(extension);
 }
 
+void add_csr_extension(X509_REQ *request, int nid, const char *value)
+{
+	STACK_OF(X509_EXTENSION) *extensions = sk_X509_EXTENSION_new_null();
+	require(extensions != nullptr);
+	X509_EXTENSION *extension = X509V3_EXT_conf_nid(nullptr, nullptr, nid, value);
+	require(extension != nullptr);
+	require(sk_X509_EXTENSION_push(extensions, extension) == 1);
+	require(X509_REQ_add_extensions(request, extensions) == 1);
+	sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
+}
+
 std::string certificate_to_pem(X509 *certificate)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
@@ -196,6 +208,8 @@ X509ReqPtr make_csr(EVP_PKEY *key)
 	require(X509_REQ_set_version(request.get(), 0) == 1);
 	set_name(X509_REQ_get_subject_name(request.get()), "leaf");
 	require(X509_REQ_set_pubkey(request.get(), key) == 1);
+	add_csr_extension(request.get(), NID_subject_alt_name, "DNS:edge-01.example.test");
+	add_csr_extension(request.get(), NID_key_usage, "digitalSignature");
 	require(X509_REQ_sign(request.get(), key, EVP_sha256()) > 0);
 	return request;
 }
@@ -422,6 +436,10 @@ int main(int argc, char *argv[])
 
 	modern_pki::core::IssueRequest request;
 	request.csr_pem = csr_to_pem(csr.get());
+	const modern_pki::core::CsrInfo csr_info = modern_pki::core::inspect_csr_pem(request.csr_pem);
+	require(csr_info.extension_oids.size() == 2);
+	require(csr_info.extension_oids[0] == "2.5.29.17");
+	require(csr_info.extension_oids[1] == "2.5.29.15");
 	request.issuer_certificate_pem = certificate_to_pem(ca_certificate.get());
 	request.issuer_key_ref = issuer_key_path.string();
 	request.subject = "CN=leaf";

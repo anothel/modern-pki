@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace modern_pki::core
 {
@@ -141,6 +142,25 @@ std::string ip_address_to_text(const ASN1_OCTET_STRING *value)
 	throw std::runtime_error{"csr.parse_failed"};
 }
 
+std::string object_to_oid(const ASN1_OBJECT *object)
+{
+	if (object == nullptr)
+	{
+		throw std::runtime_error{"csr.parse_failed"};
+	}
+	const int length = OBJ_obj2txt(nullptr, 0, object, 1);
+	if (length <= 0)
+	{
+		throw std::runtime_error{"csr.parse_failed"};
+	}
+	std::vector<char> buffer(static_cast<std::vector<char>::size_type>(length) + 1U);
+	if (OBJ_obj2txt(buffer.data(), static_cast<int>(buffer.size()), object, 1) != length)
+	{
+		throw std::runtime_error{"csr.parse_failed"};
+	}
+	return std::string{buffer.data(), static_cast<std::string::size_type>(length)};
+}
+
 void append_subject_alt_names_from_extension(const X509_EXTENSION *extension, CsrInfo &info)
 {
 	GeneralNamesPtr names{static_cast<GENERAL_NAMES *>(X509V3_EXT_d2i(const_cast<X509_EXTENSION *>(extension)))};
@@ -188,7 +208,8 @@ void append_subject_alt_names(X509_REQ *request, CsrInfo &info)
 			throw std::runtime_error{"csr.parse_failed"};
 		}
 		const ASN1_OBJECT *object = X509_EXTENSION_get_object(const_cast<X509_EXTENSION *>(extension));
-		if (object != nullptr && OBJ_obj2nid(object) == NID_subject_alt_name)
+		info.extension_oids.push_back(object_to_oid(object));
+		if (OBJ_obj2nid(object) == NID_subject_alt_name)
 		{
 			append_subject_alt_names_from_extension(extension, info);
 		}
