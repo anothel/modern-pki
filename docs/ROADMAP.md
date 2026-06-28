@@ -39,22 +39,10 @@ Private PKI is not forced to follow public Web PKI timelines, but the same
 timeline is a useful pressure test: manual renewal and deployment must disappear
 before 100-day and 47-day public certificate operations become normal.
 
-## P0: Release Trust And Contract Parity
-
-Goal: make a pre-1.0 release candidate believable without adding new product
-surface.
-
-- Add CI status evidence and badge/link strategy once the canonical GitHub
-  workflow source is stable.
-- Add README quickstart smoke validation or a deterministic command checklist.
-- Add `CHANGELOG.md` before any tagged release candidate.
-
 ## P0: PKI Failure-Mode Coverage
 
 Goal: close the highest-risk correctness gaps before refactoring or expansion.
 
-- Add ACME malformed JWS, nonce reuse, badNonce retry, account key mismatch,
-  KID base URL, and replay tests.
 - Extend PostgreSQL parity coverage for lifecycle, ACME nonce, outbox, audit,
   and migration behavior where SQLite/memory parity already exists.
 

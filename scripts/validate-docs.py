@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED = [
     "LICENSE",
+    "CHANGELOG.md",
     "README.md",
     "SECURITY.md",
     "CONTRIBUTING.md",

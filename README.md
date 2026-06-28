@@ -64,6 +64,38 @@ go test ./...
 go build ./cmd/modern-pki-service
 ```
 
+## Quickstart Smoke Checklist
+
+Use this deterministic checklist before trusting a local change or release
+candidate. Expected output is shown after each command.
+
+```powershell
+python scripts\validate-docs.py
+# docs ok
+
+python scripts\test_webhook_receiver_verification.py
+# webhook receiver verification tests passed: 7
+
+python scripts\test_validate_service_contracts.py
+# service contract validator tests ok
+
+python scripts\validate-service-contracts.py
+# service contracts ok
+
+python scripts\test_security_baseline_scan.py
+# security baseline scan tests ok
+
+python scripts\security-baseline-scan.py
+# secret baseline scan ok
+
+cd service
+go test ./...
+# all listed packages exit ok
+
+go build ./cmd/modern-pki-service
+# exit 0
+```
+
 ## Run Locally
 
 Build `modern-pki-core` first, then run the service with `MODERN_PKI_CORE_BIN` pointing at the CLI binary.
@@ -93,6 +125,7 @@ go run ./cmd/modern-pki-service
 
 - [Service README](service/README.md): API behavior, configuration, ACME status, auth, workers, and operator endpoints.
 - [Roadmap](docs/ROADMAP.md): future-only priorities, defer/delete rules, and remaining risk areas.
+- [Changelog](CHANGELOG.md): release-candidate notes, verification baseline, and known gaps.
 - [Release readiness action plan](docs/reference/release-readiness-action-plan.md): current grouped execution plan from the 2026-06-28 analysis.
 - [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
 - [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
@@ -128,11 +161,11 @@ go run ./cmd/modern-pki-service
 - [Public TLS readiness runbook](docs/runbooks/public-tls-readiness.md): validity ceilings, validation reuse, CAA checks, and mass-revocation drill.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
-Current imported-analysis execution batch: release trust and PKI failure-mode
-coverage. The repo keeps docs-as-code validation, service route/OpenAPI parity,
-config/doc parity, public error mapping parity, and a high-confidence secret
-baseline scan in CI. Next work is quickstart smoke evidence, `CHANGELOG.md`,
-and PKI failure-mode coverage before new product surface.
+Current imported-analysis execution batch: PKI failure-mode coverage. The repo
+keeps quickstart smoke commands, docs-as-code validation,
+service route/OpenAPI parity, config/doc parity, public error mapping parity,
+and a high-confidence secret baseline scan in CI. Next work is PostgreSQL
+parity coverage before new product surface.
 
 ## License
 

@@ -45,20 +45,29 @@ Certbot smoke requires Linux or elevated Windows with certbot installed.
 
 1. Confirm `git status --short` contains only intended files.
 2. Run `git diff --check`.
-3. Review endpoint, config, migration, and runbook changes.
-4. Record exact verification commands and results.
-5. Record known gaps from [ROADMAP](../ROADMAP.md), especially contract parity,
-   PKI failure-mode coverage, certbot coverage, and deferred EAB/DNS-01
-   conditions.
-6. Attach compatibility evidence from
+3. Run the root README quickstart smoke checklist.
+4. Review endpoint, config, migration, and runbook changes.
+5. Record exact verification commands and results in `CHANGELOG.md` or release
+   notes.
+6. Record known gaps from [ROADMAP](../ROADMAP.md), especially PostgreSQL
+   parity, certbot coverage, and deferred EAB/DNS-01 conditions.
+7. Attach the GitHub Actions run URL for `.github/workflows/ci.yml`. If this
+   repository is published on GitHub, add a README badge/link using the
+   canonical remote slug:
+
+   ```markdown
+   [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+   ```
+
+8. Attach compatibility evidence from
    [ACME client compatibility](../acme-client-compatibility.md) when ACME
    behavior changed.
-7. Attach RFC 8555 evidence from
+9. Attach RFC 8555 evidence from
    [ACME conformance](../acme-rfc8555-conformance.md) when ACME behavior
    changed.
-8. Attach route/OpenAPI, config/docs, API error mapping, docs validation, and
+10. Attach route/OpenAPI, config/docs, API error mapping, docs validation, and
    secret baseline scan evidence from CI.
-9. Attach SBOM, SAST/SCA, artifact signing, and compatibility matrix evidence
+11. Attach SBOM, SAST/SCA, artifact signing, and compatibility matrix evidence
    once release tooling is selected.
 
 ## Version Metadata

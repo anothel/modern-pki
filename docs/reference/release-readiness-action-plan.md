@@ -19,6 +19,7 @@ and release-repeatable operations.
 | Docs-as-code | `scripts/validate-docs.py` checks required docs, README links, OpenAPI JSON, and license state. |
 | Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
+| Release trust | README quickstart smoke checklist, `CHANGELOG.md`, and CI run/badge strategy in the release process. |
 | Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory and SQLite tests cover duplicate certificate finalization keys and stale issuance-attempt finalization updates. |
 | CI shape | Workflow includes docs validation, secret baseline, Go tests/build, PostgreSQL integration, C++ CMake, and CTest. |
 | Lifecycle scope | Identity, issuer, profile, enrollment, approval, issuance, renewal, reissue, revocation, suspension, CRL, OCSP, audit, outbox, webhook, and ACME foundations exist. |
@@ -27,24 +28,10 @@ and release-repeatable operations.
 
 ## Execution Order
 
-### Batch 1: Release Trust
-
-Close these before adding new operator/product surface:
-
-- Add README quickstart command smoke check or deterministic manual checklist.
-- Add CHANGELOG.
-
-Exit criteria:
-
-- CI and local verification commands are known and documented.
-- OpenAPI, service docs, and error docs fail CI when they drift from code.
-- A release candidate can be reviewed from recorded command output, not trust.
-
-### Batch 2: PKI Failure Modes
+### Batch 1: PKI Failure Modes
 
 Close the highest-risk PKI correctness paths:
 
-- ACME nonce/JWS/account replay and mismatch cases.
 - PostgreSQL parity for lifecycle, outbox, audit, nonce, and migration behavior
   where memory/SQLite parity already exists.
 
@@ -53,7 +40,7 @@ Exit criteria:
 - Tests cover the failure modes most likely to create mis-issuance, duplicate
   signing, replay, or untraceable state.
 
-### Batch 3: Certificate Correctness
+### Batch 2: Certificate Correctness
 
 Harden CSR and issued-certificate policy:
 
@@ -68,7 +55,7 @@ Exit criteria:
 - Approval and signing reject known bad CSRs and profiles.
 - Issued DER is parsed and asserted, not trusted by request shape alone.
 
-### Batch 4: Release And Supply Chain
+### Batch 3: Release And Supply Chain
 
 Make release artifacts auditable:
 
@@ -83,7 +70,7 @@ Exit criteria:
 - A release candidate includes provenance, dependency, compatibility, and
   security-scan evidence.
 
-### Batch 5: Operations And Key Boundary
+### Batch 4: Operations And Key Boundary
 
 Raise production-operating confidence:
 
@@ -115,7 +102,7 @@ Exit criteria:
 
 | Analysis recommendation | Project action |
 | --- | --- |
-| Build a trustworthy release candidate first. | P0 Release Trust and this action plan Batch 1. |
+| Build a trustworthy release candidate first. | README quickstart smoke checklist, CHANGELOG, CI workflow shape, and release-process evidence strategy exist. |
 | Automate API/docs/code parity. | Route/OpenAPI, config/doc, error-envelope parity checks. |
 | Strengthen ACME compatibility. | Certbot smoke plus fixture conversion and compatibility matrix. |
 | Strengthen CSR/certificate correctness. | CSR linting, profile algorithm policy, DER golden tests. |
