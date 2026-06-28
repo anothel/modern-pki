@@ -315,9 +315,23 @@ func testListCertificatesExpiringWithin(t *testing.T, repo Repository) {
 	}
 }
 
-func TestMemoryStoreRejectsDuplicateCertificateFinalizationKeys(t *testing.T) {
+func TestStoreRejectsDuplicateCertificateFinalizationKeys(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		repo Repository
+	}{
+		{name: "memory", repo: NewMemoryStore()},
+		{name: "sqlite", repo: newTestSQLiteRepository(t)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			testRejectsDuplicateCertificateFinalizationKeys(t, tt.repo)
+		})
+	}
+}
+
+func testRejectsDuplicateCertificateFinalizationKeys(t *testing.T, repo Repository) {
+	t.Helper()
 	ctx := context.Background()
-	repo := NewMemoryStore()
 	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	certificate := domain.Certificate{
 		ID:             "certificate-1",

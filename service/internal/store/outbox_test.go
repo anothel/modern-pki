@@ -1040,6 +1040,27 @@ func testIssuanceAttempts(t *testing.T, repo Repository) {
 		!got.SignedAt.Equal(signed.SignedAt) {
 		t.Fatalf("signed attempt = %#v, want %#v", got, signed)
 	}
+
+	finalized := got
+	finalized.Status = domain.IssuanceAttemptFinalized
+	finalized.FinalizedAt = now.Add(2 * time.Second)
+	finalized.UpdatedAt = finalized.FinalizedAt
+	if err := repo.UpdateIssuanceAttemptIfCurrent(ctx, finalized, got); err != nil {
+		t.Fatalf("finalize UpdateIssuanceAttemptIfCurrent returned error: %v", err)
+	}
+	if err := repo.UpdateIssuanceAttemptIfCurrent(ctx, signed, got); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("stale signed UpdateIssuanceAttemptIfCurrent error = %v, want ErrInvalidTransition", err)
+	}
+	got, err = repo.GetIssuanceAttempt(ctx, attempt.EnrollmentID)
+	if err != nil {
+		t.Fatalf("GetIssuanceAttempt finalized returned error: %v", err)
+	}
+	if got.Status != domain.IssuanceAttemptFinalized ||
+		!got.FinalizedAt.Equal(finalized.FinalizedAt) ||
+		got.CertificateID != signed.CertificateID ||
+		got.CertificatePEM != signed.CertificatePEM {
+		t.Fatalf("finalized attempt = %#v, want %#v", got, finalized)
+	}
 }
 
 func testNotificationEndpoints(t *testing.T, repo Repository) {

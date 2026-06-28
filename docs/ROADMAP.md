@@ -57,13 +57,13 @@ Goal: close the highest-risk correctness gaps before refactoring or expansion.
   finalization failure and retry without a second signer call.
 - Add issuance attempt lease race tests across concurrent workers or simulated
   service nodes.
-- Add serial uniqueness and duplicate-serial negative tests.
+- Add lifecycle-level serial uniqueness and duplicate-serial negative tests.
 - Add webhook negative tests for invalid HMAC, replay timestamp, timeout,
   redirect/egress failure, retry, and dead-letter replay.
 - Add ACME malformed JWS, nonce reuse, badNonce retry, account key mismatch,
   KID base URL, and replay tests.
-- Add memory/SQLite/PostgreSQL parity coverage for lifecycle, ACME nonce,
-  outbox, audit, and migration behavior.
+- Extend PostgreSQL parity coverage for lifecycle, ACME nonce, outbox, audit,
+  and migration behavior where SQLite/memory parity already exists.
 
 ## P1: ACME Client Compatibility
 
