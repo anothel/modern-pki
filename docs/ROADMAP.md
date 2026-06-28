@@ -53,8 +53,6 @@ surface.
 
 Goal: close the highest-risk correctness gaps before refactoring or expansion.
 
-- Add webhook negative tests for timeout, redirect/egress failure, retry, and
-  dead-letter replay.
 - Add ACME malformed JWS, nonce reuse, badNonce retry, account key mismatch,
   KID base URL, and replay tests.
 - Extend PostgreSQL parity coverage for lifecycle, ACME nonce, outbox, audit,

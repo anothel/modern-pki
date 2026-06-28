@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -245,6 +247,77 @@ func TestOutboxDispatcherDeadLettersAfterMaxAttempts(t *testing.T) {
 	}
 	if len(dead) != 1 || dead[0].ID != message.ID || dead[0].AttemptCount != 5 || dead[0].LastError != "permanent failure" {
 		t.Fatalf("dead letter messages = %#v", dead)
+	}
+}
+
+func TestOutboxDispatcherRetriesAndDeadLettersWebhookFailures(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	clock := fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	if err := repo.CreateNotificationEndpoint(ctx, domain.NotificationEndpoint{
+		ID:        "endpoint-1",
+		Name:      "ops",
+		Type:      domain.NotificationEndpointWebhook,
+		Status:    domain.NotificationEndpointActive,
+		URL:       server.URL,
+		Secret:    "secret-1",
+		CreatedAt: clock.now,
+		UpdatedAt: clock.now,
+	}); err != nil {
+		t.Fatalf("CreateNotificationEndpoint returned error: %v", err)
+	}
+	message := domain.OutboxMessage{
+		ID:          "outbox-1",
+		Type:        "certificate.expiration_warning",
+		PayloadJSON: `{"certificate_id":"cert-1"}`,
+		Status:      domain.OutboxPending,
+		AvailableAt: clock.now,
+		MaxAttempts: 2,
+		CreatedAt:   clock.now,
+		UpdatedAt:   clock.now,
+	}
+	if err := repo.CreateOutboxMessage(ctx, message); err != nil {
+		t.Fatalf("CreateOutboxMessage returned error: %v", err)
+	}
+
+	handler := NewWebhookOutboxHandler(repo, server.Client())
+	dispatcher := NewOutboxDispatcher(repo, handler, clock, &fakeIDGenerator{})
+	if processed, err := dispatcher.RunOnce(ctx, 10); err != nil || processed != 1 {
+		t.Fatalf("first RunOnce processed=%d error=%v, want 1 nil", processed, err)
+	}
+	pending, err := repo.ListOutboxMessages(ctx, domain.OutboxPending)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages pending returned error: %v", err)
+	}
+	if len(pending) != 1 || pending[0].AttemptCount != 1 || pending[0].LastError == "" {
+		t.Fatalf("pending retry message = %#v, want one failed retry", pending)
+	}
+
+	retryClock := fixedClock{now: pending[0].AvailableAt}
+	dispatcher = NewOutboxDispatcher(repo, handler, retryClock, &fakeIDGenerator{})
+	if processed, err := dispatcher.RunOnce(ctx, 10); err != nil || processed != 1 {
+		t.Fatalf("second RunOnce processed=%d error=%v, want 1 nil", processed, err)
+	}
+	dead, err := repo.ListOutboxMessages(ctx, domain.OutboxDeadLetter)
+	if err != nil {
+		t.Fatalf("ListOutboxMessages dead letter returned error: %v", err)
+	}
+	if len(dead) != 1 || dead[0].AttemptCount != 2 || dead[0].LastError == "" {
+		t.Fatalf("dead-letter message = %#v, want failed webhook after retry", dead)
+	}
+	delivery, err := repo.GetWebhookDelivery(ctx, message.ID, "endpoint-1")
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery returned error: %v", err)
+	}
+	if delivery.Status != domain.JobAttemptFailed || delivery.AttemptCount != 2 || requests != 2 {
+		t.Fatalf("delivery=%#v requests=%d, want two failed webhook attempts", delivery, requests)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -222,6 +223,48 @@ func TestWebhookOutboxHandlerReturnsErrorOnHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestWebhookOutboxHandlerRecordsTimeoutFailure(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	repo := store.NewMemoryStore()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := repo.CreateNotificationEndpoint(ctx, domain.NotificationEndpoint{
+		ID:        "endpoint-timeout",
+		Name:      "timeout",
+		Type:      domain.NotificationEndpointWebhook,
+		Status:    domain.NotificationEndpointActive,
+		URL:       server.URL,
+		Secret:    "secret-1",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateNotificationEndpoint returned error: %v", err)
+	}
+
+	handler := NewWebhookOutboxHandler(repo, &http.Client{Timeout: 10 * time.Millisecond})
+	err := handler.HandleOutboxMessage(ctx, domain.OutboxMessage{
+		ID:          "outbox-timeout",
+		Type:        "certificate.expiration_warning",
+		PayloadJSON: `{"certificate_id":"cert-1"}`,
+		CreatedAt:   now,
+	})
+	if err == nil {
+		t.Fatal("HandleOutboxMessage returned nil error, want timeout error")
+	}
+	delivery, err := repo.GetWebhookDelivery(ctx, "outbox-timeout", "endpoint-timeout")
+	if err != nil {
+		t.Fatalf("GetWebhookDelivery returned error: %v", err)
+	}
+	if delivery.Status != domain.JobAttemptFailed || delivery.AttemptCount != 1 || delivery.LastError == "" {
+		t.Fatalf("timeout delivery = %#v, want failed attempt with error", delivery)
+	}
+}
+
 func TestWebhookOutboxHandlerSkipsEndpointAlreadyDeliveredForMessage(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
@@ -325,6 +368,19 @@ func TestWebhookOutboxHandlerDefaultClientRejectsUnsafeEndpoint(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("unsafe webhook requests = %d, want 0", requests)
+	}
+}
+
+func TestWebhookOutboxHandlerDefaultClientRejectsUnsafeRedirectTarget(t *testing.T) {
+	redirectURL, err := url.Parse("http://127.0.0.1/private")
+	if err != nil {
+		t.Fatalf("parse redirect URL: %v", err)
+	}
+
+	client := newACMEHTTP01Client(true)
+	err = client.CheckRedirect(&http.Request{URL: redirectURL}, nil)
+	if err == nil {
+		t.Fatal("CheckRedirect returned nil error, want unsafe redirect target rejection")
 	}
 }
 

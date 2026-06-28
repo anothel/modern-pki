@@ -45,7 +45,6 @@ Exit criteria:
 Close the highest-risk PKI correctness paths:
 
 - ACME nonce/JWS/account replay and mismatch cases.
-- Webhook timeout, unsafe redirect/egress, retry, and dead-letter replay.
 - PostgreSQL parity for lifecycle, outbox, audit, nonce, and migration behavior
   where memory/SQLite parity already exists.
 
@@ -121,7 +120,7 @@ Exit criteria:
 | Strengthen ACME compatibility. | Certbot smoke plus fixture conversion and compatibility matrix. |
 | Strengthen CSR/certificate correctness. | CSR linting, profile algorithm policy, DER golden tests. |
 | Strengthen issuance consistency tests. | Signer/DB failure, lease race, and serial collision coverage exist; add broader PostgreSQL parity. |
-| Strengthen webhook/outbox safety tests. | Receiver replay/signature coverage exists; add timeout, egress, retry, and dead-letter coverage. |
+| Strengthen webhook/outbox safety tests. | Receiver replay/signature, timeout, unsafe redirect/egress, retry, and dead-letter coverage exist. |
 | Add audit tamper-evidence. | P2 Audit, Access, And Operations. |
 | Add HSM/KMS/PKCS#11 boundary. | P2 Key Boundary. |
 | Add SBOM/release signing/SAST/SCA. | P1 Release Operations. |
