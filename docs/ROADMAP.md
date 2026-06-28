@@ -46,14 +46,8 @@ surface.
 
 - Add CI status evidence and badge/link strategy once the canonical GitHub
   workflow source is stable.
-- Add automated route-to-OpenAPI parity checks for `registerRoutes` and
-  `docs/reference/openapi.json`.
-- Add config/env-var-to-doc parity checks for `service/README.md`.
-- Add API error-envelope contract tests against `docs/reference/api-errors.md`.
 - Add README quickstart smoke validation or a deterministic command checklist.
 - Add `CHANGELOG.md` before any tagged release candidate.
-- Make the release candidate checklist evidence-oriented: exact commands,
-  outputs, compatibility matrix entry, and accepted roadmap gaps.
 
 ## P0: PKI Failure-Mode Coverage
 

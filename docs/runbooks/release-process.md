@@ -56,8 +56,8 @@ Certbot smoke requires Linux or elevated Windows with certbot installed.
 7. Attach RFC 8555 evidence from
    [ACME conformance](../acme-rfc8555-conformance.md) when ACME behavior
    changed.
-8. Attach route/OpenAPI, config/docs, API error-envelope, docs validation, and
-   secret baseline scan evidence once those checks exist.
+8. Attach route/OpenAPI, config/docs, API error mapping, docs validation, and
+   secret baseline scan evidence from CI.
 9. Attach SBOM, SAST/SCA, artifact signing, and compatibility matrix evidence
    once release tooling is selected.
 

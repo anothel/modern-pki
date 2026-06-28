@@ -17,6 +17,8 @@ jobs:
         with:
           python-version: "3.x"
       - run: python scripts/validate-docs.py
+      - run: python scripts/test_validate_service_contracts.py
+      - run: python scripts/validate-service-contracts.py
       - run: python scripts/test_security_baseline_scan.py
       - run: python scripts/security-baseline-scan.py
 

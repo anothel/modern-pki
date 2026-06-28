@@ -17,6 +17,7 @@ and release-repeatable operations.
 | --- | --- |
 | Baseline docs | README, SECURITY, CONTRIBUTING, roadmap, OpenAPI, runbooks, threat model, architecture, policy, ADR, and alignment docs. |
 | Docs-as-code | `scripts/validate-docs.py` checks required docs, README links, OpenAPI JSON, and license state. |
+| Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
 | CI shape | Workflow includes docs validation, secret baseline, Go tests/build, PostgreSQL integration, C++ CMake, and CTest. |
 | Lifecycle scope | Identity, issuer, profile, enrollment, approval, issuance, renewal, reissue, revocation, suspension, CRL, OCSP, audit, outbox, webhook, and ACME foundations exist. |
@@ -29,12 +30,8 @@ and release-repeatable operations.
 
 Close these before adding new operator/product surface:
 
-- Add route-to-OpenAPI parity test.
-- Add config/env-var-to-service-doc parity test.
-- Add API error-envelope contract test.
 - Add README quickstart command smoke check or deterministic manual checklist.
 - Add CHANGELOG.
-- Update release checklist with exact evidence attachments.
 
 Exit criteria:
 
