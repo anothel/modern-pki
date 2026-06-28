@@ -1,34 +1,32 @@
 # modern-pki roadmap
 
-Only future work belongs here.
+Only future work belongs here. Completed items must be removed after the
+verification evidence is recorded in the relevant reference or runbook.
 
-This roadmap folds in the uploaded PKI improvement analysis, but keeps the file
-future-only: already implemented lifecycle APIs, profile policy, CRL/OCSP
-basics, audit metadata, outbox/webhooks, expiration scans, and ACME adapter
-foundations are not repeated as new work.
+This roadmap folds in the uploaded PKI improvement analyses, including the
+2026-06-28 repository analysis. Those documents are inputs, not parallel
+backlogs. Current execution guidance lives in
+[Release readiness action plan](reference/release-readiness-action-plan.md).
 
-## Imported Analysis Execution Batches
+## Operating Rules
 
-The uploaded improvement analysis is broad. Work should move in batches, not as
-one oversized task:
-
-1. Baseline guardrails: docs-as-code validation and high-confidence secret scan.
-2. ACME compatibility: certbot smoke and protocol fixture follow-up.
-3. Issuance correctness: CSR linting, profile algorithm policy, DER golden tests.
-4. Key boundary: HSM/KMS/PKCS#11 provider semantics, ceremony evidence, no-key
-   material audit tests.
-5. Operations and audit: RBAC/break-glass, SIEM/tamper-evidence, synthetic
-   checks, drill evidence.
-6. Product expansion: first discovery/import source, first deploy adapter,
-   crypto inventory, PQC readiness.
-
-Finished batches or tasks must be removed from this roadmap after verification.
+- Prefer reliability, parity checks, and negative tests before feature surface.
+- Keep work grouped by risk area; do not stop at tiny slices when one coherent
+  risk area can be closed.
+- Do not split large files only because they are large. Add contract and
+  failure-mode coverage first, then split along repeated change boundaries.
+- Keep discovery, deploy adapters, EAB, DNS-01, UI, and PQC gated on real
+  operator demand.
+- Reject new abstractions until two real implementations exist or current code
+  blocks a concrete requirement.
+- Reject new dependencies unless stdlib/native code is materially worse or the
+  dependency is a selected release/security tool.
 
 ## External Timeline Drivers
 
-Publicly trusted TLS work must track the CA/Browser Forum Baseline Requirements.
-As of BR 2.2.8, public Subscriber Certificate validity and Domain/IP validation
-reuse shrink on this schedule. Source:
+Publicly trusted TLS work must track the CA/Browser Forum Baseline
+Requirements. As of BR 2.2.8, public Subscriber Certificate validity and
+Domain/IP validation reuse shrink on this schedule. Source:
 https://cabforum.org/working-groups/server/baseline-requirements/requirements/
 
 | Date | Public TLS max validity | Domain/IP validation reuse |
@@ -41,61 +39,85 @@ Private PKI is not forced to follow public Web PKI timelines, but the same
 timeline is a useful pressure test: manual renewal and deployment must disappear
 before 100-day and 47-day public certificate operations become normal.
 
-## P1: ACME Security And Compatibility
+## P0: Release Trust And Contract Parity
 
-### Real Client Coverage
+Goal: make a pre-1.0 release candidate believable without adding new product
+surface.
+
+- Add CI status evidence and badge/link strategy once the canonical GitHub
+  workflow source is stable.
+- Add automated route-to-OpenAPI parity checks for `registerRoutes` and
+  `docs/reference/openapi.json`.
+- Add config/env-var-to-doc parity checks for `service/README.md`.
+- Add API error-envelope contract tests against `docs/reference/api-errors.md`.
+- Add README quickstart smoke validation or a deterministic command checklist.
+- Add `CHANGELOG.md` before any tagged release candidate.
+- Make the release candidate checklist evidence-oriented: exact commands,
+  outputs, compatibility matrix entry, and accepted roadmap gaps.
+
+## P0: PKI Failure-Mode Coverage
+
+Goal: close the highest-risk correctness gaps before refactoring or expansion.
+
+- Add issuance consistency failure tests for signer success followed by DB
+  finalization failure and retry without a second signer call.
+- Add issuance attempt lease race tests across concurrent workers or simulated
+  service nodes.
+- Add serial uniqueness and duplicate-serial negative tests.
+- Add webhook negative tests for invalid HMAC, replay timestamp, timeout,
+  redirect/egress failure, retry, and dead-letter replay.
+- Add ACME malformed JWS, nonce reuse, badNonce retry, account key mismatch,
+  KID base URL, and replay tests.
+- Add memory/SQLite/PostgreSQL parity coverage for lifecycle, ACME nonce,
+  outbox, audit, and migration behavior.
+
+## P1: ACME Client Compatibility
+
+Goal: convert real-client differences into stable protocol fixtures.
 
 - Run certbot smoke from Linux or elevated Windows.
 - If certbot smoke exposes client-specific behavior differences, convert them
   into protocol fixture tests.
-
-## Deferred Until A Real Integration Is Selected
-
+- Keep the ACME compatibility matrix current by client, OS, account key type,
+  challenge type, and result.
 - Add External Account Binding only after a real subscriber/account integration
   requires it.
 - Add DNS-01 only after an operator-owned DNS provider integration is selected.
 
-## P2: Operator Surface
+## P1: CSR And Certificate Correctness
 
-### Inventory And Discovery
+Goal: prevent malformed, weak, or policy-violating certificates at approval and
+signing boundaries.
 
-- Keep discovery/import scoped to the first real source requested by operators;
-  defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
-  until one integration proves the model.
-- Add owner-missing and 30/60/90-day expiry exception reports once the first
-  real import source exists.
+- Add CSR linting for key algorithm, key size, malformed PEM, forbidden
+  extensions, SAN/CN policy, wildcard policy, IP SAN policy, and oversized SAN
+  lists.
+- Add profile-level key algorithm policy.
+- Add profile-level signature algorithm policy.
+- Add issued-certificate DER golden tests that assert SAN, KU, EKU,
+  BasicConstraints, AIA, CRL Distribution Points, SKI, and AKI.
+- Add negative tests for CN-only requests, missing SAN, invalid EKU/KU
+  combinations, weak keys, expired chains, name constraints, malformed PEM,
+  duplicate serials, and oversized SAN lists.
+- Add public TLS linting hook before issuance only if public TLS issuance is
+  enabled.
 
-### Observability And Audit
+## P1: Release Operations
 
-- Add metrics exporter integration if expvar scraping is insufficient for the
-  selected deployment platform.
-- Add distributed span creation/propagation if an OpenTelemetry backend is
-  selected.
-- Add audit fields for approval reason, policy decision reason, validation
-  evidence ref, old/new serial on renewal, and deployment target where source
-  data exists.
-- Add append-only or tamper-evident audit storage plan.
-- Add SIEM export format and detection examples for issuance, revocation, policy
-  change, key-provider use, and CA operations.
-- Add synthetic checks for CRL, OCSP, ACME order/finalize, and post-deployment
-  certificate health after a deployment target is selected.
+Goal: make pre-1.0 release candidates repeatable.
 
-### Access Control And DevSecOps
+- Add release artifact/SBOM/signing decision and implementation.
+- Add dependency/SAST scan selection and CI wiring.
+- Add optional `go test -race ./...`, `go vet ./...`, staticcheck, gosec, C++
+  sanitizer, and fuzz jobs after tool choices are accepted.
+- Add binary/package distribution decision.
+- Add compatibility matrix for OS, Go, OpenSSL, SQLite, PostgreSQL, lego, and
+  certbot.
+- Add generated API example validation if example drift becomes visible.
 
-- Add human RBAC/ABAC roles for requester, approver, operator, auditor, and
-  break-glass actions.
-- Add issuance rate limits or quotas by account, identity, issuer, and profile
-  where operator policy requires them.
-- Add idempotency-key support for non-ACME lifecycle mutation APIs if repeated
-  client retries show duplicate-request risk beyond existing state guards.
-- Add SAST, dependency/SBOM, container/IaC scan, and release signing once tool
-  choices are selected.
-- Expand the current high-confidence secret baseline scan if a full scanner is
-  selected.
+## P2: Key Boundary
 
-## P3: Key Boundary And Core Robustness
-
-### HSM, KMS, And PKCS#11
+Goal: separate local file-key development from production signing semantics.
 
 - Select HSM/KMS/PKCS#11 provider semantics for issuer and OCSP responder
   signing.
@@ -106,39 +128,55 @@ before 100-day and 47-day public certificate operations become normal.
 - Add audit tests proving key material is never recorded.
 - Add PKCS#11 mock or software-token test path.
 
-### Policy And Certificate Correctness
+## P2: Audit, Access, And Operations
 
-- Add profile-level key algorithm policy.
-- Add profile-level signature algorithm policy.
-- Add CSR linting for key algorithm, key size, SAN/CN policy, malformed PEM,
-  and forbidden extensions before approval or signing.
-- Add serial-number collision/entropy tests.
-- Add public TLS linting hook before issuance if public TLS issuance is enabled.
-- Add issued-certificate golden tests that parse DER and assert SAN, KU, EKU,
-  BasicConstraints, AIA, CRL Distribution Points, SKI, and AKI.
-- Add negative tests for CN-only requests, missing SAN, wildcard policy, IP SAN
-  policy, invalid EKU/KU combinations, weak keys, expired chains, name
-  constraints, malformed PEM, duplicate serials, and oversized SAN lists.
+Goal: raise operator accountability and recovery confidence.
 
-### Core CLI Contract
+- Add append-only or tamper-evident audit storage plan.
+- Add SIEM export format and detection examples for issuance, revocation,
+  policy change, key-provider use, and CA operations.
+- Add human RBAC/ABAC roles for requester, approver, operator, auditor, and
+  break-glass actions.
+- Add approval reason, policy decision reason, validation evidence ref,
+  old/new serial on renewal, and deployment target audit fields where source
+  data exists.
+- Add synthetic checks for CRL, OCSP, ACME order/finalize, and post-deployment
+  certificate health after a deployment target is selected.
+- Add issuer key rotation, intermediate rollover, CRL/OCSP outage, audit repair,
+  webhook dead-letter, migration rollback, and restore drill evidence updates
+  to runbooks as implementations change.
+
+## P2: Inventory And Discovery
+
+Goal: prove one import model before broad scanning.
+
+- Keep discovery/import scoped to the first real source requested by operators.
+- Add owner-missing and 30/60/90-day expiry exception reports once the first
+  real import source exists.
+- Move any remaining service-side inventory filtering into SQL only when large
+  inventory tests show response time risk.
+
+## P3: Maintainability And Core Robustness
+
+Goal: reduce review risk after correctness coverage exists.
 
 - Define JSON schema for Go-to-core CLI calls.
 - Add contract tests for the Go/C++ boundary.
 - Expose structured OpenSSL error details where useful for operator diagnosis.
-- Add CSR parser fuzz target.
-- Add OCSP parser fuzz target.
-- Add CRL parser fuzz target.
-- Document local fuzz commands.
+- Add CSR, OCSP, and CRL parser fuzz targets with local commands.
+- Split `service/internal/httpapi/server.go` only along stable boundaries such
+  as ACME, API key/auth, audit/outbox/webhook, and operator/reporting handlers.
+- Split `service/internal/store/sqlstore.go` only along aggregate boundaries
+  such as certificate, audit, outbox, ACME nonce, and migration behavior.
 
 ## P4: Product Expansion
 
 - Add certificate rotation automation that includes deploy target update,
   post-deploy health check, rollback, and operator notification.
-- Add deploy adapters only after an operator picks concrete first targets; likely
-  first targets are Kubernetes Secret and load balancer.
+- Add deploy adapters only after an operator picks concrete first targets;
+  likely first targets are Kubernetes Secret and load balancer.
 - Add Kubernetes workload identity.
 - Add CT or external certificate monitoring for public DNS names.
-- Add crypto deprecation/migration plan.
 - Add crypto inventory for TLS, mTLS, JWT/JWS, S/MIME, code signing, SSH,
   database encryption, and backup encryption.
 - Add crypto agility registry for key algorithm, signature algorithm, provider,
@@ -172,9 +210,8 @@ before 100-day and 47-day public certificate operations become normal.
 - Defer UI until API filters, pagination, and operator flows stabilize.
 - Defer PQC from production; keep lab-only until dependencies and relying-party
   support are real.
-- Reject large file splitting until repeated changes prove a stable boundary.
-- Reject new abstractions until two real implementations exist or current code
-  blocks a concrete requirement.
-- Reject new dependencies unless stdlib/native code is materially worse.
-- Reject new product surface while production safety, ACME compatibility,
-  migration safety, key-boundary, and recovery docs remain incomplete.
+- Defer EAB and DNS-01 until real integrations require them.
+- Reject large file splitting until tests prove behavior and repeated changes
+  prove a stable boundary.
+- Reject new product surface while release trust, contract parity, failure-mode
+  coverage, key-boundary, and recovery evidence remain incomplete.

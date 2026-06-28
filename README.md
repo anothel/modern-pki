@@ -17,7 +17,9 @@ Current implementation includes:
 - Audit metadata, lifecycle outbox events, webhook notification endpoints, bounded retry, and dead-letter handling.
 - ACME-shaped protocol adapter with account, order, authorization, HTTP-01 challenge, finalize, and certificate download flows.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for current priorities and remaining gaps.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for future work and
+[Release readiness action plan](docs/reference/release-readiness-action-plan.md)
+for the current execution order derived from the uploaded analysis reports.
 
 ## Repository Layout
 
@@ -90,7 +92,8 @@ go run ./cmd/modern-pki-service
 ## Documentation
 
 - [Service README](service/README.md): API behavior, configuration, ACME status, auth, workers, and operator endpoints.
-- [Roadmap](docs/ROADMAP.md): completed work, next big work, backlog, and verification policy.
+- [Roadmap](docs/ROADMAP.md): future-only priorities, defer/delete rules, and remaining risk areas.
+- [Release readiness action plan](docs/reference/release-readiness-action-plan.md): current grouped execution plan from the 2026-06-28 analysis.
 - [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
 - [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
 - [Project scope](docs/reference/project-scope.md): supported PKI domains, explicit non-goals, and current boundaries.
@@ -100,7 +103,7 @@ go run ./cmd/modern-pki-service
 - [Observability reference](docs/reference/observability.md): structured logs, expvar counters, request IDs, and remaining observability gaps.
 - [OpenAPI spec](docs/reference/openapi.json): lifecycle, operator, distribution, and ACME management API contract.
 - [Compliance matrix](docs/reference/compliance-matrix.md): RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR, Mozilla, and NIST coverage.
-- [Improvement analysis alignment](docs/reference/improvement-analysis-alignment.md): mapping from the uploaded improvement analysis to current evidence and future gaps.
+- [Improvement analysis alignment](docs/reference/improvement-analysis-alignment.md): mapping from uploaded improvement analyses to current evidence and future gaps.
 - [PKI context](docs/architecture/pki-context.md): CA hierarchy, trust boundary, issuance, renewal, and revocation flow entry point.
 - [Certificate profile policy](docs/policy/certificate-profiles.md): profile-as-code baseline and remaining profile gaps.
 - [Algorithm policy](docs/policy/algorithm-policy.md): current crypto baseline, PQC stance, and algorithm-policy gaps.
@@ -125,10 +128,11 @@ go run ./cmd/modern-pki-service
 - [Public TLS readiness runbook](docs/runbooks/public-tls-readiness.md): validity ceilings, validation reuse, CAA checks, and mass-revocation drill.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
-Current imported-analysis execution batch: finish low-dependency P0/P1 guardrails
-first. The repo now keeps docs-as-code validation and a high-confidence secret
-baseline scan in CI; broader SAST/SCA/SBOM/container/IaC scans remain tool
-selection work in the roadmap.
+Current imported-analysis execution batch: release trust and contract parity.
+The repo keeps docs-as-code validation and a high-confidence secret baseline
+scan in CI. Next work is route/OpenAPI parity, config/doc parity, error-envelope
+contract checks, quickstart smoke evidence, and PKI failure-mode coverage before
+new product surface.
 
 ## License
 
@@ -136,4 +140,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ## Current Status
 
-This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, security/contribution docs, CI workflow, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is operator documentation and release readiness, plus certbot live coverage when a Linux or elevated Windows environment is available.
+This is a lifecycle-service implementation in progress. Core lifecycle, profile policy, status publication, auth, audit, notifications, security/contribution docs, CI workflow, and ACME adapter foundations exist. A live lego HTTP-01 smoke reaches account, order, challenge validation, finalize, and certificate response against a harness-started local service. Current priority is release-candidate trust: API/doc/code parity, negative failure-mode tests, compatibility evidence, and certbot live coverage when a Linux or elevated Windows environment is available.

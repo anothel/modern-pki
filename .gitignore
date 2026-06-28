@@ -29,3 +29,5 @@ docs/superpowers/
 .gomodcache/*
 .tmp/*
 service/.tmp-gocache/*
+
+scripts/__pycache__/*

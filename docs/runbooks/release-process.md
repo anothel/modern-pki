@@ -1,11 +1,13 @@
 # Release Process
 
 `modern-pki` is pre-1.0. This process creates a reviewed release candidate; it
-does not publish packages or choose a license.
+does not publish packages by itself.
 
 ## Preconditions
 
 - Roadmap completed items have been removed from [ROADMAP](../ROADMAP.md).
+- Release scope is aligned with
+  [Release readiness action plan](../reference/release-readiness-action-plan.md).
 - `README.md`, `SECURITY.md`, service docs, and runbooks match behavior.
 - No real secrets, private keys, DB dumps, or production certificates are in the
   working tree.
@@ -45,14 +47,19 @@ Certbot smoke requires Linux or elevated Windows with certbot installed.
 2. Run `git diff --check`.
 3. Review endpoint, config, migration, and runbook changes.
 4. Record exact verification commands and results.
-5. Record known gaps from [ROADMAP](../ROADMAP.md), especially certbot coverage
-   and deferred EAB/DNS-01 conditions.
+5. Record known gaps from [ROADMAP](../ROADMAP.md), especially contract parity,
+   PKI failure-mode coverage, certbot coverage, and deferred EAB/DNS-01
+   conditions.
 6. Attach compatibility evidence from
    [ACME client compatibility](../acme-client-compatibility.md) when ACME
    behavior changed.
 7. Attach RFC 8555 evidence from
    [ACME conformance](../acme-rfc8555-conformance.md) when ACME behavior
    changed.
+8. Attach route/OpenAPI, config/docs, API error-envelope, docs validation, and
+   secret baseline scan evidence once those checks exist.
+9. Attach SBOM, SAST/SCA, artifact signing, and compatibility matrix evidence
+   once release tooling is selected.
 
 ## Version Metadata
 
@@ -76,7 +83,7 @@ Before tagging or distributing:
 - deployment and rollback plan reviewed,
 - backup and restore path confirmed,
 - owner accepts remaining roadmap gaps,
-- license status confirmed.
+- Apache-2.0 license status confirmed.
 
 ## Post-Release
 

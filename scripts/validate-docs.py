@@ -37,6 +37,7 @@ REQUIRED = [
     "docs/adr/0002-acme-adoption.md",
     "docs/adr/0003-hsm-kms-strategy.md",
     "docs/reference/improvement-analysis-alignment.md",
+    "docs/reference/release-readiness-action-plan.md",
     "docs/reference/openapi.json",
 ]
 

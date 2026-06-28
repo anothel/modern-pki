@@ -1,8 +1,16 @@
 # Improvement Analysis Alignment
 
-This file maps the uploaded 2026-06-27 improvement analysis to current repo
-evidence and future-only gaps. It prevents the external analysis from becoming
-a parallel roadmap.
+This file maps uploaded improvement analyses to current repo evidence and
+future-only gaps. It prevents external reports from becoming parallel roadmaps.
+
+Inputs currently folded in:
+
+- 2026-06-27 PKI improvement analysis.
+- 2026-06-28 repository code/documentation analysis.
+
+Execution order is tracked in
+[Release readiness action plan](release-readiness-action-plan.md). Future work
+is tracked in [ROADMAP](../ROADMAP.md).
 
 ## P0 Areas
 
@@ -15,6 +23,22 @@ a parallel roadmap.
 | Key protection | `key_ref` model, production docs require external key provider, DB excludes private key material. | HSM/KMS/PKCS#11 provider boundary, ceremony evidence, and non-exportable-key audit behavior remain future work. |
 | Audit log | Structured audit metadata, request context, API key fingerprint, query, retention, repair path. | Tamper-evident storage and SIEM export examples remain future work. |
 | Documentation | Architecture, policy, operations, security, ADR, runbook, compliance docs now have baseline files. | Keep detailed procedures current with implementation changes. |
+
+## 2026-06-28 P0/P1 Findings
+
+| Analysis finding | Current repo evidence | Remaining gap |
+| --- | --- | --- |
+| Build and test trust must come before feature expansion. | README verification commands, CI workflow shape, release process, docs validation, secret baseline scan. | Record latest CI evidence, add badge/link strategy, and make release candidates evidence-based. |
+| OpenAPI and actual routes need automated parity. | OpenAPI exists and routes are documented in service docs. | Add route dump or route registry test and compare against OpenAPI paths. |
+| Config/env docs need automated parity. | `service/README.md` lists configuration variables. | Add config schema/export or env var snapshot test against service docs. |
+| API error schema should be fixed. | `docs/reference/api-errors.md` exists. | Add handler tests that enforce the documented envelope and ACME problem details. |
+| README quickstart must be verified. | README build/run/test commands exist. | Add quickstart smoke validation or deterministic checklist with known outputs. |
+| Issuance consistency needs failure injection. | `docs/reference/issuance-consistency.md` documents signer claim, retry, and repair behavior. | Add tests for signer success plus DB finalization failure, retry without second signing, lease races, and serial collisions. |
+| Webhook/outbox safety needs negative tests. | HMAC signing, timestamp, retry, and dead-letter behavior are implemented and documented. | Add invalid HMAC, replay, timeout, redirect/egress, retry, and dead-letter replay tests. |
+| ACME nonce/replay/key binding tests should expand. | ACME JWS, nonce, account key, key rollover, rate limit, and lego smoke coverage exist. | Add malformed JWS, nonce reuse, badNonce retry, KID base URL, key mismatch, and certbot-derived fixtures. |
+| CSR/certificate correctness needs stronger tests. | Profile policy and public TLS policy exist. | Add CSR linting, profile algorithm policy, DER golden tests, and negative certificate policy cases. |
+| Release readiness needs supply-chain evidence. | CI and Apache-2.0 license exist; high-confidence secret scan exists. | Add CHANGELOG, SBOM, release signing, SAST/SCA choices, and compatibility matrix. |
+| Large files should not be split prematurely. | Roadmap defer/delete rules reject speculative refactors. | Split `server.go` and `sqlstore.go` only after tests prove behavior and repeated changes prove stable boundaries. |
 
 ## P1 Areas
 
