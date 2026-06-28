@@ -46,10 +46,6 @@ before 100-day and 47-day public certificate operations become normal.
   defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
   until one integration proves the model.
 
-### Documentation And Release Readiness
-
-- Get owner decision for `LICENSE`.
-
 ### Observability And Audit
 
 - Add metrics exporter integration if expvar scraping is insufficient for the

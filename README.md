@@ -114,8 +114,7 @@ go run ./cmd/modern-pki-service
 
 ## License
 
-No `LICENSE` file has been selected yet. Until the owner chooses a license,
-assume all rights are reserved.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ## Current Status
 
