@@ -100,9 +100,22 @@ go run ./cmd/modern-pki-service
 - [Observability reference](docs/reference/observability.md): structured logs, expvar counters, request IDs, and remaining observability gaps.
 - [OpenAPI spec](docs/reference/openapi.json): lifecycle, operator, distribution, and ACME management API contract.
 - [Compliance matrix](docs/reference/compliance-matrix.md): RFC 5280, RFC 6960, RFC 8555, CA/B Forum BR, Mozilla, and NIST coverage.
+- [Improvement analysis alignment](docs/reference/improvement-analysis-alignment.md): mapping from the uploaded improvement analysis to current evidence and future gaps.
+- [PKI context](docs/architecture/pki-context.md): CA hierarchy, trust boundary, issuance, renewal, and revocation flow entry point.
+- [Certificate profile policy](docs/policy/certificate-profiles.md): profile-as-code baseline and remaining profile gaps.
+- [Algorithm policy](docs/policy/algorithm-policy.md): current crypto baseline, PQC stance, and algorithm-policy gaps.
+- [CP/CPS map](docs/policy/cp-cps-map.md): evidence-oriented CP/CPS coverage map.
+- [Threat model](docs/security/threat-model.md): main PKI assets, threats, current controls, and gaps.
 - [Audit metadata reference](docs/reference/audit-metadata.md): audit metadata fields and stable result codes.
+- [Audit log schema](docs/security/audit-log-schema.md): audit property, retention, tamper-evidence, and SIEM gap baseline.
 - [Issuance consistency reference](docs/reference/issuance-consistency.md): signing claim, retry, and audit repair behavior.
 - [Manual demo runbook](docs/runbooks/manual-demo.md): end-to-end local enrollment lifecycle demo.
+- [Issuance runbook](docs/operations/issuance-runbook.md): normal and emergency issuance procedure.
+- [Renewal runbook](docs/operations/renewal-runbook.md): renewal, failure handling, and deployment gap baseline.
+- [Revocation runbook](docs/operations/revocation-runbook.md): revocation reasons and response procedure.
+- [Mass revocation plan](docs/operations/mass-revocation-plan.md): mass incident drill steps and evidence.
+- [Key ceremony](docs/operations/key-ceremony.md): key ceremony baseline and HSM/KMS gaps.
+- [Backup and restore runbook](docs/operations/backup-restore-runbook.md): restore drill checklist tied to production recovery.
 - [Production deployment guide](docs/runbooks/production-deployment.md): production architecture, secure sample config, startup checks, and rollback link.
 - [Production recovery runbook](docs/runbooks/production-recovery.md): backup, rollback, restore, and DR drill rules.
 - [Bootstrap API key runbook](docs/runbooks/bootstrap-api-key.md): first operator provisioning, bootstrap removal, key rotation, and disable flow.

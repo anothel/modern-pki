@@ -45,6 +45,8 @@ before 100-day and 47-day public certificate operations become normal.
 - Keep discovery/import scoped to the first real source requested by operators;
   defer broad network, Kubernetes, JKS, Windows Store, CDN, and Vault scanners
   until one integration proves the model.
+- Add owner-missing and 30/60/90-day expiry exception reports once the first
+  real import source exists.
 
 ### Observability And Audit
 
@@ -58,16 +60,29 @@ before 100-day and 47-day public certificate operations become normal.
 - Add append-only or tamper-evident audit storage plan.
 - Add SIEM export format and detection examples for issuance, revocation, policy
   change, key-provider use, and CA operations.
+- Add synthetic checks for CRL, OCSP, ACME order/finalize, and post-deployment
+  certificate health after a deployment target is selected.
+
+### Access Control And DevSecOps
+
+- Add human RBAC/ABAC roles for requester, approver, operator, auditor, and
+  break-glass actions.
+- Add issuance rate limits or quotas by account, identity, issuer, and profile
+  where operator policy requires them.
+- Add idempotency-key support for non-ACME lifecycle mutation APIs if repeated
+  client retries show duplicate-request risk beyond existing state guards.
+- Add CI secret scan, SAST, dependency/SBOM, container/IaC scan, and release
+  signing once tool choices are selected.
 
 ## P3: Key Boundary And Core Robustness
 
 ### HSM, KMS, And PKCS#11
 
-- Define issuer/responder key reference model for HSM/KMS-backed keys.
-- Separate file key provider from PKCS#11 signing provider.
-- Document file provider as local/dev unless explicitly configured otherwise.
+- Select HSM/KMS/PKCS#11 provider semantics for issuer and OCSP responder
+  signing.
+- Separate file key provider from production signing providers in code.
 - Add API and audit behavior for non-exportable keys.
-- Add key ceremony and intermediate rollover docs.
+- Add executable key ceremony evidence capture and intermediate rollover drill.
 - Add offline-root operating model if this project owns CA hierarchy operations.
 - Add audit tests proving key material is never recorded.
 - Add PKCS#11 mock or software-token test path.
@@ -76,6 +91,8 @@ before 100-day and 47-day public certificate operations become normal.
 
 - Add profile-level key algorithm policy.
 - Add profile-level signature algorithm policy.
+- Add CSR linting for key algorithm, key size, SAN/CN policy, malformed PEM,
+  and forbidden extensions before approval or signing.
 - Add serial-number collision/entropy tests.
 - Add public TLS linting hook before issuance if public TLS issuance is enabled.
 - Add issued-certificate golden tests that parse DER and assert SAN, KU, EKU,
@@ -103,9 +120,14 @@ before 100-day and 47-day public certificate operations become normal.
 - Add Kubernetes workload identity.
 - Add CT or external certificate monitoring for public DNS names.
 - Add crypto deprecation/migration plan.
+- Add crypto inventory for TLS, mTLS, JWT/JWS, S/MIME, code signing, SSH,
+  database encryption, and backup encryption.
 - Add crypto agility registry for key algorithm, signature algorithm, provider,
   and profile compatibility.
+- Add algorithm migration plan and 47-day renewal/retry/load simulation report.
 - Add PQC/hybrid experiments with clear non-production labeling.
+- Track HSM, KMS, TLS library, service mesh, ingress, load balancer, and client
+  PQC readiness before any production PQC/hybrid rollout.
 - Add UI only after operator API shape and filters stabilize.
 
 ## SLO And KPI Targets
