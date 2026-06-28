@@ -20,6 +20,8 @@ jobs:
       - run: python scripts/test_webhook_receiver_verification.py
       - run: python scripts/test_validate_service_contracts.py
       - run: python scripts/validate-service-contracts.py
+      - run: python scripts/test_validate_release_evidence.py
+      - run: python scripts/validate-release-evidence.py
       - run: python scripts/test_security_baseline_scan.py
       - run: python scripts/security-baseline-scan.py
 
@@ -51,6 +53,8 @@ jobs:
             service/go.mod
             service/go.sum
       - run: go test ./...
+      - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - run: go test -p 1 ./internal/store ./internal/httpapi -run PostgresIntegration -v
         env:
           MODERN_PKI_POSTGRES_TEST_DSN: postgres://modern_pki:modern_pki@localhost:5432/modern_pki_test?sslmode=disable

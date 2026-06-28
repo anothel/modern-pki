@@ -39,6 +39,7 @@ REQUIRED = [
     "docs/adr/0003-hsm-kms-strategy.md",
     "docs/reference/improvement-analysis-alignment.md",
     "docs/reference/release-readiness-action-plan.md",
+    "docs/reference/release-evidence.md",
     "docs/reference/openapi.json",
 ]
 

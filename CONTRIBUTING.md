@@ -8,7 +8,7 @@ Avoid unrelated product surface or speculative abstractions. Keep changes small,
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.25.0+
 - CMake 3.20+
 - C++20 compiler
 - OpenSSL development libraries

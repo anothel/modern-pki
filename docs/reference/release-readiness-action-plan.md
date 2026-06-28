@@ -19,10 +19,10 @@ and release-repeatable operations.
 | Docs-as-code | `scripts/validate-docs.py` checks required docs, README links, OpenAPI JSON, and license state. |
 | Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
-| Release trust | README quickstart smoke checklist, `CHANGELOG.md`, and CI run/badge strategy in the release process. |
+| Release trust | README quickstart smoke checklist, `CHANGELOG.md`, CI run/badge strategy in the release process, and release evidence manifest validation. |
 | Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory, SQLite, and PostgreSQL parity tests cover duplicate certificate finalization keys, stale issuance-attempt updates, outbox, audit, migration, and ACME nonce behavior. |
 | Certificate correctness | Core issue profile tests parse issued DER and assert SAN, KU, EKU, Basic Constraints, AIA, CRL Distribution Points, SKI, and AKI; core CSR fixtures include real weak-key metadata coverage; profile policy enforces CSR key algorithm/size, selected signing algorithm, invalid KU/EKU combinations, forbidden CSR-requested extensions, SAN presence, wildcard policy, IP SAN policy, and oversized SAN rejection; core issuance rejects expired or not-yet-valid issuer certificates and DNS SANs outside issuer DNS name constraints before signing. |
-| CI shape | Workflow includes docs validation, secret baseline, Go tests/build, PostgreSQL integration, C++ CMake, and CTest. |
+| CI shape | Workflow includes docs validation, release evidence validation, secret baseline, Go tests/vet/govulncheck/build, PostgreSQL integration, C++ CMake, and CTest. |
 | Lifecycle scope | Identity, issuer, profile, enrollment, approval, issuance, renewal, reissue, revocation, suspension, CRL, OCSP, audit, outbox, webhook, and ACME foundations exist. |
 | Public TLS guardrails | Validity ceilings, validation evidence age, CAA DNSSEC/RFC 8657 policy, and mass-revocation planning docs exist. |
 | ACME baseline | lego HTTP-01 smoke evidence exists; certbot remains environment-gated. |
@@ -44,11 +44,10 @@ Exit criteria:
 
 Make release artifacts auditable:
 
-- SBOM decision and implementation.
-- Release artifact signing decision and implementation.
-- SAST/SCA tool choice and CI wiring.
-- Compatibility matrix for client, OS, Go, OpenSSL, SQLite/PostgreSQL, and
-  smoke result.
+- Tagged release workflow for archives, SBOM generation, checksums, and cosign
+  signing.
+- Compatibility matrix evidence for client, OS, Go, OpenSSL,
+  SQLite/PostgreSQL, and smoke result.
 
 Exit criteria:
 
@@ -95,5 +94,5 @@ Exit criteria:
 | Strengthen webhook/outbox safety tests. | Receiver replay/signature, timeout, unsafe redirect/egress, retry, and dead-letter coverage exist. |
 | Add audit tamper-evidence. | P2 Audit, Access, And Operations. |
 | Add HSM/KMS/PKCS#11 boundary. | P2 Key Boundary. |
-| Add SBOM/release signing/SAST/SCA. | P1 Release Operations. |
+| Add SBOM/release signing/SAST/SCA. | Release evidence selects syft, cosign, go vet, and govulncheck; P1 Release Operations keeps tagged release workflow execution. |
 | Do not refactor large files prematurely. | P3 split gates require behavior coverage and stable boundaries. |

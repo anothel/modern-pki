@@ -64,13 +64,12 @@ signing boundaries.
 
 Goal: make pre-1.0 release candidates repeatable.
 
-- Add release artifact/SBOM/signing decision and implementation.
-- Add dependency/SAST scan selection and CI wiring.
-- Add optional `go test -race ./...`, `go vet ./...`, staticcheck, gosec, C++
-  sanitizer, and fuzz jobs after tool choices are accepted.
-- Add binary/package distribution decision.
-- Add compatibility matrix for OS, Go, OpenSSL, SQLite, PostgreSQL, lego, and
-  certbot.
+- Add release artifact/SBOM/signing execution in a tagged release workflow
+  after the publishing target is selected.
+- Add optional `go test -race ./...`, staticcheck, gosec, C++ sanitizer, and
+  fuzz jobs after tool choices are accepted.
+- Keep compatibility matrix evidence current for OS, Go, OpenSSL, SQLite,
+  PostgreSQL, lego, and certbot.
 - Add generated API example validation if example drift becomes visible.
 
 ## P2: Key Boundary

@@ -22,6 +22,8 @@ commands and known gaps before tagging.
   AIA, CRL Distribution Points, SKI, and AKI.
 - Profile algorithm policy for CSR public key algorithm, minimum key size, and
   selected signing algorithm.
+- Release evidence manifest for artifact, SBOM, signing, scan, and
+  compatibility decisions, validated in CI.
 
 ### Changed
 
@@ -31,6 +33,6 @@ commands and known gaps before tagging.
 ### Known Gaps
 
 - Certbot live smoke remains environment-gated on Linux or elevated Windows.
-- SBOM, release signing, SAST/SCA selection, full compatibility matrix, HSM/KMS
-  provider boundary, tamper-evident audit storage, EAB, and DNS-01 remain
-  future work.
+- Tagged release artifact/SBOM/signing execution, full compatibility evidence,
+  HSM/KMS provider boundary, tamper-evident audit storage, EAB, and DNS-01
+  remain future work.

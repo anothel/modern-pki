@@ -39,7 +39,7 @@ for the current execution order derived from the uploaded analysis reports.
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.25.0+
 - CMake 3.20+
 - C++20 toolchain
 - OpenSSL development libraries
@@ -127,6 +127,7 @@ go run ./cmd/modern-pki-service
 - [Roadmap](docs/ROADMAP.md): future-only priorities, defer/delete rules, and remaining risk areas.
 - [Changelog](CHANGELOG.md): release-candidate notes, verification baseline, and known gaps.
 - [Release readiness action plan](docs/reference/release-readiness-action-plan.md): current grouped execution plan from the 2026-06-28 analysis.
+- [Release evidence](docs/reference/release-evidence.md): artifact, SBOM, signing, scan, and compatibility evidence baseline.
 - [Security policy](SECURITY.md): reporting, supported status, production expectations, known constraints, and disclosure process.
 - [Contributing guide](CONTRIBUTING.md): prerequisites, local verification, roadmap rules, documentation expectations, and commit guidance.
 - [Project scope](docs/reference/project-scope.md): supported PKI domains, explicit non-goals, and current boundaries.
