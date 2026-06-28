@@ -57,7 +57,6 @@ Goal: close the highest-risk correctness gaps before refactoring or expansion.
   finalization failure and retry without a second signer call.
 - Add issuance attempt lease race tests across concurrent workers or simulated
   service nodes.
-- Add lifecycle-level serial uniqueness and duplicate-serial negative tests.
 - Add webhook negative tests for invalid HMAC, replay timestamp, timeout,
   redirect/egress failure, retry, and dead-letter replay.
 - Add ACME malformed JWS, nonce reuse, badNonce retry, account key mismatch,

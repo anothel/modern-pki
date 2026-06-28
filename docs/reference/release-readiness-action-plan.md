@@ -19,7 +19,7 @@ and release-repeatable operations.
 | Docs-as-code | `scripts/validate-docs.py` checks required docs, README links, OpenAPI JSON, and license state. |
 | Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
-| Store failure-mode parity | Memory and SQLite tests cover duplicate certificate finalization keys and stale issuance-attempt finalization updates. |
+| Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory and SQLite tests cover duplicate certificate finalization keys and stale issuance-attempt finalization updates. |
 | CI shape | Workflow includes docs validation, secret baseline, Go tests/build, PostgreSQL integration, C++ CMake, and CTest. |
 | Lifecycle scope | Identity, issuer, profile, enrollment, approval, issuance, renewal, reissue, revocation, suspension, CRL, OCSP, audit, outbox, webhook, and ACME foundations exist. |
 | Public TLS guardrails | Validity ceilings, validation evidence age, CAA DNSSEC/RFC 8657 policy, and mass-revocation planning docs exist. |
@@ -46,7 +46,6 @@ Close the highest-risk PKI correctness paths:
 
 - Signer success plus DB finalization failure recovery.
 - Issuance attempt lease races.
-- Lifecycle-level serial collision and duplicate serial rejection.
 - ACME nonce/JWS/account replay and mismatch cases.
 - Webhook invalid HMAC, replay, timeout, unsafe redirect/egress, retry, and
   dead-letter replay.

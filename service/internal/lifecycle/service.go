@@ -2518,6 +2518,15 @@ func (s *Service) finalizeSignedIssuanceAttempt(ctx context.Context, enrollmentI
 			if !errors.Is(lookupErr, domain.ErrCertificateNotFound) {
 				return domain.Certificate{}, lookupErr
 			}
+			failed := attempt
+			failed.Status = domain.IssuanceAttemptFailed
+			failed.LastError = err.Error()
+			failed.UpdatedAt = now
+			if markErr := s.repo.WithinTx(ctx, func(repo store.Repository) error {
+				return repo.UpdateIssuanceAttemptIfCurrent(ctx, failed, attempt)
+			}); markErr != nil {
+				return domain.Certificate{}, markErr
+			}
 		}
 		return domain.Certificate{}, err
 	}

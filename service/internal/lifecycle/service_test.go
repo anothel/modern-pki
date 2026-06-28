@@ -341,6 +341,76 @@ func TestIssueCertificateReturnsExistingCertificateForIssuedEnrollment(t *testin
 	}
 }
 
+func TestIssueCertificateRejectsDuplicateIssuerSerialWithoutIssuingEnrollment(t *testing.T) {
+	ctx := context.Background()
+	repo := store.NewMemoryStore()
+	issuerClient := &fakeIssuer{}
+	service := New(
+		repo,
+		issuerClient,
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+
+	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
+		Type: domain.IdentityMachine,
+		Name: "edge-01",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdentity returned error: %v", err)
+	}
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	first := createDuplicateSerialEnrollment(t, ctx, service, identity.ID, issuer.ID)
+	second := createDuplicateSerialEnrollment(t, ctx, service, identity.ID, issuer.ID)
+	if _, err := service.ApproveEnrollment(ctx, "approver", first.ID); err != nil {
+		t.Fatalf("ApproveEnrollment first returned error: %v", err)
+	}
+	if _, err := service.ApproveEnrollment(ctx, "approver", second.ID); err != nil {
+		t.Fatalf("ApproveEnrollment second returned error: %v", err)
+	}
+	firstCertificate, err := service.IssueCertificate(ctx, "issuer", first.ID)
+	if err != nil {
+		t.Fatalf("IssueCertificate first returned error: %v", err)
+	}
+
+	_, err = service.IssueCertificate(ctx, "issuer", second.ID)
+	if !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("IssueCertificate duplicate serial error = %v, want ErrInvalidTransition", err)
+	}
+	if len(issuerClient.requests) != 2 {
+		t.Fatalf("issuer request count = %d, want 2", len(issuerClient.requests))
+	}
+	if _, err := repo.GetCertificateByEnrollmentID(ctx, second.ID); !errors.Is(err, domain.ErrCertificateNotFound) {
+		t.Fatalf("second enrollment certificate error = %v, want ErrCertificateNotFound", err)
+	}
+	secondEnrollment, err := repo.GetEnrollment(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("GetEnrollment second returned error: %v", err)
+	}
+	if secondEnrollment.Status != domain.EnrollmentApproved {
+		t.Fatalf("second enrollment status = %q, want %q", secondEnrollment.Status, domain.EnrollmentApproved)
+	}
+	attempt, err := repo.GetIssuanceAttempt(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("GetIssuanceAttempt second returned error: %v", err)
+	}
+	if attempt.Status != domain.IssuanceAttemptFailed || attempt.LastError == "" {
+		t.Fatalf("second issuance attempt = %#v, want failed with last_error", attempt)
+	}
+	if attempt.SerialNumber != firstCertificate.SerialNumber {
+		t.Fatalf("failed attempt serial = %q, want duplicate %q", attempt.SerialNumber, firstCertificate.SerialNumber)
+	}
+}
+
 func TestIssueCertificateConcurrentFinalizeReturnsExistingCertificate(t *testing.T) {
 	ctx := context.Background()
 	repo := store.NewMemoryStore()
@@ -4428,6 +4498,24 @@ func createPendingEnrollment(t *testing.T, ctx context.Context, service *Service
 	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
 		IdentityID:           identity.ID,
 		IssuerID:             issuer.ID,
+		CSRPEM:               "csr-pem",
+		RequestedSubject:     "CN=edge-01",
+		RequestedDNSNames:    []string{"edge-01.example.test"},
+		RequestedIPAddresses: []string{"127.0.0.1"},
+		RequestedNotAfter:    time.Date(2026, time.January, 3, 3, 4, 5, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollment returned error: %v", err)
+	}
+	return enrollment
+}
+
+func createDuplicateSerialEnrollment(t *testing.T, ctx context.Context, service *Service, identityID string, issuerID string) domain.Enrollment {
+	t.Helper()
+
+	enrollment, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+		IdentityID:           identityID,
+		IssuerID:             issuerID,
 		CSRPEM:               "csr-pem",
 		RequestedSubject:     "CN=edge-01",
 		RequestedDNSNames:    []string{"edge-01.example.test"},
