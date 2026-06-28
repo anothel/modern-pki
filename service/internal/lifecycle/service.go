@@ -4166,6 +4166,28 @@ func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest
 			return domain.ErrInvalidRequest
 		}
 	}
+	if err := validateCertificateProfileExtensionCombination(req); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCertificateProfileExtensionCombination(req CreateCertificateProfileRequest) error {
+	if !req.BasicConstraints.CA {
+		for _, usage := range req.KeyUsage.Values {
+			switch normalizeAlgorithm(usage) {
+			case "key_cert_sign", "crl_sign":
+				return domain.ErrInvalidRequest
+			}
+		}
+		return nil
+	}
+	for _, usage := range req.ExtendedKeyUsage.Values {
+		switch normalizeAlgorithm(usage) {
+		case "server_auth", "client_auth", "code_signing", "email_protection", "time_stamping", "ocsp_signing":
+			return domain.ErrInvalidRequest
+		}
+	}
 	return nil
 }
 

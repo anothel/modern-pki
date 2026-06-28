@@ -112,12 +112,12 @@ void require(bool condition)
 	}
 }
 
-EvpPkeyPtr make_rsa_key()
+EvpPkeyPtr make_rsa_key(int bits = 2048)
 {
 	EvpPkeyCtxPtr context{EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr)};
 	require(context != nullptr);
 	require(EVP_PKEY_keygen_init(context.get()) == 1);
-	require(EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), 2048) == 1);
+	require(EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), bits) == 1);
 	EVP_PKEY *key = nullptr;
 	require(EVP_PKEY_keygen(context.get(), &key) == 1);
 	return EvpPkeyPtr{key};
@@ -440,6 +440,11 @@ int main(int argc, char *argv[])
 	require(csr_info.extension_oids.size() == 2);
 	require(csr_info.extension_oids[0] == "2.5.29.17");
 	require(csr_info.extension_oids[1] == "2.5.29.15");
+	const EvpPkeyPtr weak_key = make_rsa_key(1024);
+	const X509ReqPtr weak_csr = make_csr(weak_key.get());
+	const modern_pki::core::CsrInfo weak_csr_info = modern_pki::core::inspect_csr_pem(csr_to_pem(weak_csr.get()));
+	require(weak_csr_info.public_key_algorithm == "rsa");
+	require(weak_csr_info.public_key_size_bits == 1024);
 	request.issuer_certificate_pem = certificate_to_pem(ca_certificate.get());
 	request.issuer_key_ref = issuer_key_path.string();
 	request.subject = "CN=leaf";

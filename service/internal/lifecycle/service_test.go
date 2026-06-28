@@ -2280,6 +2280,36 @@ func TestCreateCertificateProfileRejectsInvalidRequest(t *testing.T) {
 	if !errors.Is(err, domain.ErrInvalidRequest) {
 		t.Fatalf("leaf max path len error = %v, want ErrInvalidRequest", err)
 	}
+
+	_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "bad-leaf-key-usage",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64(time.Hour.Seconds()),
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			CA: false,
+		},
+		KeyUsage: domain.StringListExtensionPolicy{
+			Values: []string{"digital_signature", "key_cert_sign"},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("leaf keyCertSign error = %v, want ErrInvalidRequest", err)
+	}
+
+	_, err = service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+		Name:                  "bad-ca-eku",
+		IssuerID:              issuer.ID,
+		ValidityPeriodSeconds: int64(time.Hour.Seconds()),
+		BasicConstraints: domain.BasicConstraintsPolicy{
+			CA: true,
+		},
+		ExtendedKeyUsage: domain.StringListExtensionPolicy{
+			Values: []string{"server_auth"},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidRequest) {
+		t.Fatalf("CA serverAuth error = %v, want ErrInvalidRequest", err)
+	}
 }
 
 func TestCreateCertificateProfileEnforcesPublicTLSValidityCeiling(t *testing.T) {

@@ -13,10 +13,14 @@ signing happens.
 - Subject Alternative Name DNS/IP patterns.
 - CSR public key algorithm allow-list and minimum key size.
 - Selected signing algorithm allow-list.
+- Profile extension-combination checks reject CA signing key usage on leaf
+  profiles and leaf EKUs on CA profiles.
 - CSR linting rejects CN-only/missing SAN requests, forbidden CSR-requested Key
   Usage, Extended Key Usage, and Basic Constraints extensions, wildcards without
   an explicit wildcard profile pattern, public TLS IP SANs without an explicit
   profile range, and SAN lists over 100 entries.
+- Core CSR fixtures include a real 1024-bit RSA CSR to prove weak-key metadata
+  is surfaced before profile policy enforcement.
 - Subject Key Identifier and Authority Key Identifier settings.
 - Public TLS CAA DNSSEC and RFC 8657 parameter checks.
 - Issued DER assertions for SAN, KU, EKU, Basic Constraints, AIA, CRL
