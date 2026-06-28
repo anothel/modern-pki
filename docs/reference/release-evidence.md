@@ -39,7 +39,7 @@ Each release candidate records this matrix in release notes:
 | Area | Required evidence |
 | --- | --- |
 | OS | GitHub Actions Ubuntu result plus any Windows local verification used for release. |
-| Go | `go version` from CI and release host; minimum follows `service/go.mod`. |
+| Go | `go version` from CI and release host; CI pins at least Go 1.25.11 for standard-library vulnerability fixes. |
 | OpenSSL | CMake configure output or package version used by C++ build. |
 | SQLite | Go test result for memory/SQLite stores. |
 | PostgreSQL | PostgreSQL integration job result and DSN major version. |

@@ -21,6 +21,7 @@ def require_release_workflow() -> None:
         "tags:",
         "contents: write",
         "id-token: write",
+        'go-version: "1.25.11"',
         "cmake --build build-release --config Release",
         "go build -o ../dist/modern-pki-service",
         "syft scan dir:dist",

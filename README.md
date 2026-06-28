@@ -39,7 +39,7 @@ for the current execution order derived from the uploaded analysis reports.
 
 ## Prerequisites
 
-- Go 1.25.0+
+- Go 1.25.11+
 - CMake 3.20+
 - C++20 toolchain
 - OpenSSL development libraries

@@ -27,6 +27,7 @@ REQUIRED_DOC_TEXT = [
 REQUIRED_CI_TEXT = [
     "python scripts/test_validate_release_evidence.py",
     "python scripts/validate-release-evidence.py",
+    'go-version: "1.25.11"',
     "go vet ./...",
     "govulncheck@latest",
 ]
@@ -35,7 +36,7 @@ REQUIRED_RELEASE_TEXT = [
     "tags:",
     "contents: write",
     "id-token: write",
-    "go-version-file: service/go.mod",
+    'go-version: "1.25.11"',
     "go build -o ../dist/modern-pki-service",
     "cmake --build build-release --config Release",
     "syft scan dir:dist",

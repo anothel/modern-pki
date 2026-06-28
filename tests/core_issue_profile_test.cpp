@@ -182,7 +182,7 @@ X509Ptr certificate_from_pem(const std::string &pem)
 	return certificate;
 }
 
-X509Ptr make_ca_certificate(EVP_PKEY *key, long not_before_offset = 0, long not_after_offset = 86400, const char *name_constraints = nullptr)
+X509Ptr make_ca_certificate(EVP_PKEY *key, long not_before_offset = -60, long not_after_offset = 86400, const char *name_constraints = nullptr)
 {
 	X509Ptr certificate{X509_new()};
 	require(certificate != nullptr);
@@ -486,7 +486,7 @@ int main(int argc, char *argv[])
 	expired_request.issuer_certificate_pem = certificate_to_pem(expired_ca_certificate.get());
 	assert_issue_rejects_issuer_certificate(expired_request);
 
-	const X509Ptr constrained_ca_certificate = make_ca_certificate(ca_key.get(), 0, 86400, "permitted;DNS:.example.test");
+	const X509Ptr constrained_ca_certificate = make_ca_certificate(ca_key.get(), -60, 86400, "permitted;DNS:example.test");
 	modern_pki::core::IssueRequest constrained_request = request;
 	constrained_request.issuer_certificate_pem = certificate_to_pem(constrained_ca_certificate.get());
 	constrained_request.dns_names = {"outside.test"};
