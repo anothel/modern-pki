@@ -1137,19 +1137,22 @@ func (s *Server) createCertificateProfile(w http.ResponseWriter, r *http.Request
 	}
 
 	profile, err := s.service.CreateCertificateProfile(r.Context(), requestActor(r), lifecycle.CreateCertificateProfileRequest{
-		Name:                   req.Name,
-		Description:            req.Description,
-		IssuerID:               req.IssuerID,
-		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
-		PublicTLS:              req.PublicTLS,
-		SubjectTemplate:        req.SubjectTemplate,
-		AllowedDNSPatterns:     req.AllowedDNSPatterns,
-		AllowedIPRanges:        req.AllowedIPRanges,
-		KeyUsage:               req.KeyUsage,
-		ExtendedKeyUsage:       req.ExtendedKeyUsage,
-		BasicConstraints:       req.BasicConstraints,
-		SubjectKeyIdentifier:   req.SubjectKeyIdentifier,
-		AuthorityKeyIdentifier: req.AuthorityKeyIdentifier,
+		Name:                       req.Name,
+		Description:                req.Description,
+		IssuerID:                   req.IssuerID,
+		ValidityPeriodSeconds:      req.ValidityPeriodSeconds,
+		PublicTLS:                  req.PublicTLS,
+		SubjectTemplate:            req.SubjectTemplate,
+		AllowedDNSPatterns:         req.AllowedDNSPatterns,
+		AllowedIPRanges:            req.AllowedIPRanges,
+		AllowedKeyAlgorithms:       req.AllowedKeyAlgorithms,
+		MinKeySizeBits:             req.MinKeySizeBits,
+		AllowedSignatureAlgorithms: req.AllowedSignatureAlgorithms,
+		KeyUsage:                   req.KeyUsage,
+		ExtendedKeyUsage:           req.ExtendedKeyUsage,
+		BasicConstraints:           req.BasicConstraints,
+		SubjectKeyIdentifier:       req.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier:     req.AuthorityKeyIdentifier,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -2630,19 +2633,22 @@ type pruneAuditEventsRequest struct {
 }
 
 type createCertificateProfileRequest struct {
-	Name                   string                           `json:"name"`
-	Description            string                           `json:"description"`
-	IssuerID               string                           `json:"issuer_id"`
-	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
-	PublicTLS              bool                             `json:"public_tls"`
-	SubjectTemplate        string                           `json:"subject_template"`
-	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
-	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
-	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
-	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
+	Name                       string                           `json:"name"`
+	Description                string                           `json:"description"`
+	IssuerID                   string                           `json:"issuer_id"`
+	ValidityPeriodSeconds      int64                            `json:"validity_period_seconds"`
+	PublicTLS                  bool                             `json:"public_tls"`
+	SubjectTemplate            string                           `json:"subject_template"`
+	AllowedDNSPatterns         []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges            []string                         `json:"allowed_ip_ranges"`
+	AllowedKeyAlgorithms       []string                         `json:"allowed_key_algorithms"`
+	MinKeySizeBits             int                              `json:"min_key_size_bits"`
+	AllowedSignatureAlgorithms []string                         `json:"allowed_signature_algorithms"`
+	KeyUsage                   domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage           domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints           domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier       bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier     bool                             `json:"authority_key_identifier"`
 }
 
 type createEnrollmentRequest struct {
@@ -2990,22 +2996,25 @@ type acmeProtocolChallengeResponse struct {
 }
 
 type certificateProfileResponse struct {
-	ID                     string                           `json:"id"`
-	Name                   string                           `json:"name"`
-	Description            string                           `json:"description"`
-	IssuerID               string                           `json:"issuer_id"`
-	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
-	PublicTLS              bool                             `json:"public_tls"`
-	SubjectTemplate        string                           `json:"subject_template"`
-	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
-	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
-	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
-	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
-	CreatedAt              time.Time                        `json:"created_at"`
-	UpdatedAt              time.Time                        `json:"updated_at"`
+	ID                         string                           `json:"id"`
+	Name                       string                           `json:"name"`
+	Description                string                           `json:"description"`
+	IssuerID                   string                           `json:"issuer_id"`
+	ValidityPeriodSeconds      int64                            `json:"validity_period_seconds"`
+	PublicTLS                  bool                             `json:"public_tls"`
+	SubjectTemplate            string                           `json:"subject_template"`
+	AllowedDNSPatterns         []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges            []string                         `json:"allowed_ip_ranges"`
+	AllowedKeyAlgorithms       []string                         `json:"allowed_key_algorithms"`
+	MinKeySizeBits             int                              `json:"min_key_size_bits"`
+	AllowedSignatureAlgorithms []string                         `json:"allowed_signature_algorithms"`
+	KeyUsage                   domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage           domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints           domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier       bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier     bool                             `json:"authority_key_identifier"`
+	CreatedAt                  time.Time                        `json:"created_at"`
+	UpdatedAt                  time.Time                        `json:"updated_at"`
 }
 
 type enrollmentResponse struct {
@@ -3459,22 +3468,25 @@ func acmeAuthorizationHasProcessingChallenge(authorization acmeProtocolAuthoriza
 
 func toCertificateProfileResponse(profile domain.CertificateProfile) certificateProfileResponse {
 	return certificateProfileResponse{
-		ID:                     profile.ID,
-		Name:                   profile.Name,
-		Description:            profile.Description,
-		IssuerID:               profile.IssuerID,
-		ValidityPeriodSeconds:  profile.ValidityPeriodSeconds,
-		PublicTLS:              profile.PublicTLS,
-		SubjectTemplate:        profile.SubjectTemplate,
-		AllowedDNSPatterns:     profile.AllowedDNSPatterns,
-		AllowedIPRanges:        profile.AllowedIPRanges,
-		KeyUsage:               profile.KeyUsage,
-		ExtendedKeyUsage:       profile.ExtendedKeyUsage,
-		BasicConstraints:       profile.BasicConstraints,
-		SubjectKeyIdentifier:   profile.SubjectKeyIdentifier,
-		AuthorityKeyIdentifier: profile.AuthorityKeyIdentifier,
-		CreatedAt:              profile.CreatedAt,
-		UpdatedAt:              profile.UpdatedAt,
+		ID:                         profile.ID,
+		Name:                       profile.Name,
+		Description:                profile.Description,
+		IssuerID:                   profile.IssuerID,
+		ValidityPeriodSeconds:      profile.ValidityPeriodSeconds,
+		PublicTLS:                  profile.PublicTLS,
+		SubjectTemplate:            profile.SubjectTemplate,
+		AllowedDNSPatterns:         profile.AllowedDNSPatterns,
+		AllowedIPRanges:            profile.AllowedIPRanges,
+		AllowedKeyAlgorithms:       profile.AllowedKeyAlgorithms,
+		MinKeySizeBits:             profile.MinKeySizeBits,
+		AllowedSignatureAlgorithms: profile.AllowedSignatureAlgorithms,
+		KeyUsage:                   profile.KeyUsage,
+		ExtendedKeyUsage:           profile.ExtendedKeyUsage,
+		BasicConstraints:           profile.BasicConstraints,
+		SubjectKeyIdentifier:       profile.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier:     profile.AuthorityKeyIdentifier,
+		CreatedAt:                  profile.CreatedAt,
+		UpdatedAt:                  profile.UpdatedAt,
 	}
 }
 

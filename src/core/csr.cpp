@@ -2,6 +2,8 @@
 
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -35,6 +37,14 @@ struct X509ReqDeleter
 	}
 };
 
+struct EvpPkeyDeleter
+{
+	void operator()(EVP_PKEY *key) const noexcept
+	{
+		EVP_PKEY_free(key);
+	}
+};
+
 struct X509ExtensionStackDeleter
 {
 	void operator()(STACK_OF(X509_EXTENSION) * extensions) const noexcept
@@ -60,6 +70,7 @@ struct OpenSslFreeDeleter
 };
 
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
+using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
 using X509ReqPtr = std::unique_ptr<X509_REQ, X509ReqDeleter>;
 using X509ExtensionStackPtr = std::unique_ptr<STACK_OF(X509_EXTENSION), X509ExtensionStackDeleter>;
 using GeneralNamesPtr = std::unique_ptr<GENERAL_NAMES, GeneralNamesDeleter>;
@@ -184,6 +195,48 @@ void append_subject_alt_names(X509_REQ *request, CsrInfo &info)
 	}
 }
 
+std::string public_key_algorithm(EVP_PKEY *key)
+{
+	switch (EVP_PKEY_base_id(key))
+	{
+	case EVP_PKEY_RSA:
+		return "rsa";
+	case EVP_PKEY_EC:
+		return "ecdsa";
+	case EVP_PKEY_ED25519:
+		return "ed25519";
+	default:
+		return "unknown";
+	}
+}
+
+std::string signature_algorithm(X509_REQ *request)
+{
+	const X509_ALGOR *algorithm = nullptr;
+	X509_REQ_get0_signature(request, nullptr, &algorithm);
+	if (algorithm == nullptr || algorithm->algorithm == nullptr)
+	{
+		throw std::runtime_error{"csr.parse_failed"};
+	}
+	const int nid = OBJ_obj2nid(algorithm->algorithm);
+	switch (nid)
+	{
+	case NID_sha256WithRSAEncryption:
+	case NID_ecdsa_with_SHA256:
+		return "sha256";
+	case NID_sha384WithRSAEncryption:
+	case NID_ecdsa_with_SHA384:
+		return "sha384";
+	case NID_sha512WithRSAEncryption:
+	case NID_ecdsa_with_SHA512:
+		return "sha512";
+	case NID_ED25519:
+		return "ed25519";
+	default:
+		return OBJ_nid2sn(nid) == nullptr ? "unknown" : OBJ_nid2sn(nid);
+	}
+}
+
 } // namespace
 
 CsrInfo inspect_csr_pem(const std::string &csr_pem)
@@ -220,6 +273,14 @@ CsrInfo inspect_csr_pem(const std::string &csr_pem)
 	CsrInfo info;
 	info.subject = subject.get();
 	append_subject_alt_names(request.get(), info);
+	EvpPkeyPtr public_key{X509_REQ_get_pubkey(request.get())};
+	if (!public_key)
+	{
+		throw std::runtime_error{"csr.parse_failed"};
+	}
+	info.public_key_algorithm = public_key_algorithm(public_key.get());
+	info.public_key_size_bits = EVP_PKEY_bits(public_key.get());
+	info.signature_algorithm = signature_algorithm(request.get());
 	return info;
 }
 

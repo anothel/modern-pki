@@ -502,10 +502,16 @@ int main(int argc, char *argv[])
 	csr_info.subject = "CN=leaf";
 	csr_info.dns_names = {"leaf.example.test"};
 	csr_info.ip_addresses = {"127.0.0.1"};
+	csr_info.public_key_algorithm = "rsa";
+	csr_info.public_key_size_bits = 2048;
+	csr_info.signature_algorithm = "sha256";
 
 	assert(csr_info.subject == "CN=leaf");
 	assert(csr_info.dns_names == std::vector<std::string>{"leaf.example.test"});
 	assert(csr_info.ip_addresses == std::vector<std::string>{"127.0.0.1"});
+	assert(csr_info.public_key_algorithm == "rsa");
+	assert(csr_info.public_key_size_bits == 2048);
+	assert(csr_info.signature_algorithm == "sha256");
 
 	return 0;
 }

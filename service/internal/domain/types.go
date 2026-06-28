@@ -240,22 +240,25 @@ type BasicConstraintsPolicy struct {
 }
 
 type CertificateProfile struct {
-	ID                     string
-	Name                   string
-	Description            string
-	IssuerID               string
-	ValidityPeriodSeconds  int64
-	PublicTLS              bool
-	SubjectTemplate        string
-	AllowedDNSPatterns     []string
-	AllowedIPRanges        []string
-	KeyUsage               StringListExtensionPolicy
-	ExtendedKeyUsage       StringListExtensionPolicy
-	BasicConstraints       BasicConstraintsPolicy
-	SubjectKeyIdentifier   bool
-	AuthorityKeyIdentifier bool
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                         string
+	Name                       string
+	Description                string
+	IssuerID                   string
+	ValidityPeriodSeconds      int64
+	PublicTLS                  bool
+	SubjectTemplate            string
+	AllowedDNSPatterns         []string
+	AllowedIPRanges            []string
+	AllowedKeyAlgorithms       []string
+	MinKeySizeBits             int
+	AllowedSignatureAlgorithms []string
+	KeyUsage                   StringListExtensionPolicy
+	ExtendedKeyUsage           StringListExtensionPolicy
+	BasicConstraints           BasicConstraintsPolicy
+	SubjectKeyIdentifier       bool
+	AuthorityKeyIdentifier     bool
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
 
 type Enrollment struct {

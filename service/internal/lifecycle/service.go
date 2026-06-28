@@ -199,19 +199,22 @@ type CreateNotificationEndpointRequest struct {
 }
 
 type CreateCertificateProfileRequest struct {
-	Name                   string
-	Description            string
-	IssuerID               string
-	ValidityPeriodSeconds  int64
-	PublicTLS              bool
-	SubjectTemplate        string
-	AllowedDNSPatterns     []string
-	AllowedIPRanges        []string
-	KeyUsage               domain.StringListExtensionPolicy
-	ExtendedKeyUsage       domain.StringListExtensionPolicy
-	BasicConstraints       domain.BasicConstraintsPolicy
-	SubjectKeyIdentifier   bool
-	AuthorityKeyIdentifier bool
+	Name                       string
+	Description                string
+	IssuerID                   string
+	ValidityPeriodSeconds      int64
+	PublicTLS                  bool
+	SubjectTemplate            string
+	AllowedDNSPatterns         []string
+	AllowedIPRanges            []string
+	AllowedKeyAlgorithms       []string
+	MinKeySizeBits             int
+	AllowedSignatureAlgorithms []string
+	KeyUsage                   domain.StringListExtensionPolicy
+	ExtendedKeyUsage           domain.StringListExtensionPolicy
+	BasicConstraints           domain.BasicConstraintsPolicy
+	SubjectKeyIdentifier       bool
+	AuthorityKeyIdentifier     bool
 }
 
 type CreateEnrollmentRequest struct {
@@ -1878,22 +1881,25 @@ func (s *Service) CreateCertificateProfile(ctx context.Context, actor string, re
 	}
 
 	profile := domain.CertificateProfile{
-		ID:                     s.idgen.NewID(),
-		Name:                   req.Name,
-		Description:            req.Description,
-		IssuerID:               req.IssuerID,
-		ValidityPeriodSeconds:  req.ValidityPeriodSeconds,
-		PublicTLS:              req.PublicTLS,
-		SubjectTemplate:        req.SubjectTemplate,
-		AllowedDNSPatterns:     append([]string(nil), req.AllowedDNSPatterns...),
-		AllowedIPRanges:        append([]string(nil), req.AllowedIPRanges...),
-		KeyUsage:               copyStringListExtensionPolicy(req.KeyUsage),
-		ExtendedKeyUsage:       copyStringListExtensionPolicy(req.ExtendedKeyUsage),
-		BasicConstraints:       req.BasicConstraints,
-		SubjectKeyIdentifier:   req.SubjectKeyIdentifier,
-		AuthorityKeyIdentifier: req.AuthorityKeyIdentifier,
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		ID:                         s.idgen.NewID(),
+		Name:                       req.Name,
+		Description:                req.Description,
+		IssuerID:                   req.IssuerID,
+		ValidityPeriodSeconds:      req.ValidityPeriodSeconds,
+		PublicTLS:                  req.PublicTLS,
+		SubjectTemplate:            req.SubjectTemplate,
+		AllowedDNSPatterns:         append([]string(nil), req.AllowedDNSPatterns...),
+		AllowedIPRanges:            append([]string(nil), req.AllowedIPRanges...),
+		AllowedKeyAlgorithms:       normalizeStringList(req.AllowedKeyAlgorithms),
+		MinKeySizeBits:             req.MinKeySizeBits,
+		AllowedSignatureAlgorithms: normalizeStringList(req.AllowedSignatureAlgorithms),
+		KeyUsage:                   copyStringListExtensionPolicy(req.KeyUsage),
+		ExtendedKeyUsage:           copyStringListExtensionPolicy(req.ExtendedKeyUsage),
+		BasicConstraints:           req.BasicConstraints,
+		SubjectKeyIdentifier:       req.SubjectKeyIdentifier,
+		AuthorityKeyIdentifier:     req.AuthorityKeyIdentifier,
+		CreatedAt:                  now,
+		UpdatedAt:                  now,
 	}
 
 	if err := s.repo.WithinTx(ctx, func(repo store.Repository) error {
@@ -1947,7 +1953,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, actor string, req Create
 	if !sameStringSet(req.RequestedDNSNames, csrInfo.DNSNames) || !sameStringSet(req.RequestedIPAddresses, csrInfo.IPAddresses) {
 		return domain.Enrollment{}, domain.ErrInvalidRequest
 	}
-	if err := validateEnrollmentProfilePolicy(req, profile, now); err != nil {
+	if err := validateEnrollmentProfilePolicy(req, profile, csrInfo, now); err != nil {
 		return domain.Enrollment{}, err
 	}
 	if err := validateEnrollmentIdentityPolicy(req, identity); err != nil {
@@ -2119,7 +2125,7 @@ func (s *Service) createCertificateReplacementEnrollment(ctx context.Context, ac
 			return domain.Enrollment{}, domain.ErrInvalidRequest
 		}
 	}
-	if err := validateEnrollmentProfilePolicy(createReq, profile, now); err != nil {
+	if err := validateEnrollmentProfilePolicy(createReq, profile, csrInfo, now); err != nil {
 		return domain.Enrollment{}, err
 	}
 	identity, err := s.repo.GetIdentity(ctx, createReq.IdentityID)
@@ -2315,7 +2321,16 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 	}
 
 	now := s.clock.Now()
-	if err := validateEnrollmentProfilePolicy(enrollmentProfilePolicyRequest(enrollment), profile, now); err != nil {
+	var csrInfo corecli.CSRInfo
+	if profileRequiresCSRAlgorithmPolicy(profile) {
+		csrInfo, err = observeSigner("inspect_csr", func() (corecli.CSRInfo, error) {
+			return s.issuer.InspectCSR(ctx, enrollment.CSRPEM)
+		})
+		if err != nil {
+			return domain.Certificate{}, mapCSRInspectError(err)
+		}
+	}
+	if err := validateEnrollmentProfilePolicy(enrollmentProfilePolicyRequest(enrollment), profile, csrInfo, now); err != nil {
 		return domain.Certificate{}, err
 	}
 	if err := validateEnrollmentIdentityPolicy(enrollmentProfilePolicyRequest(enrollment), identity); err != nil {
@@ -2339,7 +2354,7 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 				IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),
 				NotBefore:                  now,
 				NotAfter:                   enrollment.RequestedNotAfter,
-				SignatureAlgorithm:         "ecdsa_with_sha256",
+				SignatureAlgorithm:         profileSignatureAlgorithm(profile),
 				ProfileID:                  profile.ID,
 				BasicConstraintsCritical:   profile.BasicConstraints.Critical,
 				BasicConstraintsCA:         profile.BasicConstraints.CA,
@@ -4126,6 +4141,19 @@ func validateCreateCertificateProfileRequest(req CreateCertificateProfileRequest
 	if isBlank(req.Name) || isBlank(req.IssuerID) || req.ValidityPeriodSeconds <= 0 {
 		return domain.ErrInvalidRequest
 	}
+	if req.MinKeySizeBits < 0 {
+		return domain.ErrInvalidRequest
+	}
+	for _, algorithm := range req.AllowedKeyAlgorithms {
+		if !isSupportedKeyAlgorithm(algorithm) {
+			return domain.ErrInvalidRequest
+		}
+	}
+	for _, algorithm := range req.AllowedSignatureAlgorithms {
+		if !isSupportedSignatureAlgorithm(algorithm) {
+			return domain.ErrInvalidRequest
+		}
+	}
 	if req.PublicTLS {
 		maxValidity := publicTLSValidityCeiling(now, publicTLSMaxValidityOverride)
 		if time.Duration(req.ValidityPeriodSeconds)*time.Second > maxValidity {
@@ -4208,7 +4236,7 @@ func validateCreateACMEOrderRequest(req CreateACMEOrderRequest, now time.Time) e
 	return nil
 }
 
-func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain.CertificateProfile, now time.Time) error {
+func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain.CertificateProfile, csrInfo corecli.CSRInfo, now time.Time) error {
 	if profile.ID == "" {
 		return nil
 	}
@@ -4228,7 +4256,67 @@ func validateEnrollmentProfilePolicy(req CreateEnrollmentRequest, profile domain
 			return domain.ErrInvalidRequest
 		}
 	}
+	if len(profile.AllowedKeyAlgorithms) != 0 && !stringInList(normalizeAlgorithm(csrInfo.PublicKeyAlgorithm), profile.AllowedKeyAlgorithms) {
+		return domain.ErrInvalidRequest
+	}
+	if profile.MinKeySizeBits > 0 && csrInfo.PublicKeySizeBits < profile.MinKeySizeBits {
+		return domain.ErrInvalidRequest
+	}
+	if len(profile.AllowedSignatureAlgorithms) != 0 && !stringInList(profileSignatureAlgorithm(profile), profile.AllowedSignatureAlgorithms) {
+		return domain.ErrInvalidRequest
+	}
 	return nil
+}
+
+func profileRequiresCSRAlgorithmPolicy(profile domain.CertificateProfile) bool {
+	return len(profile.AllowedKeyAlgorithms) != 0 || profile.MinKeySizeBits > 0
+}
+
+func profileSignatureAlgorithm(profile domain.CertificateProfile) string {
+	if len(profile.AllowedSignatureAlgorithms) != 0 {
+		return normalizeAlgorithm(profile.AllowedSignatureAlgorithms[0])
+	}
+	return "ecdsa_with_sha256"
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, normalizeAlgorithm(value))
+	}
+	return out
+}
+
+func normalizeAlgorithm(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func isSupportedKeyAlgorithm(value string) bool {
+	switch normalizeAlgorithm(value) {
+	case "rsa", "ecdsa", "ed25519":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedSignatureAlgorithm(value string) bool {
+	switch normalizeAlgorithm(value) {
+	case "sha256", "sha384", "sha512", "rsa_with_sha256", "rsa_with_sha384", "rsa_with_sha512", "ecdsa_with_sha256", "ecdsa_with_sha384", "ecdsa_with_sha512", "ed25519":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringInList(value string, allowed []string) bool {
+	value = normalizeAlgorithm(value)
+	for _, candidate := range allowed {
+		if normalizeAlgorithm(candidate) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func validateEnrollmentIdentityPolicy(req CreateEnrollmentRequest, identity domain.Identity) error {

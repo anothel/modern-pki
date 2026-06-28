@@ -77,11 +77,15 @@ CREATE TABLE IF NOT EXISTS certificate_profiles (
     subject_template TEXT NOT NULL,
     allowed_dns_patterns TEXT NOT NULL,
     allowed_ip_ranges TEXT NOT NULL,
+    allowed_key_algorithms TEXT NOT NULL,
+    min_key_size_bits INTEGER NOT NULL,
+    allowed_signature_algorithms TEXT NOT NULL,
     key_usage TEXT NOT NULL,
     extended_key_usage TEXT NOT NULL,
     basic_constraints TEXT NOT NULL,
     subject_key_identifier INTEGER NOT NULL,
     authority_key_identifier INTEGER NOT NULL,
+    public_tls INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

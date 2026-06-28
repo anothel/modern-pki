@@ -44,9 +44,12 @@ type IssueResult struct {
 }
 
 type CSRInfo struct {
-	Subject     string   `json:"subject"`
-	DNSNames    []string `json:"dns_names"`
-	IPAddresses []string `json:"ip_addresses"`
+	Subject            string   `json:"subject"`
+	DNSNames           []string `json:"dns_names"`
+	IPAddresses        []string `json:"ip_addresses"`
+	PublicKeyAlgorithm string   `json:"public_key_algorithm"`
+	PublicKeySizeBits  int      `json:"public_key_size_bits"`
+	SignatureAlgorithm string   `json:"signature_algorithm"`
 }
 
 type RevokedCertificate struct {

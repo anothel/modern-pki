@@ -1975,12 +1975,15 @@ func TestCreateCertificateProfile(t *testing.T) {
 
 	var created apiCertificateProfile
 	status := api.doJSON(t, http.MethodPost, "/certificate-profiles", "admin", map[string]any{
-		"name":                    "machine-server",
-		"description":             "Machine TLS server profile",
-		"issuer_id":               issuer.ID,
-		"validity_period_seconds": int64((24 * time.Hour).Seconds()),
-		"subject_template":        "CN={{identity.name}}",
-		"allowed_dns_patterns":    []string{"*.example.test"},
+		"name":                         "machine-server",
+		"description":                  "Machine TLS server profile",
+		"issuer_id":                    issuer.ID,
+		"validity_period_seconds":      int64((24 * time.Hour).Seconds()),
+		"subject_template":             "CN={{identity.name}}",
+		"allowed_dns_patterns":         []string{"*.example.test"},
+		"allowed_key_algorithms":       []string{"rsa"},
+		"min_key_size_bits":            2048,
+		"allowed_signature_algorithms": []string{"sha256"},
 		"key_usage": map[string]any{
 			"critical": true,
 			"values":   []string{"digital_signature", "key_encipherment"},
@@ -2005,6 +2008,11 @@ func TestCreateCertificateProfile(t *testing.T) {
 	}
 	if !created.KeyUsage.Critical || len(created.KeyUsage.Values) != 2 {
 		t.Fatalf("created profile key usage = %#v", created.KeyUsage)
+	}
+	if !reflect.DeepEqual(created.AllowedKeyAlgorithms, []string{"rsa"}) ||
+		created.MinKeySizeBits != 2048 ||
+		!reflect.DeepEqual(created.AllowedSignatureAlgorithms, []string{"sha256"}) {
+		t.Fatalf("created profile algorithm policy = %#v", created)
 	}
 	if !created.SubjectKeyIdentifier || !created.AuthorityKeyIdentifier {
 		t.Fatalf("created profile key identifiers = ski:%t aki:%t", created.SubjectKeyIdentifier, created.AuthorityKeyIdentifier)
@@ -4407,22 +4415,25 @@ type apiExpirySLO struct {
 }
 
 type apiCertificateProfile struct {
-	ID                     string                           `json:"id"`
-	Name                   string                           `json:"name"`
-	Description            string                           `json:"description"`
-	IssuerID               string                           `json:"issuer_id"`
-	ValidityPeriodSeconds  int64                            `json:"validity_period_seconds"`
-	PublicTLS              bool                             `json:"public_tls"`
-	SubjectTemplate        string                           `json:"subject_template"`
-	AllowedDNSPatterns     []string                         `json:"allowed_dns_patterns"`
-	AllowedIPRanges        []string                         `json:"allowed_ip_ranges"`
-	KeyUsage               domain.StringListExtensionPolicy `json:"key_usage"`
-	ExtendedKeyUsage       domain.StringListExtensionPolicy `json:"extended_key_usage"`
-	BasicConstraints       domain.BasicConstraintsPolicy    `json:"basic_constraints"`
-	SubjectKeyIdentifier   bool                             `json:"subject_key_identifier"`
-	AuthorityKeyIdentifier bool                             `json:"authority_key_identifier"`
-	CreatedAt              time.Time                        `json:"created_at"`
-	UpdatedAt              time.Time                        `json:"updated_at"`
+	ID                         string                           `json:"id"`
+	Name                       string                           `json:"name"`
+	Description                string                           `json:"description"`
+	IssuerID                   string                           `json:"issuer_id"`
+	ValidityPeriodSeconds      int64                            `json:"validity_period_seconds"`
+	PublicTLS                  bool                             `json:"public_tls"`
+	SubjectTemplate            string                           `json:"subject_template"`
+	AllowedDNSPatterns         []string                         `json:"allowed_dns_patterns"`
+	AllowedIPRanges            []string                         `json:"allowed_ip_ranges"`
+	AllowedKeyAlgorithms       []string                         `json:"allowed_key_algorithms"`
+	MinKeySizeBits             int                              `json:"min_key_size_bits"`
+	AllowedSignatureAlgorithms []string                         `json:"allowed_signature_algorithms"`
+	KeyUsage                   domain.StringListExtensionPolicy `json:"key_usage"`
+	ExtendedKeyUsage           domain.StringListExtensionPolicy `json:"extended_key_usage"`
+	BasicConstraints           domain.BasicConstraintsPolicy    `json:"basic_constraints"`
+	SubjectKeyIdentifier       bool                             `json:"subject_key_identifier"`
+	AuthorityKeyIdentifier     bool                             `json:"authority_key_identifier"`
+	CreatedAt                  time.Time                        `json:"created_at"`
+	UpdatedAt                  time.Time                        `json:"updated_at"`
 }
 
 type apiEnrollment struct {

@@ -57,11 +57,8 @@ Goal: convert real-client differences into stable protocol fixtures.
 Goal: prevent malformed, weak, or policy-violating certificates at approval and
 signing boundaries.
 
-- Add CSR linting for key algorithm, key size, malformed PEM, forbidden
-  extensions, SAN/CN policy, wildcard policy, IP SAN policy, and oversized SAN
-  lists.
-- Add profile-level key algorithm policy.
-- Add profile-level signature algorithm policy.
+- Add CSR linting for malformed PEM, forbidden extensions, SAN/CN policy,
+  wildcard policy, IP SAN policy, and oversized SAN lists.
 - Add negative tests for CN-only requests, missing SAN, invalid EKU/KU
   combinations, weak keys, expired chains, name constraints, malformed PEM,
   duplicate serials, and oversized SAN lists.

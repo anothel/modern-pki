@@ -784,6 +784,8 @@ func copyIssuer(issuer domain.Issuer) domain.Issuer {
 func copyCertificateProfile(profile domain.CertificateProfile) domain.CertificateProfile {
 	profile.AllowedDNSPatterns = append([]string(nil), profile.AllowedDNSPatterns...)
 	profile.AllowedIPRanges = append([]string(nil), profile.AllowedIPRanges...)
+	profile.AllowedKeyAlgorithms = append([]string(nil), profile.AllowedKeyAlgorithms...)
+	profile.AllowedSignatureAlgorithms = append([]string(nil), profile.AllowedSignatureAlgorithms...)
 	profile.KeyUsage.Values = append([]string(nil), profile.KeyUsage.Values...)
 	profile.ExtendedKeyUsage.Values = append([]string(nil), profile.ExtendedKeyUsage.Values...)
 	return profile

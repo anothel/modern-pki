@@ -804,12 +804,38 @@ std::string subject_to_string(X509_NAME *subject)
 	return subject_text;
 }
 
+const EVP_MD *signature_digest(const IssueRequest &request)
+{
+	if (request.signature_algorithm.empty() ||
+	    request.signature_algorithm == "sha256" ||
+	    request.signature_algorithm == "rsa_with_sha256" ||
+	    request.signature_algorithm == "ecdsa_with_sha256")
+	{
+		return EVP_sha256();
+	}
+	if (request.signature_algorithm == "sha384" ||
+	    request.signature_algorithm == "rsa_with_sha384" ||
+	    request.signature_algorithm == "ecdsa_with_sha384")
+	{
+		return EVP_sha384();
+	}
+	if (request.signature_algorithm == "sha512" ||
+	    request.signature_algorithm == "rsa_with_sha512" ||
+	    request.signature_algorithm == "ecdsa_with_sha512")
+	{
+		return EVP_sha512();
+	}
+	if (request.signature_algorithm == "ed25519")
+	{
+		return nullptr;
+	}
+	throw_error(kCertificateCreateFailed);
+}
+
 } // namespace
 
 IssueResult issue_certificate(const IssueRequest &request)
 {
-	(void)request.signature_algorithm;
-
 	X509ReqPtr csr = parse_csr(request.csr_pem);
 	EvpPkeyPtr public_key = verify_csr_proof_of_possession(csr.get());
 	X509Ptr issuer_certificate = parse_issuer_certificate(request.issuer_certificate_pem);
@@ -865,7 +891,7 @@ IssueResult issue_certificate(const IssueRequest &request)
 	add_profile_extensions(certificate.get(), issuer_certificate.get(), request);
 	add_subject_alt_names(certificate.get(), issuer_certificate.get(), request);
 
-	if (X509_sign(certificate.get(), issuer_key.get(), EVP_sha256()) <= 0)
+	if (X509_sign(certificate.get(), issuer_key.get(), signature_digest(request)) <= 0)
 	{
 		throw_error(kSignFailed);
 	}

@@ -11,6 +11,8 @@ signing happens.
 - Key Usage.
 - Extended Key Usage.
 - Subject Alternative Name DNS/IP patterns.
+- CSR public key algorithm allow-list and minimum key size.
+- Selected signing algorithm allow-list.
 - Subject Key Identifier and Authority Key Identifier settings.
 - Public TLS CAA DNSSEC and RFC 8657 parameter checks.
 - Issued DER assertions for SAN, KU, EKU, Basic Constraints, AIA, CRL
@@ -27,5 +29,5 @@ signing happens.
 
 ## Gaps
 
-- Profile-level key algorithm policy.
-- Profile-level signature algorithm policy.
+- Remaining CSR linting for malformed PEM, forbidden extensions, CN/SAN edge
+  cases, wildcards, IP SANs, and oversized SAN lists.

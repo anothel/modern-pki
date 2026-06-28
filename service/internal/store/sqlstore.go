@@ -834,6 +834,14 @@ func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile dom
 	if err != nil {
 		return err
 	}
+	allowedKeyAlgorithms, err := marshalStringSlice(profile.AllowedKeyAlgorithms)
+	if err != nil {
+		return err
+	}
+	allowedSignatureAlgorithms, err := marshalStringSlice(profile.AllowedSignatureAlgorithms)
+	if err != nil {
+		return err
+	}
 	keyUsage, err := marshalJSON(profile.KeyUsage)
 	if err != nil {
 		return err
@@ -850,10 +858,11 @@ func (r sqlRepository) CreateCertificateProfile(ctx context.Context, profile dom
 	_, err = r.exec.ExecContext(ctx, `
 INSERT INTO certificate_profiles (
 	id, name, description, issuer_id, validity_period_seconds, subject_template,
-	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
+	allowed_dns_patterns, allowed_ip_ranges, allowed_key_algorithms, min_key_size_bits,
+	allowed_signature_algorithms, key_usage, extended_key_usage, basic_constraints,
+	subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 )`,
 		profile.ID,
 		profile.Name,
@@ -863,6 +872,9 @@ INSERT INTO certificate_profiles (
 		profile.SubjectTemplate,
 		allowedDNSPatterns,
 		allowedIPRanges,
+		allowedKeyAlgorithms,
+		profile.MinKeySizeBits,
+		allowedSignatureAlgorithms,
 		keyUsage,
 		extendedKeyUsage,
 		basicConstraints,
@@ -878,8 +890,9 @@ INSERT INTO certificate_profiles (
 func (r sqlRepository) GetCertificateProfile(ctx context.Context, id string) (domain.CertificateProfile, error) {
 	profile, err := scanCertificateProfile(r.exec.QueryRowContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
-	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
+	allowed_dns_patterns, allowed_ip_ranges, allowed_key_algorithms, min_key_size_bits,
+	allowed_signature_algorithms, key_usage, extended_key_usage, basic_constraints,
+	subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 FROM certificate_profiles
 WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -894,8 +907,9 @@ WHERE id = $1`, id))
 func (r sqlRepository) ListCertificateProfiles(ctx context.Context) ([]domain.CertificateProfile, error) {
 	rows, err := r.exec.QueryContext(ctx, `
 SELECT id, name, description, issuer_id, validity_period_seconds, subject_template,
-	allowed_dns_patterns, allowed_ip_ranges, key_usage, extended_key_usage,
-	basic_constraints, subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
+	allowed_dns_patterns, allowed_ip_ranges, allowed_key_algorithms, min_key_size_bits,
+	allowed_signature_algorithms, key_usage, extended_key_usage, basic_constraints,
+	subject_key_identifier, authority_key_identifier, public_tls, created_at, updated_at
 FROM certificate_profiles
 ORDER BY created_at, id`)
 	if err != nil {
@@ -3133,6 +3147,8 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 	var profile domain.CertificateProfile
 	var allowedDNSPatterns string
 	var allowedIPRanges string
+	var allowedKeyAlgorithms string
+	var allowedSignatureAlgorithms string
 	var keyUsage string
 	var extendedKeyUsage string
 	var basicConstraints string
@@ -3151,6 +3167,9 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 		&profile.SubjectTemplate,
 		&allowedDNSPatterns,
 		&allowedIPRanges,
+		&allowedKeyAlgorithms,
+		&profile.MinKeySizeBits,
+		&allowedSignatureAlgorithms,
 		&keyUsage,
 		&extendedKeyUsage,
 		&basicConstraints,
@@ -3168,6 +3187,14 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 		return domain.CertificateProfile{}, err
 	}
 	parsedAllowedIPRanges, err := unmarshalStringSlice(allowedIPRanges)
+	if err != nil {
+		return domain.CertificateProfile{}, err
+	}
+	parsedAllowedKeyAlgorithms, err := unmarshalStringSlice(allowedKeyAlgorithms)
+	if err != nil {
+		return domain.CertificateProfile{}, err
+	}
+	parsedAllowedSignatureAlgorithms, err := unmarshalStringSlice(allowedSignatureAlgorithms)
 	if err != nil {
 		return domain.CertificateProfile{}, err
 	}
@@ -3191,6 +3218,8 @@ func scanCertificateProfile(scanner sqlScanner) (domain.CertificateProfile, erro
 
 	profile.AllowedDNSPatterns = parsedAllowedDNSPatterns
 	profile.AllowedIPRanges = parsedAllowedIPRanges
+	profile.AllowedKeyAlgorithms = parsedAllowedKeyAlgorithms
+	profile.AllowedSignatureAlgorithms = parsedAllowedSignatureAlgorithms
 	profile.SubjectKeyIdentifier = subjectKeyIdentifier
 	profile.AuthorityKeyIdentifier = authorityKeyIdentifier
 	profile.PublicTLS = publicTLS

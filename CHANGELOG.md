@@ -20,6 +20,8 @@ commands and known gaps before tagging.
   outbox, webhook delivery, CRL, OCSP, and ACME adapter flows.
 - Issued-certificate DER golden coverage for SAN, KU, EKU, Basic Constraints,
   AIA, CRL Distribution Points, SKI, and AKI.
+- Profile algorithm policy for CSR public key algorithm, minimum key size, and
+  selected signing algorithm.
 
 ### Changed
 

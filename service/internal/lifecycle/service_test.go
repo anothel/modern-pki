@@ -518,6 +518,7 @@ func TestIssueCertificateUsesEnrollmentProfile(t *testing.T) {
 		ExtendedKeyUsage: domain.StringListExtensionPolicy{
 			Values: []string{"server_auth"},
 		},
+		AllowedSignatureAlgorithms: []string{"sha384"},
 		BasicConstraints: domain.BasicConstraintsPolicy{
 			Critical: true,
 			CA:       false,
@@ -565,6 +566,9 @@ func TestIssueCertificateUsesEnrollmentProfile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(req.ExtendedKeyUsage, []string{"server_auth"}) {
 		t.Fatalf("IssueRequest extended key usage = %#v", req.ExtendedKeyUsage)
+	}
+	if req.SignatureAlgorithm != "sha384" {
+		t.Fatalf("IssueRequest SignatureAlgorithm = %q, want sha384", req.SignatureAlgorithm)
 	}
 	if !req.SubjectKeyIdentifier || !req.AuthorityKeyIdentifier {
 		t.Fatalf("IssueRequest key identifiers = ski:%t aki:%t", req.SubjectKeyIdentifier, req.AuthorityKeyIdentifier)
@@ -2688,6 +2692,116 @@ func TestIssueCertificateEnforcesProfilePolicyBeforeSigning(t *testing.T) {
 	}
 }
 
+func TestCreateEnrollmentEnforcesProfileAlgorithmPolicy(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name    string
+		csrInfo corecli.CSRInfo
+		mutate  func(*CreateCertificateProfileRequest)
+	}{
+		{
+			name: "key algorithm outside profile allow list",
+			csrInfo: corecli.CSRInfo{
+				Subject:            "CN=edge-01",
+				DNSNames:           []string{"edge-01.example.test"},
+				IPAddresses:        []string{"192.0.2.10"},
+				PublicKeyAlgorithm: "rsa",
+				PublicKeySizeBits:  2048,
+				SignatureAlgorithm: "sha256",
+			},
+			mutate: func(req *CreateCertificateProfileRequest) {
+				req.AllowedKeyAlgorithms = []string{"ecdsa"}
+			},
+		},
+		{
+			name: "key size below profile floor",
+			csrInfo: corecli.CSRInfo{
+				Subject:            "CN=edge-01",
+				DNSNames:           []string{"edge-01.example.test"},
+				IPAddresses:        []string{"192.0.2.10"},
+				PublicKeyAlgorithm: "rsa",
+				PublicKeySizeBits:  1024,
+				SignatureAlgorithm: "sha256",
+			},
+			mutate: func(req *CreateCertificateProfileRequest) {
+				req.MinKeySizeBits = 2048
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := New(
+				store.NewMemoryStore(),
+				&fakeIssuer{csrInfo: tt.csrInfo},
+				fixedClock{now: now},
+				&fakeIDGenerator{},
+			)
+			identity, issuer, profile := createProfilePolicyFixtureWithProfileMutation(t, ctx, service, tt.mutate)
+			_, err := service.CreateEnrollment(ctx, "operator", CreateEnrollmentRequest{
+				IdentityID:           identity.ID,
+				IssuerID:             issuer.ID,
+				CertificateProfileID: profile.ID,
+				CSRPEM:               "csr-pem",
+				RequestedSubject:     "CN=edge-01",
+				RequestedDNSNames:    []string{"edge-01.example.test"},
+				RequestedIPAddresses: []string{"192.0.2.10"},
+				RequestedNotAfter:    now.Add(24 * time.Hour),
+			})
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("CreateEnrollment error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
+func TestCreateCertificateProfileRejectsUnsupportedAlgorithmPolicy(t *testing.T) {
+	ctx := context.Background()
+	service := New(
+		store.NewMemoryStore(),
+		&fakeIssuer{},
+		fixedClock{now: time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)},
+		&fakeIDGenerator{},
+	)
+	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
+		Name:           "intermediate-ca",
+		Kind:           domain.IssuerIntermediateCA,
+		CertificatePEM: "issuer-cert-pem",
+		KeyRef:         "issuer-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssuer returned error: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*CreateCertificateProfileRequest)
+	}{
+		{name: "unsupported key algorithm", mutate: func(req *CreateCertificateProfileRequest) {
+			req.AllowedKeyAlgorithms = []string{"md5_rsa"}
+		}},
+		{name: "unsupported signature algorithm", mutate: func(req *CreateCertificateProfileRequest) {
+			req.AllowedSignatureAlgorithms = []string{"md5"}
+		}},
+		{name: "negative min key size", mutate: func(req *CreateCertificateProfileRequest) {
+			req.MinKeySizeBits = -1
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := CreateCertificateProfileRequest{
+				Name:                  "machine-server",
+				IssuerID:              issuer.ID,
+				ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
+			}
+			tt.mutate(&req)
+			_, err := service.CreateCertificateProfile(ctx, "admin", req)
+			if !errors.Is(err, domain.ErrInvalidRequest) {
+				t.Fatalf("CreateCertificateProfile error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
 func TestIssueCertificateEnforcesIdentitySANPolicyBeforeSigning(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
@@ -4534,6 +4648,10 @@ func createDuplicateSerialEnrollment(t *testing.T, ctx context.Context, service 
 }
 
 func createProfilePolicyFixture(t *testing.T, ctx context.Context, service *Service) (domain.Identity, domain.Issuer, domain.CertificateProfile) {
+	return createProfilePolicyFixtureWithProfileMutation(t, ctx, service, nil)
+}
+
+func createProfilePolicyFixtureWithProfileMutation(t *testing.T, ctx context.Context, service *Service, mutate func(*CreateCertificateProfileRequest)) (domain.Identity, domain.Issuer, domain.CertificateProfile) {
 	t.Helper()
 
 	identity, err := service.CreateIdentity(ctx, "admin", CreateIdentityRequest{
@@ -4552,7 +4670,7 @@ func createProfilePolicyFixture(t *testing.T, ctx context.Context, service *Serv
 	if err != nil {
 		t.Fatalf("CreateIssuer returned error: %v", err)
 	}
-	profile, err := service.CreateCertificateProfile(ctx, "admin", CreateCertificateProfileRequest{
+	profileReq := CreateCertificateProfileRequest{
 		Name:                  "machine-server",
 		IssuerID:              issuer.ID,
 		ValidityPeriodSeconds: int64((24 * time.Hour).Seconds()),
@@ -4561,7 +4679,11 @@ func createProfilePolicyFixture(t *testing.T, ctx context.Context, service *Serv
 		BasicConstraints: domain.BasicConstraintsPolicy{
 			CA: false,
 		},
-	})
+	}
+	if mutate != nil {
+		mutate(&profileReq)
+	}
+	profile, err := service.CreateCertificateProfile(ctx, "admin", profileReq)
 	if err != nil {
 		t.Fatalf("CreateCertificateProfile returned error: %v", err)
 	}
