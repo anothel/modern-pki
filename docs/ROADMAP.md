@@ -64,8 +64,6 @@ signing boundaries.
 
 Goal: make pre-1.0 release candidates repeatable.
 
-- Add release artifact/SBOM/signing execution in a tagged release workflow
-  after the publishing target is selected.
 - Add optional `go test -race ./...`, staticcheck, gosec, C++ sanitizer, and
   fuzz jobs after tool choices are accepted.
 - Keep compatibility matrix evidence current for OS, Go, OpenSSL, SQLite,

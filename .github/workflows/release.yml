@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: service/go.mod
+          cache-dependency-path: |
+            service/go.mod
+            service/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ libssl-dev
+      - uses: sigstore/cosign-installer@v3.8.1
+      - uses: anchore/sbom-action/download-syft@v0.17.9
+      - run: mkdir -p dist
+      - run: go build -o ../dist/modern-pki-service ./cmd/modern-pki-service
+        working-directory: service
+      - run: cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-release --config Release
+      - run: cp build-release/modern-pki-core dist/modern-pki-core
+      - run: tar -czf dist/modern-pki-service-linux-amd64.tar.gz -C dist modern-pki-service
+      - run: tar -czf dist/modern-pki-core-linux-amd64.tar.gz -C dist modern-pki-core
+      - run: rm dist/modern-pki-service dist/modern-pki-core
+      - run: sha256sum dist/*.tar.gz > dist/SHA256SUMS
+      - run: syft scan dir:dist -o cyclonedx-json=dist/modern-pki.sbom.cdx.json
+      - name: Sign release evidence
+        run: |
+          for artifact in dist/*.tar.gz dist/SHA256SUMS dist/*.json; do
+            cosign sign-blob --yes \
+              --output-signature "${artifact}.sig" \
+              --output-certificate "${artifact}.pem" \
+              "$artifact"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modern-pki-release
+          path: dist/

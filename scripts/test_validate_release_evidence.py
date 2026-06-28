@@ -9,6 +9,27 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+
+
+def require_release_workflow() -> None:
+    if not RELEASE_WORKFLOW.is_file():
+        raise SystemExit("missing release workflow: .github/workflows/release.yml")
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    required = [
+        "on:",
+        "tags:",
+        "contents: write",
+        "id-token: write",
+        "cmake --build build-release --config Release",
+        "go build -o ../dist/modern-pki-service",
+        "syft scan dir:dist",
+        "cosign sign-blob",
+        "actions/upload-artifact",
+    ]
+    missing = [value for value in required if value not in text]
+    if missing:
+        raise SystemExit(".github/workflows/release.yml missing:\n" + "\n".join(missing))
 
 
 def main() -> None:
@@ -25,6 +46,7 @@ def main() -> None:
         raise SystemExit(result.returncode)
     if "release evidence ok" not in result.stdout:
         raise SystemExit(f"unexpected validator output: {result.stdout!r}")
+    require_release_workflow()
     print("release evidence validator tests ok")
 
 

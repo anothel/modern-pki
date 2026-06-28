@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs/reference/release-evidence.md"
 CI = ROOT / ".github/workflows/ci.yml"
+RELEASE = ROOT / ".github/workflows/release.yml"
 
 REQUIRED_DOC_TEXT = [
     "# Release Evidence",
@@ -28,6 +29,18 @@ REQUIRED_CI_TEXT = [
     "python scripts/validate-release-evidence.py",
     "go vet ./...",
     "govulncheck@latest",
+]
+
+REQUIRED_RELEASE_TEXT = [
+    "tags:",
+    "contents: write",
+    "id-token: write",
+    "go-version-file: service/go.mod",
+    "go build -o ../dist/modern-pki-service",
+    "cmake --build build-release --config Release",
+    "syft scan dir:dist",
+    "cosign sign-blob",
+    "actions/upload-artifact",
 ]
 
 
@@ -52,6 +65,7 @@ def require_text(path: Path, required: list[str]) -> str:
 def main() -> None:
     require_text(DOC, REQUIRED_DOC_TEXT)
     require_text(CI, REQUIRED_CI_TEXT)
+    require_text(RELEASE, REQUIRED_RELEASE_TEXT)
     print("release evidence ok")
 
 

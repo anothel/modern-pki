@@ -24,6 +24,8 @@ commands and known gaps before tagging.
   selected signing algorithm.
 - Release evidence manifest for artifact, SBOM, signing, scan, and
   compatibility decisions, validated in CI.
+- Tagged release workflow for Linux amd64 service/core archives, checksums,
+  CycloneDX SBOM, and cosign signatures.
 
 ### Changed
 
@@ -33,6 +35,5 @@ commands and known gaps before tagging.
 ### Known Gaps
 
 - Certbot live smoke remains environment-gated on Linux or elevated Windows.
-- Tagged release artifact/SBOM/signing execution, full compatibility evidence,
-  HSM/KMS provider boundary, tamper-evident audit storage, EAB, and DNS-01
-  remain future work.
+- Full compatibility evidence, HSM/KMS provider boundary, tamper-evident audit
+  storage, EAB, and DNS-01 remain future work.

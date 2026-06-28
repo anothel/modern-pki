@@ -67,8 +67,11 @@ Certbot smoke requires Linux or elevated Windows with certbot installed.
    changed.
 10. Attach route/OpenAPI, config/docs, API error mapping, docs validation, and
    secret baseline scan evidence from CI.
-11. Attach SBOM, SAST/SCA, artifact signing, and compatibility matrix evidence
-   once release tooling is selected.
+11. Attach the `.github/workflows/release.yml` run URL and uploaded
+   `modern-pki-release` artifact containing archives, `SHA256SUMS`, CycloneDX
+   SBOM, cosign signatures, and cosign certificates.
+12. Attach compatibility matrix evidence from
+   [Release evidence](../reference/release-evidence.md).
 
 ## Version Metadata
 

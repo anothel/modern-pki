@@ -10,8 +10,8 @@ Release candidates attach evidence here by command output or CI run URL.
 | Go static analysis | `go vet ./...` | CI `go-service` job. |
 | Go dependency vulnerability scan | `govulncheck` | CI `go-service` job via `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`. |
 | Secret baseline | `scripts/security-baseline-scan.py` | CI `docs` job and README smoke checklist. |
-| SBOM | `syft` CycloneDX JSON | Release workflow or release operator command before attaching artifacts. |
-| Artifact signing | `cosign` keyless signing | Release workflow or release operator command for checksums, SBOM, and archives. |
+| SBOM | `syft` CycloneDX JSON | Release workflow writes `dist/modern-pki.sbom.cdx.json`. |
+| Artifact signing | `cosign` keyless signing | Release workflow signs checksums, SBOM, and archives. |
 
 ## Release Artifacts
 
@@ -24,6 +24,10 @@ Pre-1.0 releases distribute archives, not installers or container images:
 - CycloneDX SBOM JSON,
 - cosign signatures and transparency-log references for archives, checksums,
   and SBOM.
+
+The tagged release workflow builds Linux amd64 service/core archives, writes
+`SHA256SUMS`, generates a CycloneDX SBOM with `syft`, signs release evidence
+with `cosign`, and uploads the `dist/` directory as a workflow artifact.
 
 Container images, OS packages, and Helm charts stay out until a deployment
 target is selected.
@@ -53,6 +57,6 @@ Each release candidate records this matrix in release notes:
 - `go build ./cmd/modern-pki-service`
 - `cmake --build build --config Debug`
 - `ctest --test-dir build -C Debug --output-on-failure`
-- SBOM command output from `syft`
-- signature verification output from `cosign`
+- release workflow artifact containing SBOM output from `syft`
+- release workflow artifact containing signature output from `cosign`
 - compatibility matrix row evidence
