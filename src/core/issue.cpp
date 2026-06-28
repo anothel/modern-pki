@@ -94,6 +94,14 @@ struct X509ExtensionDeleter
 	}
 };
 
+struct NameConstraintsDeleter
+{
+	void operator()(NAME_CONSTRAINTS *constraints) const noexcept
+	{
+		NAME_CONSTRAINTS_free(constraints);
+	}
+};
+
 struct OpenSslFreeDeleter
 {
 	void operator()(char *value) const noexcept
@@ -109,6 +117,7 @@ using X509Ptr = std::unique_ptr<X509, X509Deleter>;
 using X509ReqPtr = std::unique_ptr<X509_REQ, X509ReqDeleter>;
 using X509NamePtr = std::unique_ptr<X509_NAME, X509NameDeleter>;
 using X509ExtensionPtr = std::unique_ptr<X509_EXTENSION, X509ExtensionDeleter>;
+using NameConstraintsPtr = std::unique_ptr<NAME_CONSTRAINTS, NameConstraintsDeleter>;
 using OpenSslStringPtr = std::unique_ptr<char, OpenSslFreeDeleter>;
 
 struct ResolvedTimes
@@ -199,6 +208,120 @@ void verify_issuer_ca_capable(X509 *issuer_certificate)
 	if (has_key_usage && (X509_get_key_usage(issuer_certificate) & static_cast<std::uint32_t>(KU_KEY_CERT_SIGN)) == 0)
 	{
 		throw_error(kIssuerNotCA);
+	}
+}
+
+void verify_issuer_currently_valid(X509 *issuer_certificate)
+{
+	if (X509_cmp_current_time(X509_get0_notBefore(issuer_certificate)) > 0 ||
+	    X509_cmp_current_time(X509_get0_notAfter(issuer_certificate)) < 0)
+	{
+		throw_error(kIssuerNotCA);
+	}
+}
+
+std::string lowercase(std::string value)
+{
+	for (char &ch : value)
+	{
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return value;
+}
+
+std::string asn1_string_to_text(const ASN1_STRING *value)
+{
+	if (value == nullptr)
+	{
+		return {};
+	}
+	const unsigned char *data = ASN1_STRING_get0_data(value);
+	const int size = ASN1_STRING_length(value);
+	if (data == nullptr || size <= 0)
+	{
+		return {};
+	}
+	return std::string{reinterpret_cast<const char *>(data), static_cast<std::string::size_type>(size)};
+}
+
+bool has_suffix(std::string_view value, std::string_view suffix)
+{
+	return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
+}
+
+bool dns_matches_constraint(std::string_view dns_name, std::string_view constraint)
+{
+	if (dns_name.empty() || constraint.empty())
+	{
+		return false;
+	}
+	if (constraint.front() == '.')
+	{
+		return has_suffix(dns_name, constraint);
+	}
+	return dns_name == constraint || has_suffix(dns_name, "." + std::string{constraint});
+}
+
+bool subtree_matches_dns(const GENERAL_SUBTREE *subtree, const std::string &dns_name)
+{
+	if (subtree == nullptr || subtree->base == nullptr || subtree->base->type != GEN_DNS)
+	{
+		return false;
+	}
+	return dns_matches_constraint(lowercase(dns_name), lowercase(asn1_string_to_text(subtree->base->d.dNSName)));
+}
+
+bool has_dns_subtree(const STACK_OF(GENERAL_SUBTREE) *subtrees)
+{
+	for (int index = 0; index < sk_GENERAL_SUBTREE_num(subtrees); ++index)
+	{
+		const GENERAL_SUBTREE *subtree = sk_GENERAL_SUBTREE_value(subtrees, index);
+		if (subtree != nullptr && subtree->base != nullptr && subtree->base->type == GEN_DNS)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool dns_permitted_by_name_constraints(const std::string &dns_name, const NAME_CONSTRAINTS *constraints)
+{
+	for (int index = 0; index < sk_GENERAL_SUBTREE_num(constraints->excludedSubtrees); ++index)
+	{
+		if (subtree_matches_dns(sk_GENERAL_SUBTREE_value(constraints->excludedSubtrees, index), dns_name))
+		{
+			return false;
+		}
+	}
+
+	if (!has_dns_subtree(constraints->permittedSubtrees))
+	{
+		return true;
+	}
+	for (int index = 0; index < sk_GENERAL_SUBTREE_num(constraints->permittedSubtrees); ++index)
+	{
+		if (subtree_matches_dns(sk_GENERAL_SUBTREE_value(constraints->permittedSubtrees, index), dns_name))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void verify_issuer_name_constraints(X509 *issuer_certificate, const IssueRequest &request)
+{
+	NameConstraintsPtr constraints{
+	    static_cast<NAME_CONSTRAINTS *>(X509_get_ext_d2i(issuer_certificate, NID_name_constraints, nullptr, nullptr))};
+	if (!constraints)
+	{
+		return;
+	}
+	for (const std::string &dns_name : request.dns_names)
+	{
+		if (!dns_permitted_by_name_constraints(dns_name, constraints.get()))
+		{
+			throw_error(kIssuerNotCA);
+		}
 	}
 }
 
@@ -842,6 +965,8 @@ IssueResult issue_certificate(const IssueRequest &request)
 	EvpPkeyPtr issuer_key = parse_issuer_key(request.issuer_key_ref);
 	verify_issuer_ca_capable(issuer_certificate.get());
 	verify_issuer_key_matches_certificate(issuer_certificate.get(), issuer_key.get());
+	verify_issuer_currently_valid(issuer_certificate.get());
+	verify_issuer_name_constraints(issuer_certificate.get(), request);
 
 	X509Ptr certificate{X509_new()};
 	if (!certificate || X509_set_version(certificate.get(), 2) != 1)

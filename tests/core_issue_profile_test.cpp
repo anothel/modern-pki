@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 namespace
@@ -181,7 +182,7 @@ X509Ptr certificate_from_pem(const std::string &pem)
 	return certificate;
 }
 
-X509Ptr make_ca_certificate(EVP_PKEY *key)
+X509Ptr make_ca_certificate(EVP_PKEY *key, long not_before_offset = 0, long not_after_offset = 86400, const char *name_constraints = nullptr)
 {
 	X509Ptr certificate{X509_new()};
 	require(certificate != nullptr);
@@ -190,13 +191,17 @@ X509Ptr make_ca_certificate(EVP_PKEY *key)
 	require(serial != nullptr);
 	require(BN_set_word(serial.get(), 1) == 1);
 	require(BN_to_ASN1_INTEGER(serial.get(), X509_get_serialNumber(certificate.get())) != nullptr);
-	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0);
-	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 86400);
+	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), not_before_offset);
+	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), not_after_offset);
 	set_name(X509_get_subject_name(certificate.get()), "Test CA");
 	require(X509_set_issuer_name(certificate.get(), X509_get_subject_name(certificate.get())) == 1);
 	require(X509_set_pubkey(certificate.get(), key) == 1);
 	add_extension(certificate.get(), certificate.get(), NID_basic_constraints, "critical,CA:TRUE");
 	add_extension(certificate.get(), certificate.get(), NID_key_usage, "critical,keyCertSign,cRLSign");
+	if (name_constraints != nullptr)
+	{
+		add_extension(certificate.get(), certificate.get(), NID_name_constraints, name_constraints);
+	}
 	require(X509_sign(certificate.get(), key, EVP_sha256()) > 0);
 	return certificate;
 }
@@ -419,6 +424,21 @@ void assert_cli_parses_profile_extension_fields(const std::filesystem::path &cli
 	assert_cli_failure_contains(cli_path, key_usage_request_path, out_path, stderr_path, "issue.certificate_create_failed");
 }
 
+void assert_issue_rejects_issuer_certificate(const modern_pki::core::IssueRequest &request)
+{
+	try
+	{
+		(void)modern_pki::core::issue_certificate(request);
+	}
+	catch (const std::runtime_error &error)
+	{
+		require(std::string{error.what()} == "issue.issuer_not_ca");
+		return;
+	}
+	std::cerr << "issue_certificate accepted an invalid issuer certificate\n";
+	std::exit(1);
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -460,6 +480,17 @@ int main(int argc, char *argv[])
 	request.authority_key_identifier = true;
 	request.aia_url = "https://pki.example.test/issuers/test-ca.pem";
 	request.crl_distribution_points = {"https://pki.example.test/crl/test-ca.crl"};
+
+	const X509Ptr expired_ca_certificate = make_ca_certificate(ca_key.get(), -172800, -86400);
+	modern_pki::core::IssueRequest expired_request = request;
+	expired_request.issuer_certificate_pem = certificate_to_pem(expired_ca_certificate.get());
+	assert_issue_rejects_issuer_certificate(expired_request);
+
+	const X509Ptr constrained_ca_certificate = make_ca_certificate(ca_key.get(), 0, 86400, "permitted;DNS:.example.test");
+	modern_pki::core::IssueRequest constrained_request = request;
+	constrained_request.issuer_certificate_pem = certificate_to_pem(constrained_ca_certificate.get());
+	constrained_request.dns_names = {"outside.test"};
+	assert_issue_rejects_issuer_certificate(constrained_request);
 
 	const modern_pki::core::IssueResult result = modern_pki::core::issue_certificate(request);
 	const X509Ptr certificate = certificate_from_pem(result.certificate_pem);

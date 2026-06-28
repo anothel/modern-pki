@@ -21,6 +21,8 @@ signing happens.
   profile range, and SAN lists over 100 entries.
 - Core CSR fixtures include a real 1024-bit RSA CSR to prove weak-key metadata
   is surfaced before profile policy enforcement.
+- Core issuance rejects expired or not-yet-valid issuer certificates and DNS
+  SANs outside issuer DNS name constraints before signing.
 - Subject Key Identifier and Authority Key Identifier settings.
 - Public TLS CAA DNSSEC and RFC 8657 parameter checks.
 - Issued DER assertions for SAN, KU, EKU, Basic Constraints, AIA, CRL
@@ -37,5 +39,4 @@ signing happens.
 
 ## Gaps
 
-- Remaining certificate correctness negatives for expired chains, name
-  constraints, and public TLS lint integration if public issuance is enabled.
+- Public TLS lint integration if public issuance is enabled.

@@ -57,7 +57,6 @@ Goal: convert real-client differences into stable protocol fixtures.
 Goal: prevent malformed, weak, or policy-violating certificates at approval and
 signing boundaries.
 
-- Add remaining negative tests for expired chains and name constraints.
 - Add public TLS linting hook before issuance only if public TLS issuance is
   enabled.
 
