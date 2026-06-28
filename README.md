@@ -125,6 +125,11 @@ go run ./cmd/modern-pki-service
 - [Public TLS readiness runbook](docs/runbooks/public-tls-readiness.md): validity ceilings, validation reuse, CAA checks, and mass-revocation drill.
 - [ACME smoke harness](scripts/acme-smoke/README.md): local ACME client smoke harness; certbot remains default, but Windows non-admin certbot 5.6.0 exits before ACME traffic, so `-Client lego -LegoPath .tmp\lego-bin\lego.exe` is the HTTP-01 fallback.
 
+Current imported-analysis execution batch: finish low-dependency P0/P1 guardrails
+first. The repo now keeps docs-as-code validation and a high-confidence secret
+baseline scan in CI; broader SAST/SCA/SBOM/container/IaC scans remain tool
+selection work in the roadmap.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

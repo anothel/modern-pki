@@ -24,7 +24,7 @@ a parallel roadmap.
 | Access control | API key auth, scopes, bootstrap runbook, audit metadata. | Human RBAC/ABAC and approval workflows remain future work. |
 | Revocation/status service | Revocation API, CRL publication, OCSP endpoint, public TLS mass-revocation checklist. | HA deployment validation and scheduled tabletop evidence remain future work. |
 | Observability | Structured logs, expvar metrics, operation metrics, readiness checks, observability reference. | Exporter/backend integration, synthetic checks, CT monitoring remain future work. |
-| DevSecOps | CI builds/tests Go, C++, PostgreSQL migration integration, docs validation. | SAST/SCA/SBOM/secret/container/IaC scans and release signing remain future work. |
+| DevSecOps | CI builds/tests Go, C++, PostgreSQL migration integration, docs validation, high-confidence secret baseline scan. | Full SAST/SCA/SBOM/container/IaC scans and release signing remain future work. |
 
 ## P2/P3 Areas
 
@@ -32,4 +32,3 @@ a parallel roadmap.
 | --- | --- | --- |
 | Crypto agility and PQC | Project scope and roadmap keep production PQC deferred; profile policy exists. | Crypto inventory, algorithm migration plan, PQC readiness, and vendor tracking remain future work. |
 | Repository structure | Current repo uses `docs/reference` and `docs/runbooks` plus new architecture/policy/operations/security/ADR baselines. | Do not reshuffle files only to match the analysis tree; links and validation carry the contract. |
-

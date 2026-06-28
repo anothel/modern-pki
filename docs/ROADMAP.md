@@ -7,6 +7,23 @@ future-only: already implemented lifecycle APIs, profile policy, CRL/OCSP
 basics, audit metadata, outbox/webhooks, expiration scans, and ACME adapter
 foundations are not repeated as new work.
 
+## Imported Analysis Execution Batches
+
+The uploaded improvement analysis is broad. Work should move in batches, not as
+one oversized task:
+
+1. Baseline guardrails: docs-as-code validation and high-confidence secret scan.
+2. ACME compatibility: certbot smoke and protocol fixture follow-up.
+3. Issuance correctness: CSR linting, profile algorithm policy, DER golden tests.
+4. Key boundary: HSM/KMS/PKCS#11 provider semantics, ceremony evidence, no-key
+   material audit tests.
+5. Operations and audit: RBAC/break-glass, SIEM/tamper-evidence, synthetic
+   checks, drill evidence.
+6. Product expansion: first discovery/import source, first deploy adapter,
+   crypto inventory, PQC readiness.
+
+Finished batches or tasks must be removed from this roadmap after verification.
+
 ## External Timeline Drivers
 
 Publicly trusted TLS work must track the CA/Browser Forum Baseline Requirements.
@@ -71,8 +88,10 @@ before 100-day and 47-day public certificate operations become normal.
   where operator policy requires them.
 - Add idempotency-key support for non-ACME lifecycle mutation APIs if repeated
   client retries show duplicate-request risk beyond existing state guards.
-- Add CI secret scan, SAST, dependency/SBOM, container/IaC scan, and release
-  signing once tool choices are selected.
+- Add SAST, dependency/SBOM, container/IaC scan, and release signing once tool
+  choices are selected.
+- Expand the current high-confidence secret baseline scan if a full scanner is
+  selected.
 
 ## P3: Key Boundary And Core Robustness
 
