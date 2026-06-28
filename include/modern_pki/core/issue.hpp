@@ -11,6 +11,8 @@ struct IssueRequest
 	std::string csr_pem;
 	std::string issuer_certificate_pem;
 	std::string issuer_key_ref;
+	std::string aia_url;
+	std::vector<std::string> crl_distribution_points;
 	std::string subject;
 	std::vector<std::string> dns_names;
 	std::vector<std::string> ip_addresses;

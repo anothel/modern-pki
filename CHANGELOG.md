@@ -18,6 +18,8 @@ commands and known gaps before tagging.
 - Lifecycle service foundations for identity, issuer, certificate profile,
   enrollment, issuance, revocation, suspension, renewal, reissue, audit,
   outbox, webhook delivery, CRL, OCSP, and ACME adapter flows.
+- Issued-certificate DER golden coverage for SAN, KU, EKU, Basic Constraints,
+  AIA, CRL Distribution Points, SKI, and AKI.
 
 ### Changed
 

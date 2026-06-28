@@ -42,10 +42,12 @@ func TestManualEnrollmentLifecycle(t *testing.T) {
 	}
 
 	issuer, err := service.CreateIssuer(ctx, "admin", CreateIssuerRequest{
-		Name:           "intermediate-ca",
-		Kind:           domain.IssuerIntermediateCA,
-		CertificatePEM: "issuer-cert-pem",
-		KeyRef:         "issuer-key-ref",
+		Name:                  "intermediate-ca",
+		Kind:                  domain.IssuerIntermediateCA,
+		CertificatePEM:        "issuer-cert-pem",
+		KeyRef:                "issuer-key-ref",
+		AIAURL:                "https://pki.example.test/issuers/intermediate-ca.pem",
+		CRLDistributionPoints: []string{"https://pki.example.test/crl/intermediate-ca.crl"},
 	})
 	if err != nil {
 		t.Fatalf("CreateIssuer returned error: %v", err)
@@ -108,6 +110,9 @@ func TestManualEnrollmentLifecycle(t *testing.T) {
 	}
 	if issueRequest.IssuerKeyRef != "issuer-key-ref" {
 		t.Fatalf("Issue IssuerKeyRef = %q, want %q", issueRequest.IssuerKeyRef, "issuer-key-ref")
+	}
+	if issueRequest.AIAURL != issuer.AIAURL || !reflect.DeepEqual(issueRequest.CRLDistributionPoints, issuer.CRLDistributionPoints) {
+		t.Fatalf("Issue issuer distribution metadata = aia:%q crl:%#v", issueRequest.AIAURL, issueRequest.CRLDistributionPoints)
 	}
 	if issueRequest.SignatureAlgorithm != "ecdsa_with_sha256" {
 		t.Fatalf("Issue SignatureAlgorithm = %q, want %q", issueRequest.SignatureAlgorithm, "ecdsa_with_sha256")

@@ -47,6 +47,36 @@ func TestRunnerMapsIssueResultJSON(t *testing.T) {
 	}
 }
 
+func TestRunnerIssueWritesIssuerDistributionMetadata(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "issue-request.json")
+	bin := writeFakeIssueCommandWithCapture(t, capturePath)
+
+	_, err := (Runner{Bin: bin}).Issue(context.Background(), IssueRequest{
+		CSRPEM:                "csr-pem",
+		IssuerCertificatePEM:  "issuer-pem",
+		IssuerKeyRef:          "issuer-key-ref",
+		AIAURL:                "https://pki.example.test/issuers/intermediate.pem",
+		CRLDistributionPoints: []string{"https://pki.example.test/crl/intermediate.crl"},
+	})
+	if err != nil {
+		t.Fatalf("Issue returned error: %v", err)
+	}
+
+	payload, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+	body := string(payload)
+	for _, want := range []string{
+		`"aia_url":"https://pki.example.test/issuers/intermediate.pem"`,
+		`"crl_distribution_points":["https://pki.example.test/crl/intermediate.crl"]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("captured request = %s, want it to contain %s", body, want)
+		}
+	}
+}
+
 func TestRunnerMapsCommandFailure(t *testing.T) {
 	bin := writeFakeIssueCommand(t, false)
 
@@ -372,6 +402,25 @@ func writeFakeIssueCommand(t *testing.T, success bool) string {
 	return path
 }
 
+func writeFakeIssueCommandWithCapture(t *testing.T, capturePath string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "modern-pki-core.bat")
+		if err := os.WriteFile(path, []byte(windowsIssueCaptureScript(capturePath)), 0644); err != nil {
+			t.Fatalf("write fake command: %v", err)
+		}
+		return path
+	}
+
+	path := filepath.Join(dir, "modern-pki-core")
+	if err := os.WriteFile(path, []byte(unixIssueCaptureScript(capturePath)), 0755); err != nil {
+		t.Fatalf("write fake command: %v", err)
+	}
+	return path
+}
+
 func writeFakeCRLCommand(t *testing.T, success bool, capturePath string) string {
 	t.Helper()
 
@@ -499,6 +548,38 @@ func windowsIssueScript(success bool) string {
 		"goto loop",
 		":done",
 		"if \"%OUT%\"==\"\" exit /b 2",
+		"> \"%OUT%\" echo {^\"certificate_pem^\":^\"cert-pem^\",^\"serial_number^\":^\"12345^\",^\"subject^\":^\"CN=leaf^\",^\"not_before^\":^\"2026-01-02T03:04:05Z^\",^\"not_after^\":^\"2026-01-03T04:05:06Z^\"}",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+}
+
+func windowsIssueCaptureScript(capturePath string) string {
+	return strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"REQ=\"",
+		"set \"OUT=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"--request\" (",
+		"  set \"REQ=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"if \"%~1\"==\"--out\" (",
+		"  set \"OUT=%~2\"",
+		"  shift",
+		"  shift",
+		"  goto loop",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%REQ%\"==\"\" exit /b 2",
+		"if \"%OUT%\"==\"\" exit /b 2",
+		"copy /Y \"%REQ%\" \"" + capturePath + "\" >NUL",
 		"> \"%OUT%\" echo {^\"certificate_pem^\":^\"cert-pem^\",^\"serial_number^\":^\"12345^\",^\"subject^\":^\"CN=leaf^\",^\"not_before^\":^\"2026-01-02T03:04:05Z^\",^\"not_after^\":^\"2026-01-03T04:05:06Z^\"}",
 		"exit /b 0",
 		"",
@@ -761,6 +842,33 @@ done
 if [ -z "$out" ]; then
 	exit 2
 fi
+cat > "$out" <<'JSON'
+{"certificate_pem":"cert-pem","serial_number":"12345","subject":"CN=leaf","not_before":"2026-01-02T03:04:05Z","not_after":"2026-01-03T04:05:06Z"}
+JSON
+exit 0
+`
+}
+
+func unixIssueCaptureScript(capturePath string) string {
+	escapedCapturePath := strings.ReplaceAll(capturePath, "'", "'\"'\"'")
+	return `#!/bin/sh
+req=""
+out=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--request" ]; then
+		req="$2"
+		shift 2
+	elif [ "$1" = "--out" ]; then
+		out="$2"
+		shift 2
+	else
+		shift
+	fi
+done
+if [ -z "$req" ] || [ -z "$out" ]; then
+	exit 2
+fi
+cp "$req" '` + escapedCapturePath + `'
 cat > "$out" <<'JSON'
 {"certificate_pem":"cert-pem","serial_number":"12345","subject":"CN=leaf","not_before":"2026-01-02T03:04:05Z","not_after":"2026-01-03T04:05:06Z"}
 JSON

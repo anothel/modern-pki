@@ -62,8 +62,6 @@ signing boundaries.
   lists.
 - Add profile-level key algorithm policy.
 - Add profile-level signature algorithm policy.
-- Add issued-certificate DER golden tests that assert SAN, KU, EKU,
-  BasicConstraints, AIA, CRL Distribution Points, SKI, and AKI.
 - Add negative tests for CN-only requests, missing SAN, invalid EKU/KU
   combinations, weak keys, expired chains, name constraints, malformed PEM,
   duplicate serials, and oversized SAN lists.

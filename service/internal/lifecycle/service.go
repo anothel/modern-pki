@@ -2332,6 +2332,8 @@ func (s *Service) IssueCertificate(ctx context.Context, actor string, enrollment
 				CSRPEM:                     enrollment.CSRPEM,
 				IssuerCertificatePEM:       issuer.CertificatePEM,
 				IssuerKeyRef:               issuer.KeyRef,
+				AIAURL:                     issuer.AIAURL,
+				CRLDistributionPoints:      append([]string(nil), issuer.CRLDistributionPoints...),
 				Subject:                    enrollment.RequestedSubject,
 				DNSNames:                   append([]string(nil), enrollment.RequestedDNSNames...),
 				IPAddresses:                append([]string(nil), enrollment.RequestedIPAddresses...),

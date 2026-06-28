@@ -13,6 +13,8 @@ signing happens.
 - Subject Alternative Name DNS/IP patterns.
 - Subject Key Identifier and Authority Key Identifier settings.
 - Public TLS CAA DNSSEC and RFC 8657 parameter checks.
+- Issued DER assertions for SAN, KU, EKU, Basic Constraints, AIA, CRL
+  Distribution Points, SKI, and AKI.
 
 ## Required Review For New Profiles
 
@@ -27,5 +29,3 @@ signing happens.
 
 - Profile-level key algorithm policy.
 - Profile-level signature algorithm policy.
-- DER golden tests for emitted extensions.
-

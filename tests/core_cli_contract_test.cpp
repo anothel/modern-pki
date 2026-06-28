@@ -446,6 +446,8 @@ int main(int argc, char *argv[])
 	request.csr_pem = "csr";
 	request.issuer_certificate_pem = "issuer";
 	request.issuer_key_ref = "issuer.key";
+	request.aia_url = "https://pki.example.test/issuers/issuer.pem";
+	request.crl_distribution_points = {"https://pki.example.test/crl/issuer.crl"};
 	request.subject = "CN=leaf";
 	request.dns_names = {"leaf.example.test"};
 	request.ip_addresses = {"127.0.0.1"};
@@ -464,6 +466,8 @@ int main(int argc, char *argv[])
 	assert(request.csr_pem == "csr");
 	assert(request.issuer_certificate_pem == "issuer");
 	assert(request.issuer_key_ref == "issuer.key");
+	assert(request.aia_url == "https://pki.example.test/issuers/issuer.pem");
+	assert(request.crl_distribution_points == std::vector<std::string>{"https://pki.example.test/crl/issuer.crl"});
 	assert(request.subject == "CN=leaf");
 	assert(request.dns_names == std::vector<std::string>{"leaf.example.test"});
 	assert(request.ip_addresses == std::vector<std::string>{"127.0.0.1"});

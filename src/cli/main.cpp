@@ -470,6 +470,8 @@ modern_pki::core::IssueRequest issue_request_from_json(std::string_view json)
 	request.csr_pem = get_string_field(object, "csr_pem");
 	request.issuer_certificate_pem = get_string_field(object, "issuer_certificate_pem");
 	request.issuer_key_ref = get_string_field(object, "issuer_key_ref");
+	request.aia_url = get_string_field(object, "aia_url");
+	request.crl_distribution_points = get_string_array_field(object, "crl_distribution_points");
 	request.subject = get_string_field(object, "subject");
 	request.dns_names = get_string_array_field(object, "dns_names");
 	request.ip_addresses = get_string_array_field(object, "ip_addresses");

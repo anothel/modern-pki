@@ -273,6 +273,17 @@ std::string json_string(const std::string &value)
 	return "\"" + json_escape(value) + "\"";
 }
 
+std::string extension_text(X509_EXTENSION *extension)
+{
+	BioPtr bio{BIO_new(BIO_s_mem())};
+	require(bio != nullptr);
+	require(X509V3_EXT_print(bio.get(), extension, 0, 0) == 1);
+	char *data = nullptr;
+	const long size = BIO_get_mem_data(bio.get(), &data);
+	require(size > 0 && data != nullptr);
+	return std::string{data, static_cast<std::string::size_type>(size)};
+}
+
 std::string private_key_to_pem(EVP_PKEY *key)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
@@ -318,6 +329,11 @@ void assert_profile_extensions(X509 *certificate)
 	(void)extension_by_nid(certificate, NID_subject_key_identifier);
 	(void)extension_by_nid(certificate, NID_authority_key_identifier);
 	(void)extension_by_nid(certificate, NID_subject_alt_name);
+
+	const std::string aia = extension_text(extension_by_nid(certificate, NID_info_access));
+	require(aia.find("URI:https://pki.example.test/issuers/test-ca.pem") != std::string::npos);
+	const std::string crl = extension_text(extension_by_nid(certificate, NID_crl_distribution_points));
+	require(crl.find("URI:https://pki.example.test/crl/test-ca.crl") != std::string::npos);
 }
 
 std::string issue_request_json(const std::string &csr_pem, const std::string &issuer_certificate_pem, const std::filesystem::path &issuer_key_path, const std::string &extra_fields)
@@ -328,6 +344,8 @@ std::string issue_request_json(const std::string &csr_pem, const std::string &is
 	       ",\"issuer_certificate_pem\":" + json_string(issuer_certificate_pem) +
 	       ",\"issuer_key_ref\":" + json_string(issuer_key_path.string()) +
 	       ",\"subject\":\"CN=leaf\""
+	       ",\"aia_url\":\"https://pki.example.test/issuers/test-ca.pem\""
+	       ",\"crl_distribution_points\":[\"https://pki.example.test/crl/test-ca.crl\"]"
 	       ",\"dns_names\":[\"leaf.example.test\"]"
 	       ",\"not_before\":\"2026-06-13T00:00:00Z\""
 	       ",\"not_after\":\"2026-06-14T00:00:00Z\"" +
@@ -417,6 +435,8 @@ int main(int argc, char *argv[])
 	request.extended_key_usage = {"server_auth"};
 	request.subject_key_identifier = true;
 	request.authority_key_identifier = true;
+	request.aia_url = "https://pki.example.test/issuers/test-ca.pem";
+	request.crl_distribution_points = {"https://pki.example.test/crl/test-ca.crl"};
 
 	const modern_pki::core::IssueResult result = modern_pki::core::issue_certificate(request);
 	const X509Ptr certificate = certificate_from_pem(result.certificate_pem);

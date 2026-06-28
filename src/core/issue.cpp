@@ -718,12 +718,34 @@ void add_key_identifiers(X509 *certificate, X509 *issuer_certificate, const Issu
 	}
 }
 
+void add_issuer_distribution_extensions(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
+{
+	if (!request.aia_url.empty())
+	{
+		add_extension(certificate, issuer_certificate, NID_info_access, "caIssuers;URI:" + request.aia_url);
+	}
+	if (!request.crl_distribution_points.empty())
+	{
+		std::string value;
+		for (const std::string &distribution_point : request.crl_distribution_points)
+		{
+			if (!value.empty())
+			{
+				value.push_back(',');
+			}
+			value += "URI:" + distribution_point;
+		}
+		add_extension(certificate, issuer_certificate, NID_crl_distribution_points, value);
+	}
+}
+
 void add_profile_extensions(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)
 {
 	add_basic_constraints(certificate, issuer_certificate, request);
 	add_key_usage(certificate, issuer_certificate, request);
 	add_extended_key_usage(certificate, issuer_certificate, request);
 	add_key_identifiers(certificate, issuer_certificate, request);
+	add_issuer_distribution_extensions(certificate, issuer_certificate, request);
 }
 
 void add_subject_alt_names(X509 *certificate, X509 *issuer_certificate, const IssueRequest &request)

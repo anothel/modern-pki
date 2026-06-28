@@ -15,6 +15,8 @@ type IssueRequest struct {
 	CSRPEM                     string    `json:"csr_pem"`
 	IssuerCertificatePEM       string    `json:"issuer_certificate_pem"`
 	IssuerKeyRef               string    `json:"issuer_key_ref"`
+	AIAURL                     string    `json:"aia_url,omitempty"`
+	CRLDistributionPoints      []string  `json:"crl_distribution_points,omitempty"`
 	Subject                    string    `json:"subject"`
 	DNSNames                   []string  `json:"dns_names"`
 	IPAddresses                []string  `json:"ip_addresses"`

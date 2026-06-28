@@ -165,8 +165,8 @@ Current imported-analysis execution batch: CSR and certificate correctness. The
 repo keeps quickstart smoke commands, docs-as-code validation,
 service route/OpenAPI parity, config/doc parity, public error mapping parity,
 PostgreSQL parity coverage, and a high-confidence secret baseline scan in CI.
-Next work is CSR linting and issued-certificate DER assertions before new
-product surface.
+Next work is CSR linting and profile algorithm policy before new product
+surface.
 
 ## License
 
