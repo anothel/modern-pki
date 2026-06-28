@@ -20,7 +20,7 @@ and release-repeatable operations.
 | Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
 | Release trust | README quickstart smoke checklist, `CHANGELOG.md`, and CI run/badge strategy in the release process. |
-| Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory and SQLite tests cover duplicate certificate finalization keys and stale issuance-attempt finalization updates. |
+| Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory, SQLite, and PostgreSQL parity tests cover duplicate certificate finalization keys, stale issuance-attempt updates, outbox, audit, migration, and ACME nonce behavior. |
 | CI shape | Workflow includes docs validation, secret baseline, Go tests/build, PostgreSQL integration, C++ CMake, and CTest. |
 | Lifecycle scope | Identity, issuer, profile, enrollment, approval, issuance, renewal, reissue, revocation, suspension, CRL, OCSP, audit, outbox, webhook, and ACME foundations exist. |
 | Public TLS guardrails | Validity ceilings, validation evidence age, CAA DNSSEC/RFC 8657 policy, and mass-revocation planning docs exist. |
@@ -28,19 +28,7 @@ and release-repeatable operations.
 
 ## Execution Order
 
-### Batch 1: PKI Failure Modes
-
-Close the highest-risk PKI correctness paths:
-
-- PostgreSQL parity for lifecycle, outbox, audit, nonce, and migration behavior
-  where memory/SQLite parity already exists.
-
-Exit criteria:
-
-- Tests cover the failure modes most likely to create mis-issuance, duplicate
-  signing, replay, or untraceable state.
-
-### Batch 2: Certificate Correctness
+### Batch 1: Certificate Correctness
 
 Harden CSR and issued-certificate policy:
 
@@ -55,7 +43,7 @@ Exit criteria:
 - Approval and signing reject known bad CSRs and profiles.
 - Issued DER is parsed and asserted, not trusted by request shape alone.
 
-### Batch 3: Release And Supply Chain
+### Batch 2: Release And Supply Chain
 
 Make release artifacts auditable:
 
@@ -70,7 +58,7 @@ Exit criteria:
 - A release candidate includes provenance, dependency, compatibility, and
   security-scan evidence.
 
-### Batch 4: Operations And Key Boundary
+### Batch 3: Operations And Key Boundary
 
 Raise production-operating confidence:
 
@@ -106,7 +94,7 @@ Exit criteria:
 | Automate API/docs/code parity. | Route/OpenAPI, config/doc, error-envelope parity checks. |
 | Strengthen ACME compatibility. | Certbot smoke plus fixture conversion and compatibility matrix. |
 | Strengthen CSR/certificate correctness. | CSR linting, profile algorithm policy, DER golden tests. |
-| Strengthen issuance consistency tests. | Signer/DB failure, lease race, and serial collision coverage exist; add broader PostgreSQL parity. |
+| Strengthen issuance consistency tests. | Signer/DB failure, lease race, serial collision, and PostgreSQL parity coverage exist. |
 | Strengthen webhook/outbox safety tests. | Receiver replay/signature, timeout, unsafe redirect/egress, retry, and dead-letter coverage exist. |
 | Add audit tamper-evidence. | P2 Audit, Access, And Operations. |
 | Add HSM/KMS/PKCS#11 boundary. | P2 Key Boundary. |

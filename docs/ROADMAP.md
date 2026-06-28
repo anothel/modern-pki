@@ -39,13 +39,6 @@ Private PKI is not forced to follow public Web PKI timelines, but the same
 timeline is a useful pressure test: manual renewal and deployment must disappear
 before 100-day and 47-day public certificate operations become normal.
 
-## P0: PKI Failure-Mode Coverage
-
-Goal: close the highest-risk correctness gaps before refactoring or expansion.
-
-- Extend PostgreSQL parity coverage for lifecycle, ACME nonce, outbox, audit,
-  and migration behavior where SQLite/memory parity already exists.
-
 ## P1: ACME Client Compatibility
 
 Goal: convert real-client differences into stable protocol fixtures.

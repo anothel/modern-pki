@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -35,6 +36,7 @@ import (
 	"github.com/modern-pki/modern-pki/service/internal/observability"
 	"github.com/modern-pki/modern-pki/service/internal/store"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -636,6 +638,46 @@ func TestACMESQLNonceStoreUsesPostgresPlaceholders(t *testing.T) {
 	want := "DELETE FROM acme_nonces WHERE nonce = $1 AND expires_at > $2"
 	if got != want {
 		t.Fatalf("query = %q, want %q", got, want)
+	}
+}
+
+func TestACMESQLNonceStorePostgresIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("MODERN_PKI_POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("set MODERN_PKI_POSTGRES_TEST_DSN to run PostgreSQL ACME nonce integration test")
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS public CASCADE`); err != nil {
+		t.Fatalf("drop postgres test schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE SCHEMA public`); err != nil {
+		t.Fatalf("create postgres test schema: %v", err)
+	}
+	if err := store.ApplyInitialMigration(ctx, db, "pgx"); err != nil {
+		t.Fatalf("ApplyInitialMigration returned error: %v", err)
+	}
+
+	nonceStore := NewSQLACMENonceStore(db, "pgx")
+	firstNode := NewWithAuthAndACME(nil, AuthConfig{Mode: AuthModeDev}, ACMEConfig{NonceStore: nonceStore})
+	secondNode := NewWithAuthAndACME(nil, AuthConfig{Mode: AuthModeDev}, ACMEConfig{NonceStore: nonceStore})
+
+	nonce, err := firstNode.issueACMENonce(ctx)
+	if err != nil {
+		t.Fatalf("issueACMENonce returned error: %v", err)
+	}
+	if !secondNode.consumeACMENonce(ctx, nonce) {
+		t.Fatal("second node rejected first use of shared postgres nonce")
+	}
+	if firstNode.consumeACMENonce(ctx, nonce) {
+		t.Fatal("first node accepted replayed postgres nonce")
 	}
 }
 

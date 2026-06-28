@@ -51,7 +51,7 @@ jobs:
             service/go.mod
             service/go.sum
       - run: go test ./...
-      - run: go test ./internal/store -run TestApplyInitialMigrationPostgresIntegration -v
+      - run: go test -p 1 ./internal/store ./internal/httpapi -run PostgresIntegration -v
         env:
           MODERN_PKI_POSTGRES_TEST_DSN: postgres://modern_pki:modern_pki@localhost:5432/modern_pki_test?sslmode=disable
       - run: go build ./cmd/modern-pki-service

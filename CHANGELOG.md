@@ -26,8 +26,6 @@ commands and known gaps before tagging.
 
 ### Known Gaps
 
-- PostgreSQL parity coverage still needs expansion for lifecycle, ACME nonce,
-  outbox, audit, and migration behavior.
 - Certbot live smoke remains environment-gated on Linux or elevated Windows.
 - SBOM, release signing, SAST/SCA selection, full compatibility matrix, HSM/KMS
   provider boundary, tamper-evident audit storage, EAB, and DNS-01 remain
