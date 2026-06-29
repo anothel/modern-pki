@@ -38,7 +38,7 @@ is tracked in [ROADMAP](../ROADMAP.md).
 | ACME nonce/replay/key binding tests should expand. | ACME malformed JWS, nonce reuse, badNonce retry, KID base URL, key mismatch, account key, key rollover, SQL nonce PostgreSQL parity, rate limit, and lego smoke coverage exist. | Add certbot-derived fixtures if certbot live smoke exposes differences. |
 | CSR/certificate correctness needs stronger tests. | Profile policy, profile algorithm policy, public TLS policy, and issued DER golden tests exist. | Add remaining CSR linting and negative certificate policy cases. |
 | Release readiness needs supply-chain evidence. | CI, Apache-2.0 license, CHANGELOG, docs validation, service contract parity, and high-confidence secret scan exist. | Add SBOM, release signing, SAST/SCA choices, and compatibility matrix. |
-| Large files should not be split prematurely. | Roadmap defer/delete rules reject speculative refactors. | Split `server.go` and `sqlstore.go` only after tests prove behavior and repeated changes prove stable boundaries. |
+| Large files should not be split prematurely. | Roadmap defer/delete rules reject speculative refactors; HTTP API and SQL store splits now follow tested ACME, certificate, audit, outbox/webhook, and ACME persistence boundaries. | Continue splitting only when future repeated changes prove another stable boundary. |
 
 ## P1 Areas
 

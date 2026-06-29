@@ -111,15 +111,6 @@ Goal: prove one import model before broad scanning.
 - Move any remaining service-side inventory filtering into SQL only when large
   inventory tests show response time risk.
 
-## P3: Maintainability And Core Robustness
-
-Goal: reduce review risk after correctness coverage exists.
-
-- Split `service/internal/httpapi/server.go` only along stable boundaries such
-  as ACME, API key/auth, audit/outbox/webhook, and operator/reporting handlers.
-- Split `service/internal/store/sqlstore.go` only along aggregate boundaries
-  such as certificate, audit, outbox, ACME nonce, and migration behavior.
-
 ## P4: Product Expansion
 
 - Add certificate rotation automation that includes deploy target update,

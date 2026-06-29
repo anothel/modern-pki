@@ -21,6 +21,7 @@ and release-repeatable operations.
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
 | Release trust | README quickstart smoke checklist, `CHANGELOG.md`, CI run/badge strategy in the release process, release evidence manifest validation, and tagged release artifact workflow. |
 | Core robustness | Optional local libFuzzer targets cover CSR PEM inspection, OCSP request DER inspection, and CRL DER inspection. |
+| Maintainability | HTTP API ACME protocol code and SQL store certificate, audit, outbox/webhook, and ACME aggregates are split into focused files after contract and regression coverage existed. |
 | Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory, SQLite, and PostgreSQL parity tests cover duplicate certificate finalization keys, stale issuance-attempt updates, outbox, audit, migration, and ACME nonce behavior. |
 | Certificate correctness | Core issue profile tests parse issued DER and assert SAN, KU, EKU, Basic Constraints, AIA, CRL Distribution Points, SKI, and AKI; core CSR fixtures include real weak-key metadata coverage; profile policy enforces CSR key algorithm/size, selected signing algorithm, invalid KU/EKU combinations, forbidden CSR-requested extensions, SAN presence, wildcard policy, IP SAN policy, and oversized SAN rejection; core issuance rejects expired or not-yet-valid issuer certificates and DNS SANs outside issuer DNS name constraints before signing. |
 | CI shape | Workflow includes docs validation, release evidence validation, secret baseline, Go tests/vet/govulncheck/build, PostgreSQL integration, C++ CMake, and CTest. |
@@ -96,4 +97,4 @@ Exit criteria:
 | Add audit tamper-evidence. | P2 Audit, Access, And Operations. |
 | Add HSM/KMS/PKCS#11 boundary. | P2 Key Boundary. |
 | Add SBOM/release signing/SAST/SCA. | Release evidence selects syft, cosign, go vet, and govulncheck; tagged release workflow builds archives, checksums, SBOM, and cosign signatures. |
-| Do not refactor large files prematurely. | P3 split gates require behavior coverage and stable boundaries. |
+| Do not refactor large files prematurely. | HTTP API and SQL store splits now follow tested ACME, certificate, audit, outbox/webhook, and ACME persistence boundaries. |
