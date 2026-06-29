@@ -20,6 +20,7 @@ and release-repeatable operations.
 | Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity; `scripts/validate-core-cli-contracts.py` checks Go-to-core CLI JSON field parity against the contract reference, including structured OpenSSL diagnostic details on core CLI failures. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
 | Release trust | README quickstart smoke checklist, `CHANGELOG.md`, CI run/badge strategy in the release process, release evidence manifest validation, and tagged release artifact workflow. |
+| Core robustness | Optional local libFuzzer targets cover CSR PEM inspection, OCSP request DER inspection, and CRL DER inspection. |
 | Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory, SQLite, and PostgreSQL parity tests cover duplicate certificate finalization keys, stale issuance-attempt updates, outbox, audit, migration, and ACME nonce behavior. |
 | Certificate correctness | Core issue profile tests parse issued DER and assert SAN, KU, EKU, Basic Constraints, AIA, CRL Distribution Points, SKI, and AKI; core CSR fixtures include real weak-key metadata coverage; profile policy enforces CSR key algorithm/size, selected signing algorithm, invalid KU/EKU combinations, forbidden CSR-requested extensions, SAN presence, wildcard policy, IP SAN policy, and oversized SAN rejection; core issuance rejects expired or not-yet-valid issuer certificates and DNS SANs outside issuer DNS name constraints before signing. |
 | CI shape | Workflow includes docs validation, release evidence validation, secret baseline, Go tests/vet/govulncheck/build, PostgreSQL integration, C++ CMake, and CTest. |
@@ -89,6 +90,7 @@ Exit criteria:
 | Strengthen ACME compatibility. | Certbot smoke plus fixture conversion and compatibility matrix. |
 | Strengthen CSR/certificate correctness. | DER golden tests, profile algorithm policy, invalid KU/EKU checks, real weak-key CSR metadata coverage, CSR linting for forbidden extensions and SAN policy cases, and issuer validity/name-constraint negative fixtures exist; remaining work is public TLS lint integration only if public issuance is enabled. |
 | Strengthen issuance consistency tests. | Signer/DB failure, lease race, serial collision, and PostgreSQL parity coverage exist. |
+| Add parser fuzzing. | Optional local libFuzzer targets and commands exist for CSR, OCSP, and CRL parser boundaries. |
 | Strengthen webhook/outbox safety tests. | Receiver replay/signature, timeout, unsafe redirect/egress, retry, and dead-letter coverage exist. |
 | Add audit tamper-evidence. | P2 Audit, Access, And Operations. |
 | Add HSM/KMS/PKCS#11 boundary. | P2 Key Boundary. |

@@ -29,6 +29,15 @@ struct GenerateCRLResult
 	std::string crl_pem;
 };
 
+struct CRLInfo
+{
+	std::string issuer;
+	int revoked_certificate_count = 0;
+	std::string crl_number;
+};
+
 [[nodiscard]] GenerateCRLResult generate_crl(const GenerateCRLRequest &request);
+[[nodiscard]] CRLInfo inspect_crl_pem(const std::string &crl_pem);
+[[nodiscard]] CRLInfo inspect_crl_der(const std::string &crl_der);
 
 } // namespace modern_pki::core

@@ -3,6 +3,7 @@
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
 #include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
@@ -10,6 +11,7 @@
 
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -24,6 +26,7 @@ constexpr const char *kCRLCreateFailed = "crl.create_failed";
 constexpr const char *kCRLIssuerParseFailed = "crl.issuer_parse_failed";
 constexpr const char *kCRLKeyReadFailed = "crl.key_read_failed";
 constexpr const char *kCRLInvalidTime = "crl.invalid_time";
+constexpr const char *kCRLParseFailed = "crl.parse_failed";
 
 template <typename T, void (*FreeFn)(T *)>
 struct OpenSslDeleter
@@ -42,6 +45,14 @@ struct BioDeleter
 	}
 };
 
+struct OpenSslFreeDeleter
+{
+	void operator()(char *value) const noexcept
+	{
+		OPENSSL_free(value);
+	}
+};
+
 using BioPtr = std::unique_ptr<BIO, BioDeleter>;
 using BignumPtr = std::unique_ptr<BIGNUM, OpenSslDeleter<BIGNUM, BN_free>>;
 using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, OpenSslDeleter<EVP_PKEY, EVP_PKEY_free>>;
@@ -52,6 +63,7 @@ using X509ExtensionPtr = std::unique_ptr<X509_EXTENSION, OpenSslDeleter<X509_EXT
 using Asn1IntegerPtr = std::unique_ptr<ASN1_INTEGER, OpenSslDeleter<ASN1_INTEGER, ASN1_INTEGER_free>>;
 using Asn1EnumeratedPtr = std::unique_ptr<ASN1_ENUMERATED, OpenSslDeleter<ASN1_ENUMERATED, ASN1_ENUMERATED_free>>;
 using Asn1TimePtr = std::unique_ptr<ASN1_TIME, OpenSslDeleter<ASN1_TIME, ASN1_TIME_free>>;
+using OpenSslStringPtr = std::unique_ptr<char, OpenSslFreeDeleter>;
 
 [[noreturn]] void throw_error(const char *code)
 {
@@ -86,6 +98,97 @@ X509Ptr parse_certificate(std::string_view pem)
 		throw_error(kCRLIssuerParseFailed);
 	}
 	return certificate;
+}
+
+void require_mem_buf_size(std::string_view input)
+{
+	if (input.size() > static_cast<std::string_view::size_type>(std::numeric_limits<int>::max()))
+	{
+		throw_error(kCRLParseFailed);
+	}
+}
+
+X509CrlPtr parse_crl_pem(std::string_view pem)
+{
+	require_mem_buf_size(pem);
+	BioPtr bio{BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()))};
+	if (!bio)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	X509CrlPtr crl{PEM_read_bio_X509_CRL(bio.get(), nullptr, nullptr, nullptr)};
+	if (!crl)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	return crl;
+}
+
+X509CrlPtr parse_crl_der(std::string_view der)
+{
+	require_mem_buf_size(der);
+	BioPtr bio{BIO_new_mem_buf(der.data(), static_cast<int>(der.size()))};
+	if (!bio)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	X509CrlPtr crl{d2i_X509_CRL_bio(bio.get(), nullptr)};
+	if (!crl)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	return crl;
+}
+
+std::string crl_number(X509_CRL *crl)
+{
+	const int extension_index = X509_CRL_get_ext_by_NID(crl, NID_crl_number, -1);
+	if (extension_index < 0)
+	{
+		return {};
+	}
+	X509_EXTENSION *extension = X509_CRL_get_ext(crl, extension_index);
+	if (extension == nullptr)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	Asn1IntegerPtr number{static_cast<ASN1_INTEGER *>(X509V3_EXT_d2i(extension))};
+	if (!number)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	BIGNUM *raw = ASN1_INTEGER_to_BN(number.get(), nullptr);
+	if (raw == nullptr)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	BignumPtr number_bn{raw};
+	OpenSslStringPtr decimal{BN_bn2dec(number_bn.get())};
+	if (!decimal)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	return decimal.get();
+}
+
+CRLInfo inspect_crl(X509_CRL *crl)
+{
+	X509_NAME *issuer_name = X509_CRL_get_issuer(crl);
+	if (issuer_name == nullptr)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	OpenSslStringPtr issuer{X509_NAME_oneline(issuer_name, nullptr, 0)};
+	if (!issuer)
+	{
+		throw_error(kCRLParseFailed);
+	}
+	const STACK_OF(X509_REVOKED) *revoked = X509_CRL_get_REVOKED(crl);
+	CRLInfo info;
+	info.issuer = issuer.get();
+	info.revoked_certificate_count = revoked == nullptr ? 0 : sk_X509_REVOKED_num(revoked);
+	info.crl_number = crl_number(crl);
+	return info;
 }
 
 EvpPkeyPtr parse_private_key(std::string_view pem)
@@ -308,6 +411,16 @@ GenerateCRLResult generate_crl(const GenerateCRLRequest &request)
 	GenerateCRLResult result;
 	result.crl_pem = crl_to_pem(crl.get());
 	return result;
+}
+
+CRLInfo inspect_crl_pem(const std::string &crl_pem)
+{
+	return inspect_crl(parse_crl_pem(crl_pem).get());
+}
+
+CRLInfo inspect_crl_der(const std::string &crl_der)
+{
+	return inspect_crl(parse_crl_der(crl_der).get());
 }
 
 } // namespace modern_pki::core

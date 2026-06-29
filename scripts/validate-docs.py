@@ -40,6 +40,7 @@ REQUIRED = [
     "docs/reference/improvement-analysis-alignment.md",
     "docs/reference/release-readiness-action-plan.md",
     "docs/reference/core-cli-contract.md",
+    "docs/reference/fuzzing.md",
     "docs/reference/release-evidence.md",
     "docs/reference/openapi.json",
 ]

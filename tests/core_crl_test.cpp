@@ -120,6 +120,17 @@ std::string private_key_to_pem(EVP_PKEY *key)
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
+std::string crl_to_der(X509_CRL *crl)
+{
+	BioPtr bio{BIO_new(BIO_s_mem())};
+	require(bio != nullptr);
+	require(i2d_X509_CRL_bio(bio.get(), crl) == 1);
+	char *data = nullptr;
+	const long size = BIO_get_mem_data(bio.get(), &data);
+	require(size > 0 && data != nullptr);
+	return std::string{data, static_cast<std::string::size_type>(size)};
+}
+
 X509CrlPtr crl_from_pem(const std::string &pem)
 {
 	BioPtr bio{BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()))};
@@ -172,5 +183,15 @@ int main(int argc, char *argv[])
 	const std::string decoded_decimal{decoded_decimal_raw};
 	OPENSSL_free(decoded_decimal_raw);
 	require(decoded_decimal == "2147483648");
+
+	const modern_pki::core::CRLInfo pem_info = modern_pki::core::inspect_crl_pem(result.crl_pem);
+	require(pem_info.issuer == "/CN=Test CA");
+	require(pem_info.revoked_certificate_count == 1);
+	require(pem_info.crl_number == "2147483648");
+
+	const modern_pki::core::CRLInfo der_info = modern_pki::core::inspect_crl_der(crl_to_der(crl.get()));
+	require(der_info.issuer == pem_info.issuer);
+	require(der_info.revoked_certificate_count == pem_info.revoked_certificate_count);
+	require(der_info.crl_number == pem_info.crl_number);
 	return 0;
 }

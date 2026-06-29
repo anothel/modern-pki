@@ -4,6 +4,8 @@ project(modern_pki VERSION 0.0.0 LANGUAGES CXX)
 
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
+option(MODERN_PKI_ENABLE_FUZZING "Build local libFuzzer parser targets" OFF)
+
 add_library(modern_pki_core
     src/core/crl.cpp
     src/core/csr.cpp
@@ -14,6 +16,9 @@ add_library(modern_pki_core
 add_library(modern_pki::core ALIAS modern_pki_core)
 
 target_compile_features(modern_pki_core PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(modern_pki_core PUBLIC /EHsc)
+endif()
 target_include_directories(modern_pki_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -42,6 +47,26 @@ if(WIN32 AND OPENSSL_ROOT_DIR)
             COMMAND_EXPAND_LISTS
         )
     endif()
+endif()
+
+if(MODERN_PKI_ENABLE_FUZZING)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MODERN_PKI_ENABLE_FUZZING requires Clang with libFuzzer support")
+    endif()
+
+    function(add_modern_pki_parser_fuzzer target compile_definition)
+        add_executable(${target}
+            tests/fuzz/core_parser_fuzz.cpp
+        )
+        target_compile_definitions(${target} PRIVATE ${compile_definition})
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer,address)
+        target_link_options(${target} PRIVATE -fsanitize=fuzzer,address)
+        target_link_libraries(${target} PRIVATE modern_pki::core OpenSSL::Crypto)
+    endfunction()
+
+    add_modern_pki_parser_fuzzer(modern_pki_core_csr_fuzz MODERN_PKI_FUZZ_CSR)
+    add_modern_pki_parser_fuzzer(modern_pki_core_ocsp_fuzz MODERN_PKI_FUZZ_OCSP)
+    add_modern_pki_parser_fuzzer(modern_pki_core_crl_fuzz MODERN_PKI_FUZZ_CRL)
 endif()
 
 include(CTest)
