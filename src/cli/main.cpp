@@ -3,6 +3,8 @@
 #include "modern_pki/core/issue.hpp"
 #include "modern_pki/core/ocsp.hpp"
 
+#include <openssl/err.h>
+
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -378,9 +380,29 @@ std::string json_error(std::string_view code, std::string_view message)
 	return "{\"code\":" + json_string(code) + ",\"message\":" + json_string(message) + "}";
 }
 
+std::vector<std::string> openssl_errors()
+{
+	std::vector<std::string> errors;
+	for (unsigned long code = ERR_get_error(); code != 0; code = ERR_get_error())
+	{
+		char buffer[256];
+		ERR_error_string_n(code, buffer, sizeof(buffer));
+		errors.push_back(buffer);
+	}
+	return errors;
+}
+
 void write_error(std::string_view code, std::string_view message)
 {
-	std::cerr << json_error(code, message) << '\n';
+	const std::vector<std::string> errors = openssl_errors();
+	if (errors.empty())
+	{
+		std::cerr << json_error(code, message) << '\n';
+		return;
+	}
+	std::cerr << "{\"code\":" << json_string(code)
+	          << ",\"message\":" << json_string(message)
+	          << ",\"openssl_errors\":" << json_string_array(errors) << "}\n";
 }
 
 std::string get_string_field(const JsonObject &object, const std::string &key)

@@ -52,7 +52,7 @@ CONTRACTS = {
     },
     "command error": {
         "go": "commandErrorPayload",
-        "cpp_emitter": "json_error",
+        "cpp_emitter": "write_error",
     },
 }
 

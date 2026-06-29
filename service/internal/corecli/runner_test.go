@@ -370,6 +370,21 @@ func TestCommandErrorPreservesPayloadCode(t *testing.T) {
 	}
 }
 
+func TestCommandErrorPreservesOpenSSLErrors(t *testing.T) {
+	err := commandError(errors.New("exit status 1"), `{"code":"csr.parse_failed","message":"csr.parse_failed","openssl_errors":["error:0480006C:PEM routines::no start line"]}`)
+
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("error type = %T, want *CommandError", err)
+	}
+	if len(commandErr.OpenSSLErrors) != 1 || commandErr.OpenSSLErrors[0] != "error:0480006C:PEM routines::no start line" {
+		t.Fatalf("OpenSSLErrors = %#v", commandErr.OpenSSLErrors)
+	}
+	if !strings.Contains(commandErr.Error(), "error:0480006C") {
+		t.Fatalf("error string = %q, want OpenSSL detail", commandErr.Error())
+	}
+}
+
 func writeFakeInspectCommand(t *testing.T, success bool) string {
 	t.Helper()
 

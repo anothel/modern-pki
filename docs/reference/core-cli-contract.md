@@ -138,6 +138,7 @@ payloads at the process boundary.
 
 - Direction: C++ core to Go service, stderr on failed commands.
 - Go source: `commandErrorPayload`.
-- C++ source: `json_error`.
+- C++ source: `write_error`.
 - `code`
 - `message`
+- `openssl_errors` (omitted when the OpenSSL error queue is empty)

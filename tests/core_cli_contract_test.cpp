@@ -380,6 +380,7 @@ void assert_cli_error_contract(const std::filesystem::path &cli_path, const std:
 	const std::filesystem::path stdout_path = work_dir / "core_cli_contract_stdout.txt";
 	const std::filesystem::path stderr_path = work_dir / "core_cli_contract_stderr.txt";
 	const std::filesystem::path malformed_request_path = work_dir / "core_cli_contract_malformed_request.json";
+	const std::filesystem::path malformed_csr_path = work_dir / "core_cli_contract_malformed_csr.pem";
 	const std::filesystem::path result_path = work_dir / "core_cli_contract_result.json";
 
 	assert_cli_failure_contains(cli_path, stdout_path, stderr_path, "invalid", "\"code\":\"cli.invalid_args\"");
@@ -391,6 +392,14 @@ void assert_cli_error_contract(const std::filesystem::path &cli_path, const std:
 	    stderr_path,
 	    "cert issue --request " + shell_quote(malformed_request_path) + " --out " + shell_quote(result_path),
 	    "\"code\":\"cli.json_parse_failed\"");
+
+	write_file(malformed_csr_path, "not a csr");
+	assert_cli_failure_contains(
+	    cli_path,
+	    stdout_path,
+	    stderr_path,
+	    "csr inspect --in " + shell_quote(malformed_csr_path) + " --out json",
+	    "\"openssl_errors\":[");
 }
 
 void assert_cli_ocsp_fixture_inspect(

@@ -123,9 +123,10 @@ type Runner struct {
 }
 
 type CommandError struct {
-	Code    string
-	Message string
-	Err     error
+	Code          string
+	Message       string
+	OpenSSLErrors []string
+	Err           error
 }
 
 func (e *CommandError) Error() string {
@@ -142,6 +143,9 @@ func (e *CommandError) Error() string {
 			return prefix
 		}
 		return fmt.Sprintf("%s: %v", prefix, e.Err)
+	}
+	if len(e.OpenSSLErrors) != 0 {
+		detail += ": " + strings.Join(e.OpenSSLErrors, "; ")
 	}
 	if e.Err == nil {
 		return fmt.Sprintf("%s: %s", prefix, detail)
@@ -592,8 +596,9 @@ func coreTime(value time.Time) string {
 }
 
 type commandErrorPayload struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code          string   `json:"code"`
+	Message       string   `json:"message"`
+	OpenSSLErrors []string `json:"openssl_errors"`
 }
 
 func commandError(err error, stderr string) error {
@@ -604,7 +609,7 @@ func commandError(err error, stderr string) error {
 
 	var payload commandErrorPayload
 	if json.Unmarshal([]byte(stderr), &payload) == nil && (payload.Code != "" || payload.Message != "") {
-		return &CommandError{Code: payload.Code, Message: payload.Message, Err: err}
+		return &CommandError{Code: payload.Code, Message: payload.Message, OpenSSLErrors: payload.OpenSSLErrors, Err: err}
 	}
 
 	return &CommandError{Message: stderr, Err: err}

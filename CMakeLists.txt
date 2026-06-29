@@ -27,7 +27,7 @@ target_link_libraries(modern_pki_core
 add_executable(modern-pki-core
     src/cli/main.cpp
 )
-target_link_libraries(modern-pki-core PRIVATE modern_pki::core)
+target_link_libraries(modern-pki-core PRIVATE modern_pki::core OpenSSL::Crypto)
 
 if(WIN32 AND OPENSSL_ROOT_DIR)
     file(TO_CMAKE_PATH "${OPENSSL_ROOT_DIR}" OPENSSL_ROOT_DIR_CMAKE)

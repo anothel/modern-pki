@@ -116,7 +116,6 @@ Goal: prove one import model before broad scanning.
 Goal: reduce review risk after correctness coverage exists.
 
 - Add contract tests for the Go/C++ boundary.
-- Expose structured OpenSSL error details where useful for operator diagnosis.
 - Add CSR, OCSP, and CRL parser fuzz targets with local commands.
 - Split `service/internal/httpapi/server.go` only along stable boundaries such
   as ACME, API key/auth, audit/outbox/webhook, and operator/reporting handlers.

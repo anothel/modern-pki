@@ -17,7 +17,7 @@ and release-repeatable operations.
 | --- | --- |
 | Baseline docs | README, SECURITY, CONTRIBUTING, roadmap, OpenAPI, runbooks, threat model, architecture, policy, ADR, and alignment docs. |
 | Docs-as-code | `scripts/validate-docs.py` checks required docs, README links, OpenAPI JSON, and license state. |
-| Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity; `scripts/validate-core-cli-contracts.py` checks Go-to-core CLI JSON field parity against the contract reference. |
+| Service contract parity | `scripts/validate-service-contracts.py` checks route/OpenAPI parity, config/env docs parity, and public error mapping docs parity; `scripts/validate-core-cli-contracts.py` checks Go-to-core CLI JSON field parity against the contract reference, including structured OpenSSL diagnostic details on core CLI failures. |
 | Secret baseline | `scripts/security-baseline-scan.py` checks high-confidence committed secret patterns. |
 | Release trust | README quickstart smoke checklist, `CHANGELOG.md`, CI run/badge strategy in the release process, release evidence manifest validation, and tagged release artifact workflow. |
 | Issuance failure-mode coverage | Lifecycle tests cover duplicate issuer serial rejection without issuing the second enrollment; memory, SQLite, and PostgreSQL parity tests cover duplicate certificate finalization keys, stale issuance-attempt updates, outbox, audit, migration, and ACME nonce behavior. |
