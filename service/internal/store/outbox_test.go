@@ -905,6 +905,7 @@ func testWebhookDeliveryTracking(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	seedOutboxDeliveryParents(t, repo, "outbox-1", "endpoint-1", now)
 	delivery := domain.WebhookDelivery{
 		OutboxMessageID: "outbox-1",
 		EndpointID:      "endpoint-1",
@@ -989,6 +990,7 @@ func testIssuanceAttempts(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	seedEnrollmentParents(t, repo, "identity-1", "issuer-1", "profile-1", "enrollment-1", now)
 	attempt := domain.IssuanceAttempt{
 		EnrollmentID:     "enrollment-1",
 		Status:           domain.IssuanceAttemptSigning,
@@ -1302,6 +1304,7 @@ func testACMEState(t *testing.T, repo Repository) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	seedCertificateParents(t, repo, "identity-1", "issuer-1", "profile-1", now)
 	account := domain.ACMEAccount{
 		ID:                   "account-1",
 		Contacts:             []string{"mailto:ops@example.test"},
@@ -1413,6 +1416,115 @@ func testACMEState(t *testing.T, repo Repository) {
 	}
 	if len(challenges) != 1 || challenges[0].Status != domain.ACMEChallengeValid || !challenges[0].ValidatedAt.Equal(challenge.ValidatedAt) {
 		t.Fatalf("challenges = %#v", challenges)
+	}
+}
+
+func seedCertificateParents(t *testing.T, repo Repository, identityID, issuerID, profileID string, now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := repo.GetIdentity(ctx, identityID); errors.Is(err, domain.ErrIdentityNotFound) {
+		if err := repo.CreateIdentity(ctx, domain.Identity{
+			ID:        identityID,
+			Type:      domain.IdentityService,
+			Name:      identityID,
+			Status:    domain.IdentityActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateIdentity parent returned error: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("GetIdentity parent returned error: %v", err)
+	}
+	if _, err := repo.GetIssuer(ctx, issuerID); errors.Is(err, domain.ErrIssuerNotFound) {
+		if err := repo.CreateIssuer(ctx, domain.Issuer{
+			ID:             issuerID,
+			Name:           issuerID,
+			Kind:           domain.IssuerIntermediateCA,
+			Status:         domain.IssuerActive,
+			CertificatePEM: "issuer-pem",
+			KeyRef:         "issuer-key",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}); err != nil {
+			t.Fatalf("CreateIssuer parent returned error: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("GetIssuer parent returned error: %v", err)
+	}
+	if _, err := repo.GetCertificateProfile(ctx, profileID); errors.Is(err, domain.ErrCertificateProfileNotFound) {
+		if err := repo.CreateCertificateProfile(ctx, domain.CertificateProfile{
+			ID:                    profileID,
+			Name:                  profileID,
+			IssuerID:              issuerID,
+			ValidityPeriodSeconds: int64(time.Hour.Seconds()),
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		}); err != nil {
+			t.Fatalf("CreateCertificateProfile parent returned error: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("GetCertificateProfile parent returned error: %v", err)
+	}
+}
+
+func seedEnrollmentParents(t *testing.T, repo Repository, identityID, issuerID, profileID, enrollmentID string, now time.Time) {
+	t.Helper()
+	seedCertificateParents(t, repo, identityID, issuerID, profileID, now)
+	if _, err := repo.GetEnrollment(context.Background(), enrollmentID); err == nil {
+		return
+	} else if !errors.Is(err, domain.ErrEnrollmentNotFound) {
+		t.Fatalf("GetEnrollment parent returned error: %v", err)
+	}
+	if err := repo.CreateEnrollment(context.Background(), domain.Enrollment{
+		ID:                   enrollmentID,
+		IdentityID:           identityID,
+		IssuerID:             issuerID,
+		CertificateProfileID: profileID,
+		Status:               domain.EnrollmentApproved,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}); err != nil {
+		t.Fatalf("CreateEnrollment parent returned error: %v", err)
+	}
+}
+
+func seedOutboxDeliveryParents(t *testing.T, repo Repository, outboxID, endpointID string, now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := repo.GetOutboxMessage(ctx, outboxID); err != nil {
+		if !errors.Is(err, domain.ErrOutboxMessageNotFound) {
+			t.Fatalf("GetOutboxMessage parent returned error: %v", err)
+		}
+		if err := repo.CreateOutboxMessage(ctx, domain.OutboxMessage{
+			ID:          outboxID,
+			Type:        "certificate.issued",
+			PayloadJSON: "{}",
+			Status:      domain.OutboxPending,
+			AvailableAt: now,
+			MaxAttempts: 3,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			t.Fatalf("CreateOutboxMessage parent returned error: %v", err)
+		}
+	}
+	if _, err := repo.GetNotificationEndpoint(ctx, endpointID); err == nil {
+		return
+	} else if !errors.Is(err, domain.ErrNotificationEndpointNotFound) {
+		t.Fatalf("GetNotificationEndpoint parent returned error: %v", err)
+	}
+	if err := repo.CreateNotificationEndpoint(ctx, domain.NotificationEndpoint{
+		ID:        endpointID,
+		Name:      endpointID,
+		Type:      domain.NotificationEndpointWebhook,
+		Status:    domain.NotificationEndpointActive,
+		URL:       "https://ops.example.test/hooks/pki",
+		Secret:    "secret",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateNotificationEndpoint parent returned error: %v", err)
 	}
 }
 

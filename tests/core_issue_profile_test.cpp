@@ -105,28 +105,31 @@ using Asn1BitStringPtr = std::unique_ptr<ASN1_BIT_STRING, Asn1BitStringDeleter>;
 using BasicConstraintsPtr = std::unique_ptr<BASIC_CONSTRAINTS, BasicConstraintsDeleter>;
 using ExtendedKeyUsagePtr = std::unique_ptr<EXTENDED_KEY_USAGE, ExtendedKeyUsageDeleter>;
 
-void require(bool condition)
+void require_at(bool condition, int line)
 {
 	if (!condition)
 	{
-		std::abort();
+		std::cerr << "require failed at core_issue_profile_test.cpp:" << line << "\n";
+		std::exit(1);
 	}
 }
+
+#define REQUIRE(condition) require_at((condition), __LINE__)
 
 EvpPkeyPtr make_rsa_key(int bits = 2048)
 {
 	EvpPkeyCtxPtr context{EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr)};
-	require(context != nullptr);
-	require(EVP_PKEY_keygen_init(context.get()) == 1);
-	require(EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), bits) == 1);
+	REQUIRE(context != nullptr);
+	REQUIRE(EVP_PKEY_keygen_init(context.get()) == 1);
+	REQUIRE(EVP_PKEY_CTX_set_rsa_keygen_bits(context.get(), bits) == 1);
 	EVP_PKEY *key = nullptr;
-	require(EVP_PKEY_keygen(context.get(), &key) == 1);
+	REQUIRE(EVP_PKEY_keygen(context.get(), &key) == 1);
 	return EvpPkeyPtr{key};
 }
 
 void set_name(X509_NAME *name, const char *common_name)
 {
-	require(X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>(common_name), -1, -1, 0) == 1);
+	REQUIRE(X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>(common_name), -1, -1, 0) == 1);
 }
 
 void add_extension(X509 *certificate, X509 *issuer, int nid, const char *value)
@@ -135,87 +138,87 @@ void add_extension(X509 *certificate, X509 *issuer, int nid, const char *value)
 	X509V3_set_ctx_nodb(&context);
 	X509V3_set_ctx(&context, issuer, certificate, nullptr, nullptr, 0);
 	X509_EXTENSION *extension = X509V3_EXT_conf_nid(nullptr, &context, nid, value);
-	require(extension != nullptr);
-	require(X509_add_ext(certificate, extension, -1) == 1);
+	REQUIRE(extension != nullptr);
+	REQUIRE(X509_add_ext(certificate, extension, -1) == 1);
 	X509_EXTENSION_free(extension);
 }
 
 void add_csr_extension(X509_REQ *request, int nid, const char *value)
 {
 	STACK_OF(X509_EXTENSION) *extensions = sk_X509_EXTENSION_new_null();
-	require(extensions != nullptr);
+	REQUIRE(extensions != nullptr);
 	X509_EXTENSION *extension = X509V3_EXT_conf_nid(nullptr, nullptr, nid, value);
-	require(extension != nullptr);
-	require(sk_X509_EXTENSION_push(extensions, extension) == 1);
-	require(X509_REQ_add_extensions(request, extensions) == 1);
+	REQUIRE(extension != nullptr);
+	REQUIRE(sk_X509_EXTENSION_push(extensions, extension) == 1);
+	REQUIRE(X509_REQ_add_extensions(request, extensions) == 1);
 	sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
 }
 
 std::string certificate_to_pem(X509 *certificate)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
-	require(bio != nullptr);
-	require(PEM_write_bio_X509(bio.get(), certificate) == 1);
+	REQUIRE(bio != nullptr);
+	REQUIRE(PEM_write_bio_X509(bio.get(), certificate) == 1);
 	char *data = nullptr;
 	const long size = BIO_get_mem_data(bio.get(), &data);
-	require(size > 0 && data != nullptr);
+	REQUIRE(size > 0 && data != nullptr);
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
 std::string csr_to_pem(X509_REQ *request)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
-	require(bio != nullptr);
-	require(PEM_write_bio_X509_REQ(bio.get(), request) == 1);
+	REQUIRE(bio != nullptr);
+	REQUIRE(PEM_write_bio_X509_REQ(bio.get(), request) == 1);
 	char *data = nullptr;
 	const long size = BIO_get_mem_data(bio.get(), &data);
-	require(size > 0 && data != nullptr);
+	REQUIRE(size > 0 && data != nullptr);
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
 X509Ptr certificate_from_pem(const std::string &pem)
 {
 	BioPtr bio{BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()))};
-	require(bio != nullptr);
+	REQUIRE(bio != nullptr);
 	X509Ptr certificate{PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr)};
-	require(certificate != nullptr);
+	REQUIRE(certificate != nullptr);
 	return certificate;
 }
 
 X509Ptr make_ca_certificate(EVP_PKEY *key, long not_before_offset = -60, long not_after_offset = 86400, const char *name_constraints = nullptr)
 {
 	X509Ptr certificate{X509_new()};
-	require(certificate != nullptr);
-	require(X509_set_version(certificate.get(), 2) == 1);
+	REQUIRE(certificate != nullptr);
+	REQUIRE(X509_set_version(certificate.get(), 2) == 1);
 	BignumPtr serial{BN_new()};
-	require(serial != nullptr);
-	require(BN_set_word(serial.get(), 1) == 1);
-	require(BN_to_ASN1_INTEGER(serial.get(), X509_get_serialNumber(certificate.get())) != nullptr);
+	REQUIRE(serial != nullptr);
+	REQUIRE(BN_set_word(serial.get(), 1) == 1);
+	REQUIRE(BN_to_ASN1_INTEGER(serial.get(), X509_get_serialNumber(certificate.get())) != nullptr);
 	X509_gmtime_adj(X509_getm_notBefore(certificate.get()), not_before_offset);
 	X509_gmtime_adj(X509_getm_notAfter(certificate.get()), not_after_offset);
 	set_name(X509_get_subject_name(certificate.get()), "Test CA");
-	require(X509_set_issuer_name(certificate.get(), X509_get_subject_name(certificate.get())) == 1);
-	require(X509_set_pubkey(certificate.get(), key) == 1);
+	REQUIRE(X509_set_issuer_name(certificate.get(), X509_get_subject_name(certificate.get())) == 1);
+	REQUIRE(X509_set_pubkey(certificate.get(), key) == 1);
 	add_extension(certificate.get(), certificate.get(), NID_basic_constraints, "critical,CA:TRUE");
 	add_extension(certificate.get(), certificate.get(), NID_key_usage, "critical,keyCertSign,cRLSign");
 	if (name_constraints != nullptr)
 	{
 		add_extension(certificate.get(), certificate.get(), NID_name_constraints, name_constraints);
 	}
-	require(X509_sign(certificate.get(), key, EVP_sha256()) > 0);
+	REQUIRE(X509_sign(certificate.get(), key, EVP_sha256()) > 0);
 	return certificate;
 }
 
 X509ReqPtr make_csr(EVP_PKEY *key)
 {
 	X509ReqPtr request{X509_REQ_new()};
-	require(request != nullptr);
-	require(X509_REQ_set_version(request.get(), 0) == 1);
+	REQUIRE(request != nullptr);
+	REQUIRE(X509_REQ_set_version(request.get(), 0) == 1);
 	set_name(X509_REQ_get_subject_name(request.get()), "leaf");
-	require(X509_REQ_set_pubkey(request.get(), key) == 1);
+	REQUIRE(X509_REQ_set_pubkey(request.get(), key) == 1);
 	add_csr_extension(request.get(), NID_subject_alt_name, "DNS:edge-01.example.test");
 	add_csr_extension(request.get(), NID_key_usage, "digitalSignature");
-	require(X509_REQ_sign(request.get(), key, EVP_sha256()) > 0);
+	REQUIRE(X509_REQ_sign(request.get(), key, EVP_sha256()) > 0);
 	return request;
 }
 
@@ -237,7 +240,7 @@ std::string shell_quote(const std::filesystem::path &path)
 {
 	const std::string value = path.string();
 #if defined(_WIN32)
-	require(value.find('"') == std::string::npos);
+	REQUIRE(value.find('"') == std::string::npos);
 	return "\"" + value + "\"";
 #else
 	std::string quoted = "'";
@@ -295,64 +298,64 @@ std::string json_string(const std::string &value)
 std::string extension_text(X509_EXTENSION *extension)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
-	require(bio != nullptr);
-	require(X509V3_EXT_print(bio.get(), extension, 0, 0) == 1);
+	REQUIRE(bio != nullptr);
+	REQUIRE(X509V3_EXT_print(bio.get(), extension, 0, 0) == 1);
 	char *data = nullptr;
 	const long size = BIO_get_mem_data(bio.get(), &data);
-	require(size > 0 && data != nullptr);
+	REQUIRE(size > 0 && data != nullptr);
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
 std::string private_key_to_pem(EVP_PKEY *key)
 {
 	BioPtr bio{BIO_new(BIO_s_mem())};
-	require(bio != nullptr);
-	require(PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr) == 1);
+	REQUIRE(bio != nullptr);
+	REQUIRE(PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr) == 1);
 	char *data = nullptr;
 	const long size = BIO_get_mem_data(bio.get(), &data);
-	require(size > 0 && data != nullptr);
+	REQUIRE(size > 0 && data != nullptr);
 	return std::string{data, static_cast<std::string::size_type>(size)};
 }
 
 X509_EXTENSION *extension_by_nid(X509 *certificate, int nid)
 {
 	const int index = X509_get_ext_by_NID(certificate, nid, -1);
-	require(index >= 0);
+	REQUIRE(index >= 0);
 	X509_EXTENSION *extension = X509_get_ext(certificate, index);
-	require(extension != nullptr);
+	REQUIRE(extension != nullptr);
 	return extension;
 }
 
 void assert_profile_extensions(X509 *certificate)
 {
 	X509_EXTENSION *basic_extension = extension_by_nid(certificate, NID_basic_constraints);
-	require(X509_EXTENSION_get_critical(basic_extension) == 1);
+	REQUIRE(X509_EXTENSION_get_critical(basic_extension) == 1);
 	BasicConstraintsPtr basic_constraints{
 	    static_cast<BASIC_CONSTRAINTS *>(X509V3_EXT_d2i(basic_extension))};
-	require(basic_constraints != nullptr);
-	require(basic_constraints->ca == 0);
+	REQUIRE(basic_constraints != nullptr);
+	REQUIRE(basic_constraints->ca == 0);
 
 	X509_EXTENSION *key_usage_extension = extension_by_nid(certificate, NID_key_usage);
-	require(X509_EXTENSION_get_critical(key_usage_extension) == 1);
+	REQUIRE(X509_EXTENSION_get_critical(key_usage_extension) == 1);
 	Asn1BitStringPtr key_usage{static_cast<ASN1_BIT_STRING *>(X509V3_EXT_d2i(key_usage_extension))};
-	require(key_usage != nullptr);
-	require(ASN1_BIT_STRING_get_bit(key_usage.get(), 0) == 1);
-	require(ASN1_BIT_STRING_get_bit(key_usage.get(), 2) == 1);
+	REQUIRE(key_usage != nullptr);
+	REQUIRE(ASN1_BIT_STRING_get_bit(key_usage.get(), 0) == 1);
+	REQUIRE(ASN1_BIT_STRING_get_bit(key_usage.get(), 2) == 1);
 
 	X509_EXTENSION *eku_extension = extension_by_nid(certificate, NID_ext_key_usage);
 	ExtendedKeyUsagePtr eku{static_cast<EXTENDED_KEY_USAGE *>(X509V3_EXT_d2i(eku_extension))};
-	require(eku != nullptr);
-	require(sk_ASN1_OBJECT_num(eku.get()) == 1);
-	require(OBJ_obj2nid(sk_ASN1_OBJECT_value(eku.get(), 0)) == NID_server_auth);
+	REQUIRE(eku != nullptr);
+	REQUIRE(sk_ASN1_OBJECT_num(eku.get()) == 1);
+	REQUIRE(OBJ_obj2nid(sk_ASN1_OBJECT_value(eku.get(), 0)) == NID_server_auth);
 
 	(void)extension_by_nid(certificate, NID_subject_key_identifier);
 	(void)extension_by_nid(certificate, NID_authority_key_identifier);
 	(void)extension_by_nid(certificate, NID_subject_alt_name);
 
 	const std::string aia = extension_text(extension_by_nid(certificate, NID_info_access));
-	require(aia.find("URI:https://pki.example.test/issuers/test-ca.pem") != std::string::npos);
+	REQUIRE(aia.find("URI:https://pki.example.test/issuers/test-ca.pem") != std::string::npos);
 	const std::string crl = extension_text(extension_by_nid(certificate, NID_crl_distribution_points));
-	require(crl.find("URI:https://pki.example.test/crl/test-ca.crl") != std::string::npos);
+	REQUIRE(crl.find("URI:https://pki.example.test/crl/test-ca.crl") != std::string::npos);
 }
 
 std::string issue_request_json(const std::string &csr_pem, const std::string &issuer_certificate_pem, const std::filesystem::path &issuer_key_path, const std::string &extra_fields)
@@ -432,7 +435,7 @@ void assert_issue_rejects_issuer_certificate(const modern_pki::core::IssueReques
 	}
 	catch (const std::runtime_error &error)
 	{
-		require(std::string{error.what()} == "issue.issuer_not_ca");
+		REQUIRE(std::string{error.what()} == "issue.issuer_not_ca");
 		return;
 	}
 	std::cerr << "issue_certificate accepted an invalid issuer certificate\n";
@@ -443,7 +446,7 @@ void assert_issue_rejects_issuer_certificate(const modern_pki::core::IssueReques
 
 int main(int argc, char *argv[])
 {
-	require(argc == 3);
+	REQUIRE(argc == 3);
 	const std::filesystem::path cli_path = argv[1];
 	const std::filesystem::path work_dir = argv[2];
 	const EvpPkeyPtr ca_key = make_rsa_key();
@@ -457,14 +460,14 @@ int main(int argc, char *argv[])
 	modern_pki::core::IssueRequest request;
 	request.csr_pem = csr_to_pem(csr.get());
 	const modern_pki::core::CsrInfo csr_info = modern_pki::core::inspect_csr_pem(request.csr_pem);
-	require(csr_info.extension_oids.size() == 2);
-	require(csr_info.extension_oids[0] == "2.5.29.17");
-	require(csr_info.extension_oids[1] == "2.5.29.15");
+	REQUIRE(csr_info.extension_oids.size() == 2);
+	REQUIRE(csr_info.extension_oids[0] == "2.5.29.17");
+	REQUIRE(csr_info.extension_oids[1] == "2.5.29.15");
 	const EvpPkeyPtr weak_key = make_rsa_key(1024);
 	const X509ReqPtr weak_csr = make_csr(weak_key.get());
 	const modern_pki::core::CsrInfo weak_csr_info = modern_pki::core::inspect_csr_pem(csr_to_pem(weak_csr.get()));
-	require(weak_csr_info.public_key_algorithm == "rsa");
-	require(weak_csr_info.public_key_size_bits == 1024);
+	REQUIRE(weak_csr_info.public_key_algorithm == "rsa");
+	REQUIRE(weak_csr_info.public_key_size_bits == 1024);
 	request.issuer_certificate_pem = certificate_to_pem(ca_certificate.get());
 	request.issuer_key_ref = issuer_key_path.string();
 	request.subject = "CN=leaf";

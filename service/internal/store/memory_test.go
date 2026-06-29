@@ -333,19 +333,22 @@ func testRejectsDuplicateCertificateFinalizationKeys(t *testing.T, repo Reposito
 	t.Helper()
 	ctx := context.Background()
 	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	seedEnrollmentParents(t, repo, "identity-1", "issuer-1", "profile-1", "enrollment-1", createdAt)
+	seedEnrollmentParents(t, repo, "identity-1", "issuer-1", "profile-1", "enrollment-2", createdAt)
 	certificate := domain.Certificate{
-		ID:             "certificate-1",
-		IdentityID:     "identity-1",
-		IssuerID:       "issuer-1",
-		EnrollmentID:   "enrollment-1",
-		SerialNumber:   "01",
-		Subject:        "CN=edge-01",
-		NotBefore:      createdAt,
-		NotAfter:       createdAt.Add(time.Hour),
-		Status:         domain.CertificateValid,
-		CertificatePEM: "cert-pem",
-		CreatedAt:      createdAt,
-		UpdatedAt:      createdAt,
+		ID:                   "certificate-1",
+		IdentityID:           "identity-1",
+		IssuerID:             "issuer-1",
+		EnrollmentID:         "enrollment-1",
+		CertificateProfileID: "profile-1",
+		SerialNumber:         "01",
+		Subject:              "CN=edge-01",
+		NotBefore:            createdAt,
+		NotAfter:             createdAt.Add(time.Hour),
+		Status:               domain.CertificateValid,
+		CertificatePEM:       "cert-pem",
+		CreatedAt:            createdAt,
+		UpdatedAt:            createdAt,
 	}
 	if err := repo.CreateCertificate(ctx, certificate); err != nil {
 		t.Fatalf("CreateCertificate returned error: %v", err)
