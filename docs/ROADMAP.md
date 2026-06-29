@@ -115,7 +115,6 @@ Goal: prove one import model before broad scanning.
 
 Goal: reduce review risk after correctness coverage exists.
 
-- Define JSON schema for Go-to-core CLI calls.
 - Add contract tests for the Go/C++ boundary.
 - Expose structured OpenSSL error details where useful for operator diagnosis.
 - Add CSR, OCSP, and CRL parser fuzz targets with local commands.

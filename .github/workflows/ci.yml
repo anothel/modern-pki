@@ -20,6 +20,8 @@ jobs:
       - run: python scripts/test_webhook_receiver_verification.py
       - run: python scripts/test_validate_service_contracts.py
       - run: python scripts/validate-service-contracts.py
+      - run: python scripts/test_validate_core_cli_contracts.py
+      - run: python scripts/validate-core-cli-contracts.py
       - run: python scripts/test_validate_release_evidence.py
       - run: python scripts/validate-release-evidence.py
       - run: python scripts/test_security_baseline_scan.py
