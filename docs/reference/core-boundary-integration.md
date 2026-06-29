@@ -1,9 +1,9 @@
 # Core Boundary Integration
 
 Go unit tests use fake `modern-pki-core` commands for argument and JSON mapping
-coverage. The integration contract test runs the real C++ CLI binary through
-the Go runner and checks that structured command errors survive the process
-boundary.
+coverage. The integration contract tests run the real C++ CLI binary through
+the Go runner and check success paths for CSR inspection, certificate issuance,
+and CRL generation, plus structured command errors on parser failures.
 
 Build the C++ CLI first, then run:
 
