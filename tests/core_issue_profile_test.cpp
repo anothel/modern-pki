@@ -143,13 +143,19 @@ void add_extension(X509 *certificate, X509 *issuer, int nid, const char *value)
 	X509_EXTENSION_free(extension);
 }
 
-void add_csr_extension(X509_REQ *request, int nid, const char *value)
+X509_EXTENSION *make_extension(int nid, const char *value)
+{
+	X509_EXTENSION *extension = X509V3_EXT_conf_nid(nullptr, nullptr, nid, value);
+	REQUIRE(extension != nullptr);
+	return extension;
+}
+
+void add_csr_extensions(X509_REQ *request)
 {
 	STACK_OF(X509_EXTENSION) *extensions = sk_X509_EXTENSION_new_null();
 	REQUIRE(extensions != nullptr);
-	X509_EXTENSION *extension = X509V3_EXT_conf_nid(nullptr, nullptr, nid, value);
-	REQUIRE(extension != nullptr);
-	REQUIRE(sk_X509_EXTENSION_push(extensions, extension) == 1);
+	REQUIRE(sk_X509_EXTENSION_push(extensions, make_extension(NID_subject_alt_name, "DNS:edge-01.example.test")) >= 1);
+	REQUIRE(sk_X509_EXTENSION_push(extensions, make_extension(NID_key_usage, "digitalSignature")) >= 1);
 	REQUIRE(X509_REQ_add_extensions(request, extensions) == 1);
 	sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
 }
@@ -216,8 +222,7 @@ X509ReqPtr make_csr(EVP_PKEY *key)
 	REQUIRE(X509_REQ_set_version(request.get(), 0) == 1);
 	set_name(X509_REQ_get_subject_name(request.get()), "leaf");
 	REQUIRE(X509_REQ_set_pubkey(request.get(), key) == 1);
-	add_csr_extension(request.get(), NID_subject_alt_name, "DNS:edge-01.example.test");
-	add_csr_extension(request.get(), NID_key_usage, "digitalSignature");
+	add_csr_extensions(request.get());
 	REQUIRE(X509_REQ_sign(request.get(), key, EVP_sha256()) > 0);
 	return request;
 }

@@ -1600,7 +1600,7 @@ SET status = $1,
 WHERE enrollment_id = $15
 	AND status = $16
 	AND updated_at = $17
-	AND ((lease_expires_at IS NULL AND $18 IS NULL) OR lease_expires_at = $18)`,
+	AND lease_expires_at IS NOT DISTINCT FROM $18`,
 		string(attempt.Status),
 		formatNullableSQLTime(attempt.LeaseExpiresAt),
 		attempt.CertificateID,
