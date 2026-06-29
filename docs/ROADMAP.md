@@ -115,7 +115,6 @@ Goal: prove one import model before broad scanning.
 
 Goal: reduce review risk after correctness coverage exists.
 
-- Add contract tests for the Go/C++ boundary.
 - Split `service/internal/httpapi/server.go` only along stable boundaries such
   as ACME, API key/auth, audit/outbox/webhook, and operator/reporting handlers.
 - Split `service/internal/store/sqlstore.go` only along aggregate boundaries
