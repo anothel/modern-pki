@@ -39,6 +39,37 @@ function Escape-SingleQuotedPowerShell {
     return $Value.Replace("'", "''")
 }
 
+function Invoke-NativeCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $FilePath @ArgumentList 2>&1
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output = $output
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Resolve-GoModCachePath {
+    if ($env:GOMODCACHE) {
+        return $env:GOMODCACHE
+    }
+
+    $goEnv = Invoke-NativeCommand -FilePath "go" -ArgumentList @("env", "GOMODCACHE")
+    if ($goEnv.ExitCode -ne 0 -or $goEnv.Output.Count -eq 0) {
+        throw "resolve Go module cache failed: $($goEnv.Output -join [Environment]::NewLine)"
+    }
+    return [string]($goEnv.Output | Select-Object -First 1)
+}
+
 function Resolve-OptionalCommand {
     param([string]$NameOrPath)
 
@@ -133,12 +164,12 @@ function Start-SmokeService {
     $dbDsnPath = Resolve-SmokePath $DbDsn
     $logDir = Resolve-SmokePath $ServiceLogDir
     $goCachePath = Resolve-SmokePath ".gocache"
-    $goModCachePath = Resolve-SmokePath ".gomodcache"
+    $goModCachePath = Resolve-GoModCachePath
     $dbDir = Split-Path -Parent $dbDsnPath
     $serviceBinDir = Split-Path -Parent $serviceBinPath
     $issuerKeyRef = Join-Path $dbDir "acme-smoke-issuer.key"
 
-    New-Item -ItemType Directory -Force -Path $dbDir, $logDir, $serviceBinDir, $goCachePath, $goModCachePath | Out-Null
+    New-Item -ItemType Directory -Force -Path $dbDir, $logDir, $serviceBinDir, $goCachePath | Out-Null
 
     $stdout = Join-Path $logDir "modern-pki-service.stdout.log"
     $stderr = Join-Path $logDir "modern-pki-service.stderr.log"
@@ -167,9 +198,9 @@ SERVICE_BIN=$serviceBinPath
         $env:GOMODCACHE = $goModCachePath
         Push-Location -LiteralPath $serviceProject
         try {
-            $buildOutput = & go build -o $serviceBinPath .\cmd\modern-pki-service 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                $buildOutput | Out-File -LiteralPath $stderr -Encoding utf8
+            $build = Invoke-NativeCommand -FilePath "go" -ArgumentList @("build", "-o", $serviceBinPath, ".\cmd\modern-pki-service")
+            if ($build.ExitCode -ne 0) {
+                $build.Output | Out-File -LiteralPath $stderr -Encoding utf8
                 throw "build modern-pki-service failed; see $stderr"
             }
         } finally {
@@ -288,17 +319,17 @@ function Start-HTTPSProxy {
     $proxyBinPath = Resolve-SmokePath $HTTPSProxyBin
     $proxyBinDir = Split-Path -Parent $proxyBinPath
     $goCachePath = Resolve-SmokePath ".gocache"
-    $goModCachePath = Resolve-SmokePath ".gomodcache"
-    New-Item -ItemType Directory -Force -Path $proxyBinDir, $goCachePath, $goModCachePath | Out-Null
+    $goModCachePath = Resolve-GoModCachePath
+    New-Item -ItemType Directory -Force -Path $proxyBinDir, $goCachePath | Out-Null
 
     $previousGoCache = $env:GOCACHE
     $previousGoModCache = $env:GOMODCACHE
     try {
         $env:GOCACHE = $goCachePath
         $env:GOMODCACHE = $goModCachePath
-        $buildOutput = & go build -o $proxyBinPath .\scripts\acme-smoke\acme-https-proxy.go 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "build ACME HTTPS proxy failed: $($buildOutput -join [Environment]::NewLine)"
+        $build = Invoke-NativeCommand -FilePath "go" -ArgumentList @("build", "-o", $proxyBinPath, ".\scripts\acme-smoke\acme-https-proxy.go")
+        if ($build.ExitCode -ne 0) {
+            throw "build ACME HTTPS proxy failed: $($build.Output -join [Environment]::NewLine)"
         }
     } finally {
         $env:GOCACHE = $previousGoCache

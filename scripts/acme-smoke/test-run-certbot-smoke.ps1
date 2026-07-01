@@ -54,6 +54,42 @@ server.listen(port, "127.0.0.1");
     return Start-Process -FilePath "node" -ArgumentList @($stubPath) -WindowStyle Hidden -PassThru
 }
 
+function New-FakeServiceProject {
+    $projectDir = ".tmp\acme-smoke-test\fake-service"
+    $mainDir = Join-Path $projectDir "cmd\modern-pki-service"
+    New-Item -ItemType Directory -Force -Path $mainDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $projectDir "go.mod") -Encoding ASCII -Value @"
+module fake-modern-pki-service
+
+go 1.22
+"@
+    Set-Content -LiteralPath (Join-Path $mainDir "main.go") -Encoding ASCII -Value @"
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+)
+
+func main() {
+	addr := os.Getenv("MODERN_PKI_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:0"
+	}
+	http.HandleFunc("/acme/directory", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"newNonce": "http://" + addr + "/acme/new-nonce",
+			"newAccount": "http://" + addr + "/acme/new-account",
+			"newOrder": "http://" + addr + "/acme/new-order",
+		})
+	})
+	_ = http.ListenAndServe(addr, nil)
+}
+"@
+    return $projectDir
+}
+
 function Wait-DirectoryStub {
     param(
         [string]$ServiceUrl,
@@ -105,6 +141,11 @@ Assert-Equal "parse error count" $parseErrors.Count 0
 $proxySource = Get-Content -Raw (Join-Path $PSScriptRoot "acme-https-proxy.go")
 if ($proxySource -notmatch "X-Forwarded-Proto") {
     throw "ACME HTTPS proxy must forward X-Forwarded-Proto"
+}
+
+$runnerSource = Get-Content -Raw $Runner
+if ($runnerSource -notmatch "function Invoke-NativeCommand") {
+    throw "runner must capture native stderr without promoting progress output to terminating errors"
 }
 
 $port = Get-FreePort
@@ -183,11 +224,14 @@ try {
     )
     Assert-Equal "unavailable service exit code" $unavailable.ExitCode 3
 
+    $fakeServiceProject = New-FakeServiceProject
+    $fakeServiceUrl = "http://127.0.0.1:$(Get-FreePort)"
     $startServiceUnavailable = Invoke-Runner -RunnerArgs @(
-        "-ServiceUrl", $serviceUrl,
+        "-ServiceUrl", $fakeServiceUrl,
         "-CertbotPath", $missingCertbot,
         "-DirectoryTimeoutSec", "1",
         "-WorkDir", ".tmp\acme-smoke-test",
+        "-ServiceProjectPath", $fakeServiceProject,
         "-ServiceBin", ".tmp\acme-smoke-test\modern-pki-service.exe",
         "-ServiceLogDir", ".tmp\acme-smoke-test\service-logs",
         "-StartService"

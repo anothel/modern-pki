@@ -85,7 +85,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-certbot-smoke.
 - `MODERN_PKI_ACME_HTTP01_BASE_URL=http://127.0.0.1:{Http01Port}`
 - `MODERN_PKI_ACME_BOOTSTRAP_DEFAULTS=true`
 - `MODERN_PKI_ACME_BOOTSTRAP_ISSUER_KEY_REF=.tmp\acme-smoke\acme-smoke-issuer.key`
-- workspace-local Go caches under `.gocache` and `.gomodcache`
+- workspace-local Go build cache under `.gocache` and the current Go module cache
 - a temporary service binary under `.tmp\acme-smoke`
 
 Logs and temporary state are written under `.tmp\acme-smoke`.

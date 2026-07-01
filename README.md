@@ -69,6 +69,20 @@ go build ./cmd/modern-pki-service
 Use this deterministic checklist before trusting a local change or release
 candidate. Expected output is shown after each command.
 
+Run the local wrapper for the default docs, contract, secret-baseline, Go test,
+and Go build checks:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-local.ps1
+# local verification ok
+```
+
+To inspect the wrapped commands without running them:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-local.ps1 -List
+```
+
 ```powershell
 python scripts\validate-docs.py
 # docs ok
@@ -99,6 +113,7 @@ go build ./cmd/modern-pki-service
 ## Run Locally
 
 Build `modern-pki-core` first, then run the service with `MODERN_PKI_CORE_BIN` pointing at the CLI binary.
+Local defaults are listed in [.env.example](.env.example).
 
 ```powershell
 cd service
@@ -107,6 +122,23 @@ $env:MODERN_PKI_DB_DRIVER = "sqlite"
 $env:MODERN_PKI_DB_DSN = "modern-pki.db"
 $env:MODERN_PKI_CORE_BIN = "..\build\Debug\modern-pki-core.exe"
 go run ./cmd/modern-pki-service
+```
+
+For a 10-minute local issuance smoke, build the core CLI, then let the ACME
+harness start a temporary service and issue through lego:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acme-smoke\run-certbot-smoke.ps1 `
+  -Client lego `
+  -LegoPath .tmp\lego-bin\lego.exe `
+  -StartService `
+  -Run `
+  -DirectoryTimeoutSec 60 `
+  -WorkDir .tmp\acme-smoke-verify `
+  -DbDsn .tmp\acme-smoke-verify\modern-pki.db `
+  -ServiceBin .tmp\acme-smoke-verify\modern-pki-service.exe `
+  -ServiceLogDir .tmp\acme-smoke-verify\service-logs `
+  -HTTPSProxyBin .tmp\acme-smoke-verify\acme-https-proxy.exe
 ```
 
 For local development, auth defaults to `dev` mode and accepts `X-Actor`.

@@ -4,8 +4,8 @@ Only future work belongs here. Completed items must be removed after the
 verification evidence is recorded in the relevant reference or runbook.
 
 This roadmap folds in the uploaded PKI improvement analyses, including the
-2026-06-28 repository analysis. Those documents are inputs, not parallel
-backlogs. Current execution guidance lives in
+2026-06-28 and 2026-06-30 repository analyses. Those documents are inputs, not
+parallel backlogs. Current execution guidance lives in
 [Release readiness action plan](reference/release-readiness-action-plan.md).
 
 ## Operating Rules
@@ -21,6 +21,9 @@ backlogs. Current execution guidance lives in
   blocks a concrete requirement.
 - Reject new dependencies unless stdlib/native code is materially worse or the
   dependency is a selected release/security tool.
+- Keep README, SECURITY, release evidence, and this roadmap aligned on maturity:
+  pre-1.0, not production-stable, and internal-pilot oriented until release
+  evidence proves otherwise.
 
 ## External Timeline Drivers
 
@@ -64,11 +67,51 @@ signing boundaries.
 
 Goal: make pre-1.0 release candidates repeatable.
 
+- Decide the version source of truth before the first `v0.1.0-alpha.1` style
+  pre-release, then inject the same version into service and core artifacts.
+- Add a GitHub Release publish step after artifact checksums, SBOM, signing
+  output, and smoke evidence are linked from release evidence.
+- Keep artifact names tied to OS, architecture, and version.
+- Add a release artifact smoke test before treating a tag as a release
+  candidate.
 - Add optional `go test -race ./...`, staticcheck, gosec, C++ sanitizer, and
   fuzz jobs after tool choices are accepted.
 - Keep compatibility matrix evidence current for OS, Go, OpenSSL, SQLite,
   PostgreSQL, lego, and certbot.
 - Add generated API example validation if example drift becomes visible.
+
+## P1: API And Documentation Parity
+
+Goal: make the exposed surface match its documented maturity and behavior.
+
+- Maintain a feature status matrix using implemented, partial, planned,
+  smoke-only, and not-production-stable labels.
+- Add endpoint stability labels for stable, experimental, internal, and
+  smoke-only surfaces.
+- Keep internal ACME state endpoints documented separately from public ACME
+  protocol endpoints.
+- Define idempotency keys or explicit duplicate-request semantics for issuance,
+  revocation, renewal, reissue, outbox replay, and webhook retry operations.
+- Standardize pagination, filtering, sorting, optimistic concurrency, problem
+  details, and public error-code behavior across lifecycle endpoints.
+- Keep OpenAPI as the route/example source of truth and block drift in CI.
+
+## P1: Refactor Safety Coverage
+
+Goal: split large service files only after behavior is pinned down.
+
+- Add failure-mode coverage for core CLI timeout, core CLI failure, malformed
+  core CLI output, DB transaction conflict, duplicate issuance claim, outbox
+  retry and dead-letter handling, webhook signature mismatch, OCSP/CRL
+  publication failure, ACME badNonce retry, and HTTP-01 unsafe target cases.
+- Cover HTTP-01 private, loopback, redirect, DNS rebinding, IPv6, and TOCTOU
+  edge cases before changing validator boundaries.
+- Split `service/internal/httpapi/server.go` by resource or middleware only
+  after contract tests prove route behavior.
+- Split `service/internal/lifecycle/service.go` by repeated use-case change
+  boundaries only after failure-mode tests prove lifecycle behavior.
+- Split `service/cmd/modern-pki-service/main.go` only when config loading,
+  validation, bootstrap, and server lifecycle change independently.
 
 ## P2: Key Boundary
 
@@ -100,6 +143,11 @@ Goal: raise operator accountability and recovery confidence.
 - Add issuer key rotation, intermediate rollover, CRL/OCSP outage, audit repair,
   webhook dead-letter, migration rollback, and restore drill evidence updates
   to runbooks as implementations change.
+- Add executable migration rollback and backup/restore tests when SQL migration
+  compatibility becomes release-gating.
+- Add production hardening checklist coverage for auth mode, API-key pepper,
+  bootstrap key removal, SQL ACME nonce store, file-key restrictions, backup
+  and restore, log redaction, and webhook secrets.
 
 ## P2: Inventory And Discovery
 
@@ -153,6 +201,8 @@ Goal: prove one import model before broad scanning.
 - Defer PQC from production; keep lab-only until dependencies and relying-party
   support are real.
 - Defer EAB and DNS-01 until real integrations require them.
+- Defer Docker Compose or devcontainer support until the local verification
+  wrapper and smoke harness are still materially hard for new contributors.
 - Reject large file splitting until tests prove behavior and repeated changes
   prove a stable boundary.
 - Reject new product surface while release trust, contract parity, failure-mode
